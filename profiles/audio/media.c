@@ -291,12 +291,11 @@ static void endpoint_reply(DBusPendingCall *call, void *user_data)
 		uint8_t *configuration;
 
 		dbus_message_iter_init(reply, &args);
-
-		dbus_message_iter_recurse(&args, &array);
-
-		dbus_message_iter_get_fixed_array(&array, &configuration, &size);
-
-		ret = configuration;
+		if (DBUS_TYPE_ARRAY == dbus_message_iter_get_arg_type(&args)) {
+		    dbus_message_iter_recurse(&args, &array);
+		    dbus_message_iter_get_fixed_array(&array, &configuration, &size);
+		    ret = configuration;
+		}
 		goto done;
 	} else  if (!dbus_message_get_args(reply, &err, DBUS_TYPE_INVALID)) {
 		error("Wrong reply signature: %s", err.message);
