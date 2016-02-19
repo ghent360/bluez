@@ -2114,6 +2114,9 @@ static void store_gatt_db(struct btd_device *device)
 	key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, filename, 0, NULL);
 
+	/* Remove current attributes since it might have changed */
+	g_key_file_remove_group(key_file, "Attributes", NULL);
+
 	saver.key_file = key_file;
 	saver.device = device;
 
@@ -3012,7 +3015,7 @@ static int load_chrc(char *handle, char *value,
 							&uuid, 0, properties,
 							NULL, NULL, NULL);
 	if (!att || gatt_db_attribute_get_handle(att) != value_handle) {
-		warn("saving characteristic to db failed");
+		warn("loading characteristic to db failed");
 		return -EIO;
 	}
 
@@ -3039,13 +3042,13 @@ static int load_incl(struct gatt_db *db, char *handle, char *value,
 
 	att = gatt_db_get_attribute(db, start);
 	if (!att) {
-		warn("saving included service to db failed - no such service");
+		warn("loading included service to db failed - no such service");
 		return -EIO;
 	}
 
 	att = gatt_db_service_add_included(service, att);
 	if (!att) {
-		warn("saving included service to db failed");
+		warn("loading included service to db failed");
 		return -EIO;
 	}
 
@@ -3082,7 +3085,7 @@ static int load_service(struct gatt_db *db, char *handle, char *value)
 	att = gatt_db_insert_service(db, start, &uuid, primary,
 							end - start + 1);
 	if (!att) {
-		DBG("ERROR saving service to db!");
+		error("Unable load service into db!");
 		return -EIO;
 	}
 
@@ -3165,8 +3168,10 @@ static int load_gatt_db_impl(GKeyFile *key_file, char **keys,
 		}
 
 		g_free(value);
-		if (ret)
+		if (ret) {
+			gatt_db_clear(db);
 			return ret;
+		}
 	}
 
 	if (current_service)
