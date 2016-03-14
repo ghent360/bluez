@@ -89,6 +89,7 @@ struct gatt_app {
 	GDBusClient *client;
 	bool failed;
 	struct queue *services;
+	struct queue *proxies;
 };
 
 struct external_service {
@@ -365,6 +366,7 @@ static void app_free(void *data)
 	struct gatt_app *app = data;
 
 	queue_destroy(app->services, service_free);
+	queue_destroy(app->proxies, NULL);
 
 	if (app->client) {
 		g_dbus_client_set_disconnect_watch(app->client, NULL, NULL);
@@ -1428,39 +1430,12 @@ static void proxy_added_cb(GDBusProxy *proxy, void *user_data)
 	if (app->failed)
 		return;
 
+	queue_push_tail(app->proxies, proxy);
+
 	iface = g_dbus_proxy_get_interface(proxy);
 	path = g_dbus_proxy_get_path(proxy);
 
-	if (g_strcmp0(iface, GATT_SERVICE_IFACE) == 0) {
-		struct external_service *service;
-
-		service = create_service(app, proxy, path);
-		if (!service) {
-			app->failed = true;
-			return;
-		}
-	} else if (g_strcmp0(iface, GATT_CHRC_IFACE) == 0) {
-		struct external_chrc *chrc;
-
-		chrc = chrc_create(app, proxy, path);
-		if (!chrc) {
-			app->failed = true;
-			return;
-		}
-	} else if (g_strcmp0(iface, GATT_DESC_IFACE) == 0) {
-		struct external_desc *desc;
-
-		desc = desc_create(app, proxy);
-		if (!desc) {
-			app->failed = true;
-			return;
-		}
-	} else {
-		DBG("Ignoring unrelated interface: %s", iface);
-		return;
-	}
-
-	DBG("Object added: path: %s, iface: %s", path, iface);
+	DBG("Object received: %s, iface: %s", path, iface);
 }
 
 static void proxy_removed_cb(GDBusProxy *proxy, void *user_data)
@@ -1990,6 +1965,36 @@ static void chrc_read_cb(struct gatt_db_attribute *attrib,
 	send_read(attrib, chrc->proxy, chrc->pending_reads, id);
 }
 
+static void write_without_response_setup_cb(DBusMessageIter *iter,
+							void *user_data)
+{
+	struct iovec *iov = user_data;
+	DBusMessageIter array;
+
+	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY, "y", &array);
+	dbus_message_iter_append_fixed_array(&array, DBUS_TYPE_BYTE,
+						&iov->iov_base, iov->iov_len);
+	dbus_message_iter_close_container(iter, &array);
+}
+
+static void send_write_without_response(struct gatt_db_attribute *attrib,
+					GDBusProxy *proxy, unsigned int id,
+					const uint8_t *value, size_t len)
+{
+	struct iovec iov;
+	uint8_t ecode = 0;
+
+	iov.iov_base = (uint8_t *) value;
+	iov.iov_len = len;
+
+	if (!g_dbus_proxy_method_call(proxy, "WriteValue",
+					write_without_response_setup_cb,
+					NULL, &iov, NULL))
+		ecode = BT_ATT_ERROR_UNLIKELY;
+
+	gatt_db_attribute_write_result(attrib, id, ecode);
+}
+
 static void chrc_write_cb(struct gatt_db_attribute *attrib,
 					unsigned int id, uint16_t offset,
 					const uint8_t *value, size_t len,
@@ -2000,6 +2005,12 @@ static void chrc_write_cb(struct gatt_db_attribute *attrib,
 
 	if (chrc->attrib != attrib) {
 		error("Write callback called with incorrect attribute");
+		return;
+	}
+
+	if (chrc->props & BT_GATT_CHRC_PROP_WRITE_WITHOUT_RESP) {
+		send_write_without_response(attrib, chrc->proxy, id, value,
+									len);
 		return;
 	}
 
@@ -2139,11 +2150,91 @@ static bool database_add_app(struct gatt_app *app)
 	return true;
 }
 
+static void register_service(void *data, void *user_data)
+{
+	struct gatt_app *app = user_data;
+	GDBusProxy *proxy = data;
+	const char *iface = g_dbus_proxy_get_interface(proxy);
+	const char *path = g_dbus_proxy_get_path(proxy);
+
+	if (app->failed)
+		return;
+
+	if (g_strcmp0(iface, GATT_SERVICE_IFACE) == 0) {
+		struct external_service *service;
+
+		service = create_service(app, proxy, path);
+		if (!service) {
+			app->failed = true;
+			return;
+		}
+	}
+}
+
+static void register_characteristic(void *data, void *user_data)
+{
+	struct gatt_app *app = user_data;
+	GDBusProxy *proxy = data;
+	const char *iface = g_dbus_proxy_get_interface(proxy);
+	const char *path = g_dbus_proxy_get_path(proxy);
+
+	if (app->failed)
+		return;
+
+	iface = g_dbus_proxy_get_interface(proxy);
+	path = g_dbus_proxy_get_path(proxy);
+
+	if (g_strcmp0(iface, GATT_CHRC_IFACE) == 0) {
+		struct external_chrc *chrc;
+
+		chrc = chrc_create(app, proxy, path);
+		if (!chrc) {
+			app->failed = true;
+			return;
+		}
+	}
+}
+
+static void register_descriptor(void *data, void *user_data)
+{
+	struct gatt_app *app = user_data;
+	GDBusProxy *proxy = data;
+	const char *iface = g_dbus_proxy_get_interface(proxy);
+
+	if (app->failed)
+		return;
+
+	if (g_strcmp0(iface, GATT_DESC_IFACE) == 0) {
+		struct external_desc *desc;
+
+		desc = desc_create(app, proxy);
+		if (!desc) {
+			app->failed = true;
+			return;
+		}
+	}
+}
+
 static void client_ready_cb(GDBusClient *client, void *user_data)
 {
 	struct gatt_app *app = user_data;
 	DBusMessage *reply;
 	bool fail = false;
+
+	/*
+	 * Process received objects
+	 */
+	if (queue_isempty(app->proxies)) {
+		error("No object received");
+		fail = true;
+		reply = btd_error_failed(app->reg,
+					"No object received");
+		goto reply;
+	}
+
+	queue_foreach(app->proxies, register_service, app);
+	queue_foreach(app->proxies, register_characteristic, app);
+	queue_foreach(app->proxies, register_descriptor, app);
 
 	if (!app->services || app->failed) {
 		error("No valid external GATT objects found");
@@ -2198,6 +2289,7 @@ static struct gatt_app *create_app(DBusConnection *conn, DBusMessage *msg,
 		goto fail;
 
 	app->services = queue_new();
+	app->proxies = queue_new();
 	app->reg = dbus_message_ref(msg);
 
 	g_dbus_client_set_disconnect_watch(app->client, client_disconnect_cb,
