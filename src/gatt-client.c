@@ -71,7 +71,6 @@ struct service {
 	bt_uuid_t uuid;
 	char *path;
 	struct queue *chrcs;
-	struct queue *pending_ext_props;
 };
 
 struct characteristic {
@@ -707,6 +706,15 @@ static gboolean characteristic_get_notifying(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
+static gboolean
+characteristic_notifying_exists(const GDBusPropertyTable *property, void *data)
+{
+	struct characteristic *chrc = data;
+
+	return (chrc->props & BT_GATT_CHRC_PROP_NOTIFY ||
+				chrc->props & BT_GATT_CHRC_PROP_INDICATE);
+}
+
 struct chrc_prop_data {
 	uint8_t prop;
 	char *str;
@@ -1225,7 +1233,8 @@ static const GDBusPropertyTable characteristic_properties[] = {
 	{ "Value", "ay", characteristic_get_value, NULL,
 					characteristic_value_exists,
 					G_DBUS_PROPERTY_FLAG_EXPERIMENTAL },
-	{ "Notifying", "b", characteristic_get_notifying, NULL, NULL,
+	{ "Notifying", "b", characteristic_get_notifying, NULL,
+					characteristic_notifying_exists,
 					G_DBUS_PROPERTY_FLAG_EXPERIMENTAL },
 	{ "Flags", "as", characteristic_get_flags, NULL, NULL,
 					G_DBUS_PROPERTY_FLAG_EXPERIMENTAL },
@@ -1273,7 +1282,9 @@ static struct characteristic *characteristic_create(
 
 	gatt_db_attribute_get_char_data(attr, &chrc->handle,
 							&chrc->value_handle,
-							&chrc->props, &uuid);
+							&chrc->props,
+							&chrc->ext_props,
+							&uuid);
 
 	chrc->attr = gatt_db_get_attribute(service->client->db,
 							chrc->value_handle);
@@ -1387,7 +1398,6 @@ static void service_free(void *data)
 	struct service *service = data;
 
 	queue_destroy(service->chrcs, NULL);  /* List should be empty here */
-	queue_destroy(service->pending_ext_props, NULL);
 	g_free(service->path);
 	free(service);
 }
@@ -1401,7 +1411,6 @@ static struct service *service_create(struct gatt_db_attribute *attr,
 
 	service = new0(struct service, 1);
 	service->chrcs = queue_new();
-	service->pending_ext_props = queue_new();
 	service->client = client;
 
 	gatt_db_attribute_get_service_data(attr, &service->start_handle,
@@ -1473,44 +1482,6 @@ static void export_desc(struct gatt_db_attribute *attr, void *user_data)
 	queue_push_tail(charac->descs, desc);
 }
 
-static void read_ext_props_cb(bool success, uint8_t att_ecode,
-					const uint8_t *value, uint16_t length,
-					void *user_data)
-{
-	struct characteristic *chrc = user_data;
-	struct service *service = chrc->service;
-
-	if (!success) {
-		error("Failed to obtain extended properties - error: 0x%02x",
-								att_ecode);
-		return;
-	}
-
-	if (!value || length != 2) {
-		error("Malformed extended properties value");
-		return;
-	}
-
-	chrc->ext_props = get_le16(value);
-	if (chrc->ext_props)
-		g_dbus_emit_property_changed(btd_get_dbus_connection(),
-						chrc->path,
-						GATT_CHARACTERISTIC_IFACE,
-						"Flags");
-
-	queue_remove(service->pending_ext_props, chrc);
-}
-
-static void read_ext_props(void *data, void *user_data)
-{
-	struct characteristic *chrc = data;
-
-	bt_gatt_client_read_value(chrc->service->client->gatt,
-							chrc->ext_props_handle,
-							read_ext_props_cb,
-							chrc, NULL);
-}
-
 static bool create_descriptors(struct gatt_db_attribute *attr,
 					struct characteristic *charac)
 {
@@ -1544,9 +1515,6 @@ static void export_char(struct gatt_db_attribute *attr, void *user_data)
 
 	queue_push_tail(service->chrcs, charac);
 
-	if (charac->ext_props_handle)
-		queue_push_tail(service->pending_ext_props, charac);
-
 	return;
 
 fail:
@@ -1563,13 +1531,7 @@ static bool create_characteristics(struct gatt_db_attribute *attr,
 
 	gatt_db_service_foreach_char(attr, export_char, &data);
 
-	if (data.failed)
-		return false;
-
-	/* Obtain extended properties */
-	queue_foreach(service->pending_ext_props, read_ext_props, NULL);
-
-	return true;
+	return !data.failed;
 }
 
 static void export_service(struct gatt_db_attribute *attr, void *user_data)

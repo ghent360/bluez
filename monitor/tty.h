@@ -2,8 +2,7 @@
  *
  *  BlueZ - Bluetooth protocol stack for Linux
  *
- *  Copyright (C) 2011-2014  Intel Corporation
- *  Copyright (C) 2002-2010  Marcel Holtmann <marcel@holtmann.org>
+ *  Copyright (C) 2016  Intel Corporation
  *
  *
  *  This library is free software; you can redistribute it and/or
@@ -24,10 +23,19 @@
 
 #include <stdint.h>
 
-bool control_writer(const char *path);
-void control_reader(const char *path);
-void control_server(const char *path);
-int control_tty(const char *path, unsigned int speed);
-int control_tracing(void);
+struct tty_hdr {
+	uint16_t data_len;
+	uint16_t opcode;
+	uint8_t  flags;
+	uint8_t  hdr_len;
+	uint8_t  ext_hdr[0];
+} __attribute__ ((packed));
 
-void control_message(uint16_t opcode, const void *data, uint16_t size);
+#define TTY_EXTHDR_COMMAND_DROPS  1
+#define TTY_EXTHDR_EVENT_DROPS    2
+#define TTY_EXTHDR_ACL_TX_DROPS   3
+#define TTY_EXTHDR_ACL_RX_DROPS   4
+#define TTY_EXTHDR_SCO_TX_DROPS   5
+#define TTY_EXTHDR_SCO_RX_DROPS   6
+#define TTY_EXTHDR_OTHER_DROPS    7
+#define TTY_EXTHDR_TS32           8
