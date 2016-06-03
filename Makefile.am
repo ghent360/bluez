@@ -80,7 +80,7 @@ include_HEADERS += $(lib_headers)
 lib_LTLIBRARIES += lib/libbluetooth.la
 
 lib_libbluetooth_la_SOURCES = $(lib_headers) $(lib_sources)
-lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 21:11:18
+lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 21:12:18
 lib_libbluetooth_la_DEPENDENCIES = $(local_headers)
 endif
 
@@ -261,6 +261,8 @@ EXTRA_DIST += doc/obex-api.txt doc/obex-agent-api.txt
 
 EXTRA_DIST += doc/pics-opp.txt doc/pixit-opp.txt \
 		doc/pts-opp.txt
+
+EXTRA_DIST += doc/btsnoop.txt
 
 EXTRA_DIST += tools/magic.btsnoop
 
