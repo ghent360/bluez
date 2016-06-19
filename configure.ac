@@ -266,10 +266,13 @@ if (test "${prefix}" = "NONE"); then
 	prefix="${ac_default_prefix}"
 fi
 
-if (test "$localstatedir" = '${prefix}/var'); then
-	storagedir="${prefix}/var/lib/bluetooth"
-else
-	storagedir="${localstatedir}/lib/bluetooth"
+
+if (test "x$storagedir" = 'x'); then
+	if (test "$localstatedir" = '${prefix}/var'); then
+		storagedir="${prefix}/var/lib/bluetooth"
+	else
+		storagedir="${localstatedir}/lib/bluetooth"
+	fi
 fi
 AC_DEFINE_UNQUOTED(STORAGEDIR, "${storagedir}",
 			[Directory for the storage files])
