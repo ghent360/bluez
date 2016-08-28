@@ -57,6 +57,7 @@
 #include "broadcom.h"
 #include "packet.h"
 
+#define COLOR_CHANNEL_LABEL		COLOR_WHITE
 #define COLOR_INDEX_LABEL		COLOR_WHITE
 #define COLOR_TIMESTAMP			COLOR_YELLOW
 
@@ -66,13 +67,12 @@
 #define COLOR_CLOSE_INDEX		COLOR_RED
 #define COLOR_INDEX_INFO		COLOR_GREEN
 #define COLOR_VENDOR_DIAG		COLOR_YELLOW
+#define COLOR_SYSTEM_NOTE		COLOR_OFF
 
 #define COLOR_HCI_COMMAND		COLOR_BLUE
 #define COLOR_HCI_COMMAND_UNKNOWN	COLOR_WHITE_BG
-
 #define COLOR_HCI_EVENT			COLOR_MAGENTA
 #define COLOR_HCI_EVENT_UNKNOWN		COLOR_WHITE_BG
-
 #define COLOR_HCI_ACLDATA		COLOR_CYAN
 #define COLOR_HCI_SCODATA		COLOR_YELLOW
 
@@ -84,6 +84,18 @@
 #define COLOR_UNKNOWN_SERVICE_CLASS	COLOR_WHITE_BG
 #define COLOR_UNKNOWN_PKT_TYPE_BIT	COLOR_WHITE_BG
 
+#define COLOR_CTRL_OPEN			COLOR_GREEN_BOLD
+#define COLOR_CTRL_CLOSE		COLOR_RED_BOLD
+#define COLOR_CTRL_COMMAND		COLOR_BLUE_BOLD
+#define COLOR_CTRL_COMMAND_UNKNOWN	COLOR_WHITE_BG
+#define COLOR_CTRL_EVENT		COLOR_MAGENTA_BOLD
+#define COLOR_CTRL_EVENT_UNKNOWN	COLOR_WHITE_BG
+
+#define COLOR_UNKNOWN_OPTIONS_BIT	COLOR_WHITE_BG
+#define COLOR_UNKNOWN_SETTINGS_BIT	COLOR_WHITE_BG
+#define COLOR_UNKNOWN_ADDRESS_TYPE	COLOR_WHITE_BG
+#define COLOR_UNKNOWN_DEVICE_FLAG	COLOR_WHITE_BG
+
 #define COLOR_PHY_PACKET		COLOR_BLUE
 
 static time_t time_offset = ((time_t) -1);
@@ -94,6 +106,69 @@ static uint16_t index_number = 0;
 static uint16_t index_current = 0;
 
 #define UNKNOWN_MANUFACTURER 0xffff
+
+#define CTRL_MGMT 0x0001
+
+#define MAX_CTRL 64
+
+struct ctrl_data {
+	bool used;
+	uint32_t cookie;
+	uint16_t format;
+	char name[20];
+};
+
+static struct ctrl_data ctrl_list[MAX_CTRL];
+
+static void assign_ctrl(uint32_t cookie, uint16_t format, const char *name)
+{
+	int i;
+
+	for (i = 0; i < MAX_CTRL; i++) {
+		if (!ctrl_list[i].used) {
+			ctrl_list[i].used = true;
+			ctrl_list[i].cookie = cookie;
+			ctrl_list[i].format = format;
+			if (name) {
+				strncpy(ctrl_list[i].name, name, 19);
+				ctrl_list[i].name[19] = '\0';
+			} else
+				strcpy(ctrl_list[i].name, "null");
+			break;
+		}
+	}
+}
+
+static void release_ctrl(uint32_t cookie, uint16_t *format, char *name)
+{
+	int i;
+
+	if (format)
+		*format = 0xffff;
+
+	for (i = 0; i < MAX_CTRL; i++) {
+		if (ctrl_list[i].used && ctrl_list[i].cookie == cookie) {
+			ctrl_list[i].used = false;
+			if (format)
+				*format = ctrl_list[i].format;
+			if (name)
+				strncpy(name, ctrl_list[i].name, 20);
+			break;
+		}
+	}
+}
+
+static uint16_t get_format(uint32_t cookie)
+{
+	int i;
+
+	for (i = 0; i < MAX_CTRL; i++) {
+		if (ctrl_list[i].used && ctrl_list[i].cookie == cookie)
+			return ctrl_list[i].format;
+	}
+
+	return 0xffff;
+}
 
 #define MAX_CONN 16
 
@@ -181,14 +256,28 @@ void packet_select_index(uint16_t index)
 
 #define print_space(x) printf("%*c", (x), ' ');
 
-static void print_packet(struct timeval *tv, struct ucred *cred,
-					uint16_t index, char ident,
+static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
+					uint16_t index, const char *channel,
 					const char *color, const char *label,
 					const char *text, const char *extra)
 {
 	int col = num_columns();
-	char line[256], ts_str[64];
+	char line[256], ts_str[96];
 	int n, ts_len = 0, ts_pos = 0, len = 0, pos = 0;
+
+	if (channel) {
+		if (use_color()) {
+			n = sprintf(ts_str + ts_pos, "%s", COLOR_CHANNEL_LABEL);
+			if (n > 0)
+				ts_pos += n;
+		}
+
+		n = sprintf(ts_str + ts_pos, " {%s}", channel);
+		if (n > 0) {
+			ts_pos += n;
+			ts_len += n;
+		}
+	}
 
 	if ((filter_mask & PACKET_FILTER_SHOW_INDEX) &&
 					index != HCI_DEV_NONE) {
@@ -2380,8 +2469,12 @@ void packet_print_version(const char *label, uint8_t version,
 		break;
 	}
 
-	print_field("%s: %s (0x%2.2x) - %s %d (0x%4.4x)", label, str, version,
+	if (sublabel)
+		print_field("%s: %s (0x%2.2x) - %s %d (0x%4.4x)",
+					label, str, version,
 					sublabel, subversion, subversion);
+	else
+		print_field("%s: %s (0x%2.2x)", label, str, version);
 }
 
 static void print_hci_version(uint8_t version, uint16_t revision)
@@ -3802,9 +3895,22 @@ void packet_monitor(struct timeval *tv, struct ucred *cred,
 		packet_user_logging(tv, cred, index, ul->priority, ident,
 					data + sizeof(*ul) + ul->ident_len);
 		break;
+	case BTSNOOP_OPCODE_CTRL_OPEN:
+		control_disable_legacy();
+		packet_ctrl_open(tv, cred, index, data, size);
+		break;
+	case BTSNOOP_OPCODE_CTRL_CLOSE:
+		packet_ctrl_close(tv, cred, index, data, size);
+		break;
+	case BTSNOOP_OPCODE_CTRL_COMMAND:
+		packet_ctrl_command(tv, cred, index, data, size);
+		break;
+	case BTSNOOP_OPCODE_CTRL_EVENT:
+		packet_ctrl_event(tv, cred, index, data, size);
+		break;
 	default:
 		sprintf(extra_str, "(code %d len %d)", opcode, size);
-		print_packet(tv, cred, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 					"Unknown packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		break;
@@ -3821,7 +3927,7 @@ void packet_simulator(struct timeval *tv, uint16_t frequency,
 
 	sprintf(str, "%u MHz", frequency);
 
-	print_packet(tv, NULL, 0, '*', COLOR_PHY_PACKET,
+	print_packet(tv, NULL, '*', 0, NULL, COLOR_PHY_PACKET,
 					"Physical packet:", NULL, str);
 
 	ll_packet(frequency, data, size, false);
@@ -8663,26 +8769,26 @@ void packet_new_index(struct timeval *tv, uint16_t index, const char *label,
 	sprintf(details, "(%s,%s,%s)", hci_typetostr(type),
 					hci_bustostr(bus), name);
 
-	print_packet(tv, NULL, index, '=', COLOR_NEW_INDEX, "New Index",
-							label, details);
+	print_packet(tv, NULL, '=', index, NULL, COLOR_NEW_INDEX,
+					"New Index", label, details);
 }
 
 void packet_del_index(struct timeval *tv, uint16_t index, const char *label)
 {
-	print_packet(tv, NULL, index, '=', COLOR_DEL_INDEX, "Delete Index",
-							label, NULL);
+	print_packet(tv, NULL, '=', index, NULL, COLOR_DEL_INDEX,
+					"Delete Index", label, NULL);
 }
 
 void packet_open_index(struct timeval *tv, uint16_t index, const char *label)
 {
-	print_packet(tv, NULL, index, '=', COLOR_OPEN_INDEX, "Open Index",
-							label, NULL);
+	print_packet(tv, NULL, '=', index, NULL, COLOR_OPEN_INDEX,
+					"Open Index", label, NULL);
 }
 
 void packet_close_index(struct timeval *tv, uint16_t index, const char *label)
 {
-	print_packet(tv, NULL, index, '=', COLOR_CLOSE_INDEX, "Close Index",
-							label, NULL);
+	print_packet(tv, NULL, '=', index, NULL, COLOR_CLOSE_INDEX,
+					"Close Index", label, NULL);
 }
 
 void packet_index_info(struct timeval *tv, uint16_t index, const char *label,
@@ -8692,8 +8798,8 @@ void packet_index_info(struct timeval *tv, uint16_t index, const char *label,
 
 	sprintf(details, "(%s)", bt_compidtostr(manufacturer));
 
-	print_packet(tv, NULL, index, '=', COLOR_INDEX_INFO, "Index Info",
-							label, details);
+	print_packet(tv, NULL, '=', index, NULL, COLOR_INDEX_INFO,
+					"Index Info", label, details);
 }
 
 void packet_vendor_diag(struct timeval *tv, uint16_t index,
@@ -8704,7 +8810,7 @@ void packet_vendor_diag(struct timeval *tv, uint16_t index,
 
 	sprintf(extra_str, "(len %d)", size);
 
-	print_packet(tv, NULL, index, '=', COLOR_VENDOR_DIAG,
+	print_packet(tv, NULL, '=', index, NULL, COLOR_VENDOR_DIAG,
 					"Vendor Diagnostic", NULL, extra_str);
 
 	switch (manufacturer) {
@@ -8720,7 +8826,8 @@ void packet_vendor_diag(struct timeval *tv, uint16_t index,
 void packet_system_note(struct timeval *tv, struct ucred *cred,
 					uint16_t index, const void *message)
 {
-	print_packet(tv, cred, index, '=', COLOR_INFO, "Note", message, NULL);
+	print_packet(tv, cred, '=', index, NULL, COLOR_SYSTEM_NOTE,
+					"Note", message, NULL);
 }
 
 void packet_user_logging(struct timeval *tv, struct ucred *cred,
@@ -8780,7 +8887,7 @@ void packet_user_logging(struct timeval *tv, struct ucred *cred,
 			label = "Message";
 	}
 
-	print_packet(tv, cred, index, '=', color, label, message, NULL);
+	print_packet(tv, cred, '=', index, NULL, color, label, message, NULL);
 }
 
 void packet_hci_command(struct timeval *tv, struct ucred *cred, uint16_t index,
@@ -8798,7 +8905,7 @@ void packet_hci_command(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	if (size < HCI_COMMAND_HDR_SIZE) {
 		sprintf(extra_str, "(len %d)", size);
-		print_packet(tv, cred, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 			"Malformed HCI Command packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		return;
@@ -8856,7 +8963,7 @@ void packet_hci_command(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	sprintf(extra_str, "(0x%2.2x|0x%4.4x) plen %d", ogf, ocf, hdr->plen);
 
-	print_packet(tv, cred, index, '<', opcode_color, "HCI Command",
+	print_packet(tv, cred, '<', index, NULL, opcode_color, "HCI Command",
 							opcode_str, extra_str);
 
 	if (!opcode_data || !opcode_data->cmd_func) {
@@ -8899,7 +9006,7 @@ void packet_hci_event(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	if (size < HCI_EVENT_HDR_SIZE) {
 		sprintf(extra_str, "(len %d)", size);
-		print_packet(tv, cred, index, '*', COLOR_ERROR,
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 			"Malformed HCI Event packet", NULL, extra_str);
 		packet_hexdump(data, size);
 		return;
@@ -8928,7 +9035,7 @@ void packet_hci_event(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	sprintf(extra_str, "(0x%2.2x) plen %d", hdr->evt, hdr->plen);
 
-	print_packet(tv, cred, index, '>', event_color, "HCI Event",
+	print_packet(tv, cred, '>', index, NULL, event_color, "HCI Event",
 						event_str, extra_str);
 
 	if (!event_data || !event_data->func) {
@@ -8969,24 +9076,24 @@ void packet_hci_acldata(struct timeval *tv, struct ucred *cred, uint16_t index,
 	uint8_t flags = acl_flags(handle);
 	char handle_str[16], extra_str[32];
 
-	if (size < sizeof(*hdr)) {
+	if (size < HCI_ACL_HDR_SIZE) {
 		if (in)
-			print_packet(tv, cred, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 				"Malformed ACL Data RX packet", NULL, NULL);
 		else
-			print_packet(tv, cred, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 				"Malformed ACL Data TX packet", NULL, NULL);
 		packet_hexdump(data, size);
 		return;
 	}
 
-	data += sizeof(*hdr);
-	size -= sizeof(*hdr);
+	data += HCI_ACL_HDR_SIZE;
+	size -= HCI_ACL_HDR_SIZE;
 
 	sprintf(handle_str, "Handle %d", acl_handle(handle));
 	sprintf(extra_str, "flags 0x%2.2x dlen %d", flags, dlen);
 
-	print_packet(tv, cred, index, in ? '>' : '<', COLOR_HCI_ACLDATA,
+	print_packet(tv, cred, in ? '>' : '<', index, NULL, COLOR_HCI_ACLDATA,
 				in ? "ACL Data RX" : "ACL Data TX",
 						handle_str, extra_str);
 
@@ -9013,10 +9120,10 @@ void packet_hci_scodata(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	if (size < HCI_SCO_HDR_SIZE) {
 		if (in)
-			print_packet(tv, cred, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 				"Malformed SCO Data RX packet", NULL, NULL);
 		else
-			print_packet(tv, cred, index, '*', COLOR_ERROR,
+			print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 				"Malformed SCO Data TX packet", NULL, NULL);
 		packet_hexdump(data, size);
 		return;
@@ -9028,7 +9135,7 @@ void packet_hci_scodata(struct timeval *tv, struct ucred *cred, uint16_t index,
 	sprintf(handle_str, "Handle %d", acl_handle(handle));
 	sprintf(extra_str, "flags 0x%2.2x dlen %d", flags, hdr->dlen);
 
-	print_packet(tv, cred, index, in ? '>' : '<', COLOR_HCI_SCODATA,
+	print_packet(tv, cred, in ? '>' : '<', index, NULL, COLOR_HCI_SCODATA,
 				in ? "SCO Data RX" : "SCO Data TX",
 						handle_str, extra_str);
 
@@ -9041,6 +9148,1717 @@ void packet_hci_scodata(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	if (filter_mask & PACKET_FILTER_SHOW_SCO_DATA)
 		packet_hexdump(data, size);
+}
+
+void packet_ctrl_open(struct timeval *tv, struct ucred *cred, uint16_t index,
+					const void *data, uint16_t size)
+{
+	uint32_t cookie;
+	uint16_t format;
+	char channel[11];
+
+	if (size < 6) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed Control Open packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	cookie = get_le32(data);
+	format = get_le16(data + 4);
+
+	data += 6;
+	size -= 6;
+
+	sprintf(channel, "0x%4.4x", cookie);
+
+	if (format == CTRL_MGMT && size >= 8) {
+		uint8_t version;
+		uint16_t revision;
+		uint32_t flags;
+		uint8_t ident_len;
+		const char *comm;
+		char details[48];
+
+		version = get_u8(data);
+		revision = get_le16(data + 1);
+		flags = get_le32(data + 3);
+		ident_len = get_u8(data + 7);
+
+		data += 8;
+		size -= 8;
+
+		comm = ident_len > 0 ? data : "unknown";
+
+		data += ident_len;
+		size -= ident_len;
+
+		assign_ctrl(cookie, format, comm);
+
+		sprintf(details, "%sversion %u.%u",
+				flags & 0x0001 ? "(privileged) " : "",
+				version, revision);
+
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_OPEN,
+						"MGMT Open", comm, details);
+	} else {
+		char label[7];
+
+		assign_ctrl(cookie, format, NULL);
+
+		sprintf(label, "0x%4.4x", format);
+
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_OPEN,
+						"Control Open", label, NULL);
+	}
+
+	packet_hexdump(data, size);
+}
+
+void packet_ctrl_close(struct timeval *tv, struct ucred *cred, uint16_t index,
+					const void *data, uint16_t size)
+{
+	uint32_t cookie;
+	uint16_t format;
+	char channel[11], label[22];
+
+	if (size < 4) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed Control Close packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	cookie = get_le32(data);
+
+	data += 4;
+	size -= 4;
+
+	sprintf(channel, "0x%4.4x", cookie);
+
+	release_ctrl(cookie, &format, label);
+
+	if (format == CTRL_MGMT) {
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
+						"MGMT Close", label, NULL);
+	} else {
+		sprintf(label, "0x%4.4x", format);
+
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
+						"Control Close", label, NULL);
+	}
+
+	packet_hexdump(data, size);
+}
+
+static const struct {
+	uint8_t status;
+	const char *str;
+} mgmt_status_table[] = {
+	{ 0x00, "Success"		},
+	{ 0x01, "Unknown Command"	},
+	{ 0x02, "Not Connected"		},
+	{ 0x03, "Failed"		},
+	{ 0x04, "Connect Failed"	},
+	{ 0x05, "Authentication Failed"	},
+	{ 0x06, "Not Paired"		},
+	{ 0x07, "No Resources"		},
+	{ 0x08, "Timeout"		},
+	{ 0x09, "Already Connected"	},
+	{ 0x0a, "Busy"			},
+	{ 0x0b, "Rejected"		},
+	{ 0x0c, "Not Supported"		},
+	{ 0x0d, "Invalid Parameters"	},
+	{ 0x0e, "Disconnected"		},
+	{ 0x0f, "Not Powered"		},
+	{ 0x10, "Cancelled"		},
+	{ 0x11, "Invalid Index"		},
+	{ 0x12, "RFKilled"		},
+	{ 0x13, "Already Paired"	},
+	{ 0x14, "Permission Denied"	},
+	{ }
+};
+
+static void mgmt_print_status(uint8_t status)
+{
+	const char *str = "Unknown";
+	const char *color_on, *color_off;
+	bool unknown = true;
+	int i;
+
+	for (i = 0; mgmt_status_table[i].str; i++) {
+		if (mgmt_status_table[i].status == status) {
+			str = mgmt_status_table[i].str;
+			unknown = false;
+			break;
+		}
+	}
+
+	if (use_color()) {
+		if (status) {
+			if (unknown)
+				color_on = COLOR_UNKNOWN_ERROR;
+			else
+				color_on = COLOR_RED;
+		} else
+			color_on = COLOR_GREEN;
+		color_off = COLOR_OFF;
+	} else {
+		color_on = "";
+		color_off = "";
+	}
+
+	print_field("Status: %s%s%s (0x%2.2x)",
+				color_on, str, color_off, status);
+}
+
+static void mgmt_print_address(const uint8_t *address, uint8_t type)
+{
+	switch (type) {
+	case 0x00:
+		print_addr_resolve("BR/EDR Address", address, 0x00, false);
+		break;
+	case 0x01:
+		print_addr_resolve("LE Address", address, 0x00, false);
+		break;
+	case 0x02:
+		print_addr_resolve("LE Address", address, 0x01, false);
+		break;
+	default:
+		print_addr_resolve("Address", address, 0xff, false);
+		break;
+	}
+}
+
+static const struct {
+	uint8_t bit;
+	const char *str;
+} mgmt_address_type_table[] = {
+	{  0, "BR/EDR"		},
+	{  1, "LE Public"	},
+	{  2, "LE Random"	},
+	{ }
+};
+
+static void mgmt_print_address_type(uint8_t type)
+{
+	uint8_t mask = type;
+	int i;
+
+	print_field("Address type: 0x%2.2x", type);
+
+	for (i = 0; mgmt_address_type_table[i].str; i++) {
+		if (type & (1 << mgmt_address_type_table[i].bit)) {
+			print_field("  %s", mgmt_address_type_table[i].str);
+			mask &= ~(1 << mgmt_address_type_table[i].bit);
+		}
+	}
+
+	if (mask)
+		print_text(COLOR_UNKNOWN_ADDRESS_TYPE, "  Unknown address type"
+							" (0x%2.2x)", mask);
+}
+
+static void mgmt_print_version(uint8_t version)
+{
+	packet_print_version("Version", version, NULL, 0x0000);
+}
+
+static void mgmt_print_manufacturer(uint16_t manufacturer)
+{
+	packet_print_company("Manufacturer", manufacturer);
+}
+
+static const struct {
+	uint8_t bit;
+	const char *str;
+} mgmt_options_table[] = {
+	{  0, "External configuration"			},
+	{  1, "Bluetooth public address configuration"	},
+	{ }
+};
+
+static void mgmt_print_options(const char *label, uint32_t options)
+{
+	uint32_t mask = options;
+	int i;
+
+	print_field("%s: 0x%8.8x", label, options);
+
+	for (i = 0; mgmt_options_table[i].str; i++) {
+		if (options & (1 << mgmt_options_table[i].bit)) {
+			print_field("  %s", mgmt_options_table[i].str);
+			mask &= ~(1 << mgmt_options_table[i].bit);
+		}
+	}
+
+	if (mask)
+		print_text(COLOR_UNKNOWN_OPTIONS_BIT, "  Unknown options"
+							" (0x%8.8x)", mask);
+}
+
+static const struct {
+	uint8_t bit;
+	const char *str;
+} mgmt_settings_table[] = {
+	{  0, "Powered"			},
+	{  1, "Connectable"		},
+	{  2, "Fast Connectable"	},
+	{  3, "Discoverable"		},
+	{  4, "Bondable"		},
+	{  5, "Link Security"		},
+	{  6, "Secure Simple Pairing"	},
+	{  7, "BR/EDR"			},
+	{  8, "High Speed"		},
+	{  9, "Low Energy"		},
+	{ 10, "Advertising"		},
+	{ 11, "Secure Connections"	},
+	{ 12, "Debug Keys"		},
+	{ 13, "Privacy"			},
+	{ 14, "Controller Configuration"},
+	{ 15, "Static Address"		},
+	{ }
+};
+
+static void mgmt_print_settings(const char *label, uint32_t settings)
+{
+	uint32_t mask = settings;
+	int i;
+
+	print_field("%s: 0x%8.8x", label, settings);
+
+	for (i = 0; mgmt_settings_table[i].str; i++) {
+		if (settings & (1 << mgmt_settings_table[i].bit)) {
+			print_field("  %s", mgmt_settings_table[i].str);
+			mask &= ~(1 << mgmt_settings_table[i].bit);
+		}
+	}
+
+	if (mask)
+		print_text(COLOR_UNKNOWN_SETTINGS_BIT, "  Unknown settings"
+							" (0x%8.8x)", mask);
+}
+
+static void mgmt_print_name(const void *data)
+{
+	print_field("Name: %s", (char *) data);
+	print_field("Short name: %s", (char *) (data + 249));
+}
+
+static void mgmt_print_uuid(const void *data)
+{
+	const uint8_t *uuid = data;
+
+	print_field("UUID: %8.8x-%4.4x-%4.4x-%4.4x-%8.8x%4.4x",
+				get_le32(&uuid[12]), get_le16(&uuid[10]),
+				get_le16(&uuid[8]), get_le16(&uuid[6]),
+				get_le32(&uuid[2]), get_le16(&uuid[0]));
+}
+
+static void mgmt_print_enable(const char *label, uint8_t enable)
+{
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("%s: %s (0x%2.2x)", label, str, enable);
+}
+
+static void mgmt_print_io_capability(uint8_t capability)
+{
+	const char *str;
+
+	switch (capability) {
+	case 0x00:
+		str = "DisplayOnly";
+		break;
+	case 0x01:
+		str = "DisplayYesNo";
+		break;
+	case 0x02:
+		str = "KeyboardOnly";
+		break;
+	case 0x03:
+		str = "NoInputNoOutput";
+		break;
+	case 0x04:
+		str = "KeyboardDisplay";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Capability: %s (0x%2.2x)", str, capability);
+}
+
+static const struct {
+	uint8_t bit;
+	const char *str;
+} mgmt_device_flags_table[] = {
+	{  0, "Confirm Name"	},
+	{  1, "Legacy Pairing"	},
+	{  2, "Not Connectable"	},
+	{ }
+};
+
+static void mgmt_print_device_flags(uint32_t flags)
+{
+	uint32_t mask = flags;
+	int i;
+
+	print_field("Flags: 0x%8.8x", flags);
+
+	for (i = 0; mgmt_device_flags_table[i].str; i++) {
+		if (flags & (1 << mgmt_device_flags_table[i].bit)) {
+			print_field("  %s", mgmt_device_flags_table[i].str);
+			mask &= ~(1 << mgmt_device_flags_table[i].bit);
+		}
+	}
+
+	if (mask)
+		print_text(COLOR_UNKNOWN_DEVICE_FLAG, "  Unknown device flag"
+							" (0x%8.8x)", mask);
+}
+
+static void mgmt_print_device_action(uint8_t action)
+{
+	const char *str;
+
+	switch (action) {
+	case 0x00:
+		str = "Background scan for device";
+		break;
+	case 0x01:
+		str = "Allow incoming connection";
+		break;
+	case 0x02:
+		str = "Auto-connect remote device";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Action: %s (0x%2.2x)", str, action);
+}
+
+static void mgmt_null_cmd(const void *data, uint16_t size)
+{
+}
+
+static void mgmt_null_rsp(const void *data, uint16_t size)
+{
+}
+
+static void mgmt_read_version_info_rsp(const void *data, uint16_t size)
+{
+	uint8_t version;
+	uint16_t revision;
+
+	version = get_u8(data);
+	revision = get_le16(data + 1);
+
+	print_field("Version: %u.%u", version, revision);
+}
+
+static void mgmt_print_commands(const void *data, uint16_t num);
+static void mgmt_print_events(const void *data, uint16_t num);
+
+static void mgmt_read_supported_commands_rsp(const void *data, uint16_t size)
+{
+	uint16_t num_commands = get_le16(data);
+	uint16_t num_events = get_le16(data + 2);
+
+	if (size - 4 != (num_commands * 2) + (num_events *2)) {
+		packet_hexdump(data, size);
+		return;
+	}
+
+	mgmt_print_commands(data + 4, num_commands);
+	mgmt_print_events(data + 4 + num_commands * 2, num_events);
+}
+
+static void mgmt_read_index_list_rsp(const void *data, uint16_t size)
+{
+	uint16_t num_controllers = get_le16(data);
+	int i;
+
+	print_field("Controllers: %u", num_controllers);
+
+	if (size - 2 != num_controllers * 2) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_controllers; i++) {
+		uint16_t index = get_le16(data + 2 + (i * 2));
+
+		print_field("  hci%u", index);
+	}
+}
+
+static void mgmt_read_controller_info_rsp(const void *data, uint16_t size)
+{
+	uint8_t version = get_u8(data + 6);
+	uint16_t manufacturer = get_le16(data + 7);
+	uint32_t supported_settings = get_le32(data + 9);
+	uint32_t current_settings = get_le32(data + 13);
+
+	mgmt_print_address(data, 0x00);
+	mgmt_print_version(version);
+	mgmt_print_manufacturer(manufacturer);
+	mgmt_print_settings("Supported settings", supported_settings);
+	mgmt_print_settings("Current settings", current_settings);
+	print_dev_class(data + 17);
+	mgmt_print_name(data + 20);
+}
+
+static void mgmt_set_powered_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Powered", enable);
+}
+
+static void mgmt_set_discoverable_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+	uint16_t timeout = get_le16(data + 1);
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "General";
+		break;
+	case 0x02:
+		str = "Limited";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Discoverable: %s (0x%2.2x)", str, enable);
+	print_field("Timeout: %u", timeout);
+}
+
+static void mgmt_set_connectable_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Connectable", enable);
+}
+
+static void mgmt_set_fast_connectable_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Fast Connectable", enable);
+}
+
+static void mgmt_set_bondable_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Bondable", enable);
+}
+
+static void mgmt_set_link_security_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Link Security", enable);
+}
+
+static void mgmt_set_secure_simple_pairing_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Secure Simple Pairing", enable);
+}
+
+static void mgmt_set_high_speed_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("High Speed", enable);
+}
+
+static void mgmt_set_low_energy_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Low Energy", enable);
+}
+
+static void mgmt_new_settings_rsp(const void *data, uint16_t size)
+{
+	uint32_t settings = get_le32(data);
+
+	mgmt_print_settings("Current settings", settings);
+}
+
+static void mgmt_set_device_class_cmd(const void *data, uint16_t size)
+{
+	uint8_t major = get_u8(data);
+	uint8_t minor = get_u8(data + 1);
+
+	print_field("Major class: 0x%2.2x", major);
+	print_field("Minor class: 0x%2.2x", minor);
+}
+
+static void mgmt_set_device_class_rsp(const void *data, uint16_t size)
+{
+	print_dev_class(data);
+}
+
+static void mgmt_set_local_name_cmd(const void *data, uint16_t size)
+{
+	mgmt_print_name(data);
+}
+
+static void mgmt_set_local_name_rsp(const void *data, uint16_t size)
+{
+	mgmt_print_name(data);
+}
+
+static void mgmt_add_uuid_cmd(const void *data, uint16_t size)
+{
+	uint8_t service_class = get_u8(data + 16);
+
+	mgmt_print_uuid(data);
+	print_field("Service class: 0x%2.2x", service_class);
+}
+
+static void mgmt_add_uuid_rsp(const void *data, uint16_t size)
+{
+	print_dev_class(data);
+}
+
+static void mgmt_remove_uuid_cmd(const void *data, uint16_t size)
+{
+	mgmt_print_uuid(data);
+}
+
+static void mgmt_remove_uuid_rsp(const void *data, uint16_t size)
+{
+	print_dev_class(data);
+}
+
+static void mgmt_disconnect_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_disconnect_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_get_connections_rsp(const void *data, uint16_t size)
+{
+	uint16_t num_connections = get_le16(data);
+	int i;
+
+	print_field("Connections: %u", num_connections);
+
+	if (size - 2 != num_connections * 7) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_connections; i++) {
+		uint16_t address_type = get_le16(data + 2 + (i * 7) + 6);
+
+		mgmt_print_address(data + 2 + (i * 7), address_type);
+	}
+}
+
+static void mgmt_set_io_capability_cmd(const void *data, uint16_t size)
+{
+	uint8_t capability = get_u8(data);
+
+	mgmt_print_io_capability(capability);
+}
+
+static void mgmt_pair_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t capability = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_io_capability(capability);
+}
+
+static void mgmt_pair_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_cancel_pair_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_cancel_pair_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_unpair_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t disconnect = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_enable("Disconnect", disconnect);
+}
+
+static void mgmt_unpair_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_start_discovery_cmd(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_start_discovery_rsp(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_stop_discovery_cmd(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_stop_discovery_rsp(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_confirm_name_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t name_known = get_u8(data + 7);
+	const char *str;
+
+	mgmt_print_address(data, address_type);
+
+	switch (name_known) {
+	case 0x00:
+		str = "No";
+		break;
+	case 0x01:
+		str = "Yes";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Name known: %s (0x%2.2x)", str, name_known);
+}
+
+static void mgmt_confirm_name_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_block_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_block_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_unblock_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_unblock_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_set_device_id_cmd(const void *data, uint16_t size)
+{
+	print_device_id(data, size);
+}
+
+static void mgmt_set_advertising_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	case 0x02:
+		str = "Connectable";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Advertising: %s (0x%2.2x)", str, enable);
+}
+
+static void mgmt_set_bredr_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("BR/EDR", enable);
+}
+
+static void mgmt_set_secure_connections_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	case 0x02:
+		str = "Only";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Secure Connections: %s (0x%2.2x)", str, enable);
+}
+
+static void mgmt_set_debug_keys_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	case 0x02:
+		str = "Generate";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Debug Keys: %s (0x%2.2x)", str, enable);
+}
+
+static void mgmt_set_privacy_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+	const char *str;
+
+	switch (enable) {
+	case 0x00:
+		str = "Disabled";
+		break;
+	case 0x01:
+		str = "Enabled";
+		break;
+	case 0x02:
+		str = "Limited";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Privacy: %s (0x%2.2x)", str, enable);
+}
+
+static void mgmt_add_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t action = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_device_action(action);
+}
+
+static void mgmt_add_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_remove_device_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_remove_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_read_unconf_index_list_rsp(const void *data, uint16_t size)
+{
+	uint16_t num_controllers = get_le16(data);
+	int i;
+
+	print_field("Controllers: %u", num_controllers);
+
+	if (size - 2 != num_controllers * 2) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_controllers; i++) {
+		uint16_t index = get_le16(data + 2 + (i * 2));
+
+		print_field("  hci%u", index);
+	}
+}
+
+static void mgmt_read_controller_conf_info_rsp(const void *data, uint16_t size)
+{
+	uint16_t manufacturer = get_le16(data);
+	uint32_t supported_options = get_le32(data + 2);
+	uint32_t missing_options = get_le32(data + 6);
+
+	mgmt_print_manufacturer(manufacturer);
+	mgmt_print_options("Supported options", supported_options);
+	mgmt_print_options("Missing options", missing_options);
+}
+
+static void mgmt_read_ext_index_list_rsp(const void *data, uint16_t size)
+{
+	uint16_t num_controllers = get_le16(data);
+	int i;
+
+	print_field("Controllers: %u", num_controllers);
+
+	if (size - 2 != num_controllers * 4) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_controllers; i++) {
+		uint16_t index = get_le16(data + 2 + (i * 4));
+		uint8_t type = get_u8(data + 4 + (i * 4));
+		uint8_t bus = get_u8(data + 5 + (i * 4));
+
+		print_field("  hci%u - type 0x%2.2x - bus 0x%2.2x",
+							index, type, bus);
+	}
+}
+
+static void mgmt_read_local_oob_ext_data_cmd(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_start_limited_discovery_cmd(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+static void mgmt_start_limited_discovery_rsp(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
+struct mgmt_data {
+	uint16_t opcode;
+	const char *str;
+	void (*func) (const void *data, uint16_t size);
+	uint16_t size;
+	bool fixed;
+	void (*rsp_func) (const void *data, uint16_t size);
+	uint16_t rsp_size;
+	bool rsp_fixed;
+};
+
+static const struct mgmt_data mgmt_command_table[] = {
+	{ 0x0001, "Read Management Version Information",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_version_info_rsp, 3, true },
+	{ 0x0002, "Read Management Supported Commands",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_supported_commands_rsp, 4, false },
+	{ 0x0003, "Read Controller Index List",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_index_list_rsp, 2, false },
+	{ 0x0004, "Read Controller Information",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_controller_info_rsp, 280, true },
+	{ 0x0005, "Set Powered",
+				mgmt_set_powered_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x0006, "Set Discoverable",
+				mgmt_set_discoverable_cmd, 3, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x0007, "Set Connectable",
+				mgmt_set_connectable_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x0008, "Set Fast Connectable",
+				mgmt_set_fast_connectable_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x0009, "Set Bondable",
+				mgmt_set_bondable_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x000a, "Set Link Security",
+				mgmt_set_link_security_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x000b, "Set Secure Simple Pairing",
+				mgmt_set_secure_simple_pairing_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x000c, "Set High Speed",
+				mgmt_set_high_speed_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x000d, "Set Low Energy",
+				mgmt_set_low_energy_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x000e, "Set Device Class",
+				mgmt_set_device_class_cmd, 2, true,
+				mgmt_set_device_class_rsp, 3, true },
+	{ 0x000f, "Set Local Name",
+				mgmt_set_local_name_cmd, 260, true,
+				mgmt_set_local_name_rsp, 260, true },
+	{ 0x0010, "Add UUID",
+				mgmt_add_uuid_cmd, 17, true,
+				mgmt_add_uuid_rsp, 3, true },
+	{ 0x0011, "Remove UUID",
+				mgmt_remove_uuid_cmd, 16, true,
+				mgmt_remove_uuid_rsp, 3, true },
+	{ 0x0012, "Load Link Keys" },
+	{ 0x0013, "Load Long Term Keys" },
+	{ 0x0014, "Disconnect",
+				mgmt_disconnect_cmd, 7, true,
+				mgmt_disconnect_rsp, 7, true },
+	{ 0x0015, "Get Connections",
+				mgmt_null_cmd, 0, true,
+				mgmt_get_connections_rsp, 2, false },
+	{ 0x0016, "PIN Code Reply" },
+	{ 0x0017, "PIN Code Negative Reply" },
+	{ 0x0018, "Set IO Capability",
+				mgmt_set_io_capability_cmd, 1, true,
+				mgmt_null_rsp, 0, true },
+	{ 0x0019, "Pair Device",
+				mgmt_pair_device_cmd, 8, true,
+				mgmt_pair_device_rsp, 7, true },
+	{ 0x001a, "Cancel Pair Device",
+				mgmt_cancel_pair_device_cmd, 7, true,
+				mgmt_cancel_pair_device_rsp, 7, true },
+	{ 0x001b, "Unpair Device",
+				mgmt_unpair_device_cmd, 8, true,
+				mgmt_unpair_device_rsp, 7, true },
+	{ 0x001c, "User Confirmation Reply" },
+	{ 0x001d, "User Confirmation Negative Reply" },
+	{ 0x001e, "User Passkey Reply" },
+	{ 0x001f, "User Passkey Negative Reply" },
+	{ 0x0020, "Read Local Out Of Band Data",
+				mgmt_null_cmd, 0, true },
+	{ 0x0021, "Add Remote Out Of Band Data" },
+	{ 0x0022, "Remove Remote Out Of Band Data" },
+	{ 0x0023, "Start Discovery",
+				mgmt_start_discovery_cmd, 1, true,
+				mgmt_start_discovery_rsp, 1, true },
+	{ 0x0024, "Stop Discovery",
+				mgmt_stop_discovery_cmd, 1, true,
+				mgmt_stop_discovery_rsp, 1, true },
+	{ 0x0025, "Confirm Name",
+				mgmt_confirm_name_cmd, 8, true,
+				mgmt_confirm_name_rsp, 7, true },
+	{ 0x0026, "Block Device",
+				mgmt_block_device_cmd, 7, true,
+				mgmt_block_device_rsp, 7, true },
+	{ 0x0027, "Unblock Device",
+				mgmt_unblock_device_cmd, 7, true,
+				mgmt_unblock_device_rsp, 7, true },
+	{ 0x0028, "Set Device ID",
+				mgmt_set_device_id_cmd, 8, true,
+				mgmt_null_rsp, 0, true },
+	{ 0x0029, "Set Advertising",
+				mgmt_set_advertising_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x002a, "Set BR/EDR",
+				mgmt_set_bredr_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x002b, "Set Static Address" },
+	{ 0x002c, "Set Scan Parameters" },
+	{ 0x002d, "Set Secure Connections",
+				mgmt_set_secure_connections_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x002e, "Set Debug Keys",
+				mgmt_set_debug_keys_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x002f, "Set Privacy",
+				mgmt_set_privacy_cmd, 1, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x0030, "Load Identity Resolving Keys" },
+	{ 0x0031, "Get Connection Information" },
+	{ 0x0032, "Get Clock Information" },
+	{ 0x0033, "Add Device",
+				mgmt_add_device_cmd, 8, true,
+				mgmt_add_device_rsp, 7, true },
+	{ 0x0034, "Remove Device",
+				mgmt_remove_device_cmd, 7, true,
+				mgmt_remove_device_rsp, 7, true },
+	{ 0x0035, "Load Connection Parameters" },
+	{ 0x0036, "Read Unconfigured Controller Index List",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_unconf_index_list_rsp, 2, false },
+	{ 0x0037, "Read Controller Configuration Information",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_controller_conf_info_rsp, 10, true },
+	{ 0x0038, "Set External Configuration" },
+	{ 0x0039, "Set Public Address" },
+	{ 0x003a, "Start Service Discovery" },
+	{ 0x003b, "Read Local Out Of Band Extended Data",
+				mgmt_read_local_oob_ext_data_cmd, 1, true },
+	{ 0x003c, "Read Extended Controller Index List",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_ext_index_list_rsp, 2, false },
+	{ 0x003d, "Read Advertising Features",
+				mgmt_null_cmd, 0, true },
+	{ 0x003e, "Add Advertising " },
+	{ 0x003f, "Remove Advertising" },
+	{ 0x0040, "Get Advertising Size Information" },
+	{ 0x0041, "Start Limited Discovery",
+				mgmt_start_limited_discovery_cmd, 1, true,
+				mgmt_start_limited_discovery_rsp, 1, true },
+	{ }
+};
+
+static void mgmt_null_evt(const void *data, uint16_t size)
+{
+}
+
+static void mgmt_command_complete_evt(const void *data, uint16_t size)
+{
+	uint16_t opcode;
+	uint8_t status;
+	const struct mgmt_data *mgmt_data = NULL;
+	const char *mgmt_color, *mgmt_str;
+	int i;
+
+	opcode = get_le16(data);
+	status = get_u8(data + 2);
+
+	data += 3;
+	size -= 3;
+
+	for (i = 0; mgmt_command_table[i].str; i++) {
+		if (mgmt_command_table[i].opcode == opcode) {
+			mgmt_data = &mgmt_command_table[i];
+			break;
+		}
+	}
+
+	if (mgmt_data) {
+		if (mgmt_data->rsp_func)
+			mgmt_color = COLOR_CTRL_COMMAND;
+		else
+			mgmt_color = COLOR_CTRL_COMMAND_UNKNOWN;
+		mgmt_str = mgmt_data->str;
+	} else {
+		mgmt_color = COLOR_CTRL_COMMAND_UNKNOWN;
+		mgmt_str = "Unknown";
+	}
+
+	print_indent(6, mgmt_color, "", mgmt_str, COLOR_OFF,
+					" (0x%4.4x) plen %u", opcode, size);
+
+	mgmt_print_status(status);
+
+	if (!mgmt_data || !mgmt_data->rsp_func) {
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (mgmt_data->rsp_fixed) {
+		if (size != mgmt_data->rsp_size) {
+			print_text(COLOR_ERROR, "invalid packet size");
+			packet_hexdump(data, size);
+			return;
+		}
+	} else {
+		if (size < mgmt_data->rsp_size) {
+			print_text(COLOR_ERROR, "too short packet");
+			packet_hexdump(data, size);
+			return;
+		}
+	}
+
+	mgmt_data->rsp_func(data, size);
+}
+
+static void mgmt_command_status_evt(const void *data, uint16_t size)
+{
+	uint16_t opcode;
+	uint8_t status;
+	const struct mgmt_data *mgmt_data = NULL;
+	const char *mgmt_color, *mgmt_str;
+	int i;
+
+	opcode = get_le16(data);
+	status = get_u8(data + 2);
+
+	for (i = 0; mgmt_command_table[i].str; i++) {
+		if (mgmt_command_table[i].opcode == opcode) {
+			mgmt_data = &mgmt_command_table[i];
+			break;
+		}
+	}
+
+	if (mgmt_data) {
+		mgmt_color = COLOR_CTRL_COMMAND;
+		mgmt_str = mgmt_data->str;
+	} else {
+		mgmt_color = COLOR_CTRL_COMMAND_UNKNOWN;
+		mgmt_str = "Unknown";
+	}
+
+	print_indent(6, mgmt_color, "", mgmt_str, COLOR_OFF,
+						" (0x%4.4x)", opcode);
+
+	mgmt_print_status(status);
+}
+
+static void mgmt_controller_error_evt(const void *data, uint16_t size)
+{
+	uint8_t error = get_u8(data);
+
+	print_field("Error: 0x%2.2x", error);
+}
+
+static void mgmt_new_settings_evt(const void *data, uint16_t size)
+{
+	uint32_t settings = get_le32(data);
+
+	mgmt_print_settings("Current settings", settings);
+}
+
+static void mgmt_class_of_dev_changed_evt(const void *data, uint16_t size)
+{
+	print_dev_class(data);
+}
+
+static void mgmt_local_name_changed_evt(const void *data, uint16_t size)
+{
+	mgmt_print_name(data);
+}
+
+static void mgmt_device_connected_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint32_t flags = get_le32(data + 7);
+	uint16_t data_len = get_le16(data + 11);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_device_flags(flags);
+	print_field("Data length: %u", data_len);
+	print_eir(data + 13, size - 13, false);
+}
+
+static void mgmt_device_disconnected_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t reason = get_u8(data + 7);
+	const char *str;
+
+	mgmt_print_address(data, address_type);
+
+	switch (reason) {
+	case 0x00:
+		str = "Unspecified";
+		break;
+	case 0x01:
+		str = "Connection timeout";
+		break;
+	case 0x02:
+		str = "Connection terminated by local host";
+		break;
+	case 0x03:
+		str = "Connection terminated by remote host";
+		break;
+	case 0x04:
+		str = "Connection terminated due to authentication failure";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Reason: %s (0x%2.2x)", str, reason);
+}
+
+static void mgmt_connect_failed_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t status = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_status(status);
+}
+
+static void mgmt_authentication_failed_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t status = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_status(status);
+}
+
+static void mgmt_device_found_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	int8_t rssi = get_s8(data + 7);
+	uint32_t flags = get_le32(data + 8);
+	uint16_t data_len = get_le16(data + 12);
+
+	mgmt_print_address(data, address_type);
+	print_rssi(rssi);
+	mgmt_print_device_flags(flags);
+	print_field("Data length: %u", data_len);
+	print_eir(data + 14, size - 14, false);
+}
+
+static void mgmt_discovering_evt(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	uint8_t enable = get_u8(data + 1);
+
+	mgmt_print_address_type(type);
+	mgmt_print_enable("Discovery", enable);
+}
+
+static void mgmt_device_blocked_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_device_unblocked_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_device_unpaired_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_device_added_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t action = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_device_action(action);
+}
+
+static void mgmt_device_removed_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_new_conf_options_evt(const void *data, uint16_t size)
+{
+	uint32_t missing_options = get_le32(data);
+
+	mgmt_print_options("Missing options", missing_options);
+}
+
+static void mgmt_ext_index_added_evt(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	uint8_t bus = get_u8(data + 1);
+
+	print_field("type 0x%2.2x - bus 0x%2.2x", type, bus);
+}
+
+static void mgmt_ext_index_removed_evt(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	uint8_t bus = get_u8(data + 1);
+
+	print_field("type 0x%2.2x - bus 0x%2.2x", type, bus);
+}
+
+static const struct mgmt_data mgmt_event_table[] = {
+	{ 0x0001, "Command Complete",
+			mgmt_command_complete_evt, 3, false },
+	{ 0x0002, "Command Status",
+			mgmt_command_status_evt, 3, true },
+	{ 0x0003, "Controller Error",
+			mgmt_controller_error_evt, 1, true },
+	{ 0x0004, "Index Added",
+			mgmt_null_evt, 0, true },
+	{ 0x0005, "Index Removed",
+			mgmt_null_evt, 0, true },
+	{ 0x0006, "New Settings",
+			mgmt_new_settings_evt, 4, true },
+	{ 0x0007, "Class Of Device Changed",
+			mgmt_class_of_dev_changed_evt, 3, true },
+	{ 0x0008, "Local Name Changed",
+			mgmt_local_name_changed_evt, 260, true },
+	{ 0x0009, "New Link Key" },
+	{ 0x000a, "New Long Term Key" },
+	{ 0x000b, "Device Connected",
+			mgmt_device_connected_evt, 13, false },
+	{ 0x000c, "Device Disconnected",
+			mgmt_device_disconnected_evt, 8, true },
+	{ 0x000d, "Connect Failed",
+			mgmt_connect_failed_evt, 8, true },
+	{ 0x000e, "PIN Code Request" },
+	{ 0x000f, "User Confirmation Request" },
+	{ 0x0010, "User Passkey Request" },
+	{ 0x0011, "Authentication Failed",
+			mgmt_authentication_failed_evt, 8, true },
+	{ 0x0012, "Device Found",
+			mgmt_device_found_evt, 14, false },
+	{ 0x0013, "Discovering",
+			mgmt_discovering_evt, 2, true },
+	{ 0x0014, "Device Blocked",
+			mgmt_device_blocked_evt, 7, true },
+	{ 0x0015, "Device Unblocked",
+			mgmt_device_unblocked_evt, 7, true },
+	{ 0x0016, "Device Unpaired",
+			mgmt_device_unpaired_evt, 7, true },
+	{ 0x0017, "Passkey Notify" },
+	{ 0x0018, "New Identity Resolving Key" },
+	{ 0x0019, "New Signature Resolving Key" },
+	{ 0x001a, "Device Added",
+			mgmt_device_added_evt, 8, true },
+	{ 0x001b, "Device Removed",
+			mgmt_device_removed_evt, 7, true },
+	{ 0x001c, "New Connection Parameter" },
+	{ 0x001d, "Unconfigured Index Added",
+			mgmt_null_evt, 0, true },
+	{ 0x001e, "Unconfigured Index Removed",
+			mgmt_null_evt, 0, true },
+	{ 0x001f, "New Configuration Options",
+			mgmt_new_conf_options_evt, 4, true },
+	{ 0x0020, "Extended Index Added",
+			mgmt_ext_index_added_evt, 2, true },
+	{ 0x0021, "Extended Index Removed",
+			mgmt_ext_index_removed_evt, 2, true },
+	{ 0x0022, "Local Out Of Band Extended Data Updated" },
+	{ 0x0023, "Advertising Added" },
+	{ 0x0024, "Advertising Removed" },
+	{ }
+};
+
+static void mgmt_print_commands(const void *data, uint16_t num)
+{
+	int i;
+
+	print_field("Commands: %u", num);
+
+	for (i = 0; i < num; i++) {
+		uint16_t opcode = get_le16(data + (i * 2));
+		const char *str = NULL;
+		int n;
+
+		for (n = 0; mgmt_command_table[n].str; n++) {
+			if (mgmt_command_table[n].opcode == opcode) {
+				str = mgmt_command_table[n].str;
+				break;
+			}
+		}
+
+		print_field("  %s (0x%4.4x)", str ?: "Reserved", opcode);
+	}
+}
+
+static void mgmt_print_events(const void *data, uint16_t num)
+{
+	int i;
+
+	print_field("Events: %u", num);
+
+	for (i = 0; i < num; i++) {
+		uint16_t opcode = get_le16(data + (i * 2));
+		const char *str = NULL;
+		int n;
+
+		for (n = 0; mgmt_event_table[n].str; n++) {
+			if (mgmt_event_table[n].opcode == opcode) {
+				str = mgmt_event_table[n].str;
+				break;
+			}
+		}
+
+		print_field("  %s (0x%4.4x)", str ?: "Reserved", opcode);
+	}
+}
+
+void packet_ctrl_command(struct timeval *tv, struct ucred *cred, uint16_t index,
+					const void *data, uint16_t size)
+{
+	uint32_t cookie;
+	uint16_t format, opcode;
+	const struct mgmt_data *mgmt_data = NULL;
+	const char *mgmt_color, *mgmt_str;
+	char channel[11], extra_str[25];
+	int i;
+
+	if (size < 4) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed Control Command packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	cookie = get_le32(data);
+
+	data += 4;
+	size -= 4;
+
+	sprintf(channel, "0x%4.4x", cookie);
+
+	format = get_format(cookie);
+
+	if (format != CTRL_MGMT) {
+		char label[7];
+
+		sprintf(label, "0x%4.4x", format);
+
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
+						"Control Command", label, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (size < 2) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed MGMT Command packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	opcode = get_le16(data);
+
+	data += 2;
+	size -= 2;
+
+	for (i = 0; mgmt_command_table[i].str; i++) {
+		if (mgmt_command_table[i].opcode == opcode) {
+			mgmt_data = &mgmt_command_table[i];
+			break;
+		}
+	}
+
+	if (mgmt_data) {
+		if (mgmt_data->func)
+			mgmt_color = COLOR_CTRL_COMMAND;
+		else
+			mgmt_color = COLOR_CTRL_COMMAND_UNKNOWN;
+		mgmt_str = mgmt_data->str;
+	} else {
+		mgmt_color = COLOR_CTRL_COMMAND_UNKNOWN;
+		mgmt_str = "Unknown";
+	}
+
+	sprintf(extra_str, "(0x%4.4x) plen %d", opcode, size);
+
+	print_packet(tv, cred, '@', index, channel, mgmt_color,
+					"MGMT Command", mgmt_str, extra_str);
+
+	if (!mgmt_data || !mgmt_data->func) {
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (mgmt_data->fixed) {
+		if (size != mgmt_data->size) {
+			print_text(COLOR_ERROR, "invalid packet size");
+			packet_hexdump(data, size);
+			return;
+		}
+	} else {
+		if (size < mgmt_data->size) {
+			print_text(COLOR_ERROR, "too short packet");
+			packet_hexdump(data, size);
+			return;
+		}
+	}
+
+	mgmt_data->func(data, size);
+}
+
+void packet_ctrl_event(struct timeval *tv, struct ucred *cred, uint16_t index,
+					const void *data, uint16_t size)
+{
+	uint32_t cookie;
+	uint16_t format, opcode;
+	const struct mgmt_data *mgmt_data = NULL;
+	const char *mgmt_color, *mgmt_str;
+	char channel[11], extra_str[25];
+	int i;
+
+	if (size < 4) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed Control Event packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	cookie = get_le32(data);
+
+	data += 4;
+	size -= 4;
+
+	sprintf(channel, "0x%4.4x", cookie);
+
+	format = get_format(cookie);
+
+	if (format != CTRL_MGMT) {
+		char label[7];
+
+		sprintf(label, "0x%4.4x", format);
+
+		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
+						"Control Event", label, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (size < 2) {
+		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+				"Malformed MGMT Event packet", NULL, NULL);
+		packet_hexdump(data, size);
+		return;
+	}
+
+	opcode = get_le16(data);
+
+	data += 2;
+	size -= 2;
+
+	for (i = 0; mgmt_event_table[i].str; i++) {
+		if (mgmt_event_table[i].opcode == opcode) {
+			mgmt_data = &mgmt_event_table[i];
+			break;
+		}
+	}
+
+	if (mgmt_data) {
+		if (mgmt_data->func)
+			mgmt_color = COLOR_CTRL_EVENT;
+		else
+			mgmt_color = COLOR_CTRL_EVENT_UNKNOWN;
+		mgmt_str = mgmt_data->str;
+	} else {
+		mgmt_color = COLOR_CTRL_EVENT_UNKNOWN;
+		mgmt_str = "Unknown";
+	}
+
+	sprintf(extra_str, "(0x%4.4x) plen %d", opcode, size);
+
+	print_packet(tv, cred, '@', index, channel, mgmt_color,
+					"MGMT Event", mgmt_str, extra_str);
+
+	if (!mgmt_data || !mgmt_data->func) {
+		packet_hexdump(data, size);
+		return;
+	}
+
+	if (mgmt_data->fixed) {
+		if (size != mgmt_data->size) {
+			print_text(COLOR_ERROR, "invalid packet size");
+			packet_hexdump(data, size);
+			return;
+		}
+	} else {
+		if (size < mgmt_data->size) {
+			print_text(COLOR_ERROR, "too short packet");
+			packet_hexdump(data, size);
+			return;
+		}
+	}
+
+	mgmt_data->func(data, size);
 }
 
 void packet_todo(void)
@@ -9073,5 +10891,23 @@ void packet_todo(void)
 			continue;
 
 		printf("\t%s\n", le_meta_event_table[i].str);
+	}
+
+	printf("MGMT commands with missing decodings:\n");
+
+	for (i = 0; mgmt_command_table[i].str; i++) {
+		if (mgmt_command_table[i].func)
+			continue;
+
+		printf("\t%s\n", mgmt_command_table[i].str);
+	}
+
+	printf("MGMT events with missing decodings:\n");
+
+	for (i = 0; mgmt_event_table[i].str; i++) {
+		if (mgmt_event_table[i].func)
+			continue;
+
+		printf("\t%s\n", mgmt_event_table[i].str);
 	}
 }
