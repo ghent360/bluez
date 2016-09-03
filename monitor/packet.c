@@ -95,6 +95,7 @@
 #define COLOR_UNKNOWN_SETTINGS_BIT	COLOR_WHITE_BG
 #define COLOR_UNKNOWN_ADDRESS_TYPE	COLOR_WHITE_BG
 #define COLOR_UNKNOWN_DEVICE_FLAG	COLOR_WHITE_BG
+#define COLOR_UNKNOWN_ADV_FLAG		COLOR_WHITE_BG
 
 #define COLOR_PHY_PACKET		COLOR_BLUE
 
@@ -107,7 +108,9 @@ static uint16_t index_current = 0;
 
 #define UNKNOWN_MANUFACTURER 0xffff
 
-#define CTRL_MGMT 0x0001
+#define CTRL_RAW  0x0000
+#define CTRL_USER 0x0001
+#define CTRL_MGMT 0x0002
 
 #define MAX_CTRL 64
 
@@ -3896,7 +3899,7 @@ void packet_monitor(struct timeval *tv, struct ucred *cred,
 					data + sizeof(*ul) + ul->ident_len);
 		break;
 	case BTSNOOP_OPCODE_CTRL_OPEN:
-		control_disable_legacy();
+		control_disable_decoding();
 		packet_ctrl_open(tv, cred, index, data, size);
 		break;
 	case BTSNOOP_OPCODE_CTRL_CLOSE:
@@ -9172,13 +9175,15 @@ void packet_ctrl_open(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	sprintf(channel, "0x%4.4x", cookie);
 
-	if (format == CTRL_MGMT && size >= 8) {
+	if ((format == CTRL_RAW || format == CTRL_USER || format == CTRL_MGMT)
+								&& size >= 8) {
 		uint8_t version;
 		uint16_t revision;
 		uint32_t flags;
 		uint8_t ident_len;
 		const char *comm;
 		char details[48];
+		const char *title;
 
 		version = get_u8(data);
 		revision = get_le16(data + 1);
@@ -9199,8 +9204,23 @@ void packet_ctrl_open(struct timeval *tv, struct ucred *cred, uint16_t index,
 				flags & 0x0001 ? "(privileged) " : "",
 				version, revision);
 
+		switch (format) {
+		case CTRL_RAW:
+			title = "RAW Open";
+			break;
+		case CTRL_USER:
+			title = "USER Open";
+			break;
+		case CTRL_MGMT:
+			title = "MGMT Open";
+			break;
+		default:
+			title = "Control Open";
+			break;
+		}
+
 		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_OPEN,
-						"MGMT Open", comm, details);
+						title, comm, details);
 	} else {
 		char label[7];
 
@@ -9221,6 +9241,7 @@ void packet_ctrl_close(struct timeval *tv, struct ucred *cred, uint16_t index,
 	uint32_t cookie;
 	uint16_t format;
 	char channel[11], label[22];
+	const char *title;
 
 	if (size < 4) {
 		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
@@ -9238,15 +9259,24 @@ void packet_ctrl_close(struct timeval *tv, struct ucred *cred, uint16_t index,
 
 	release_ctrl(cookie, &format, label);
 
-	if (format == CTRL_MGMT) {
-		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
-						"MGMT Close", label, NULL);
-	} else {
+	switch (format) {
+	case CTRL_RAW:
+		title = "RAW Close";
+		break;
+	case CTRL_USER:
+		title = "USER Close";
+		break;
+	case CTRL_MGMT:
+		title = "MGMT Close";
+		break;
+	default:
 		sprintf(label, "0x%4.4x", format);
-
-		print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
-						"Control Close", label, NULL);
+		title = "Control Close";
+		break;
 	}
+
+	print_packet(tv, cred, '@', index, channel, COLOR_CTRL_CLOSE,
+							title, label, NULL);
 
 	packet_hexdump(data, size);
 }
@@ -9553,6 +9583,170 @@ static void mgmt_print_device_action(uint8_t action)
 	print_field("Action: %s (0x%2.2x)", str, action);
 }
 
+static const struct {
+	uint8_t bit;
+	const char *str;
+} mgmt_adv_flags_table[] = {
+	{  0, "Switch into Connectable mode"		},
+	{  1, "Advertise as Discoverable"		},
+	{  2, "Advertise as Limited Discoverable"	},
+	{  3, "Add Flags field to Advertising Data"	},
+	{  4, "Add TX Power field to Advertising Data"	},
+	{  5, "Add Appearance field to Scan Response"	},
+	{  6, "Add Local Name in Scan Response"		},
+	{ }
+};
+
+static void mgmt_print_adv_flags(uint32_t flags)
+{
+	uint32_t mask = flags;
+	int i;
+
+	print_field("Flags: 0x%8.8x", flags);
+
+	for (i = 0; mgmt_adv_flags_table[i].str; i++) {
+		if (flags & (1 << mgmt_adv_flags_table[i].bit)) {
+			print_field("  %s", mgmt_adv_flags_table[i].str);
+			mask &= ~(1 << mgmt_adv_flags_table[i].bit);
+		}
+	}
+
+	if (mask)
+		print_text(COLOR_UNKNOWN_ADV_FLAG, "  Unknown advertising flag"
+							" (0x%8.8x)", mask);
+}
+
+static void mgmt_print_store_hint(uint8_t hint)
+{
+	const char *str;
+
+	switch (hint) {
+	case 0x00:
+		str = "No";
+		break;
+	case 0x01:
+		str = "Yes";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Store hint: %s (0x%2.2x)", str, hint);
+}
+
+static void mgmt_print_connection_parameter(const void *data)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint16_t min_conn_interval = get_le16(data + 7);
+	uint16_t max_conn_interval = get_le16(data + 9);
+	uint16_t conn_latency = get_le16(data + 11);
+	uint16_t supv_timeout = get_le16(data + 13);
+
+	mgmt_print_address(data, address_type);
+	print_field("Min connection interval: %u", min_conn_interval);
+	print_field("Max connection interval: %u", max_conn_interval);
+	print_field("Connection latency: %u", conn_latency);
+	print_field("Supervision timeout: %u", supv_timeout);
+}
+
+static void mgmt_print_link_key(const void *data)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t key_type = get_u8(data + 7);
+	uint8_t pin_len = get_u8(data + 24);
+
+	mgmt_print_address(data, address_type);
+	print_key_type(key_type);
+	print_link_key(data + 8);
+	print_field("PIN length: %d", pin_len);
+}
+
+static void mgmt_print_long_term_key(const void *data)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t key_type = get_u8(data + 7);
+	uint8_t master = get_u8(data + 8);
+	uint8_t enc_size = get_u8(data + 9);
+	const char *str;
+
+	mgmt_print_address(data, address_type);
+
+	switch (key_type) {
+	case 0x00:
+		str = "Unauthenticated legacy key";
+		break;
+	case 0x01:
+		str = "Authenticated legacy key";
+		break;
+	case 0x02:
+		str = "Unauthenticated key from P-256";
+		break;
+	case 0x03:
+		str = "Authenticated key from P-256";
+		break;
+	case 0x04:
+		str = "Debug key from P-256";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Key type: %s (0x%2.2x)", str, key_type);
+	print_field("Master: 0x%2.2x", master);
+	print_field("Encryption size: %u", enc_size);
+	print_hex_field("Diversifier", data + 10, 2);
+	print_hex_field("Randomizer", data + 12, 8);
+	print_hex_field("Key", data + 20, 16);
+}
+
+static void mgmt_print_identity_resolving_key(const void *data)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+	print_hex_field("Key", data + 7, 16);
+}
+
+static void mgmt_print_signature_resolving_key(const void *data)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t key_type = get_u8(data + 7);
+	const char *str;
+
+	mgmt_print_address(data, address_type);
+
+	switch (key_type) {
+	case 0x00:
+		str = "Unauthenticated local CSRK";
+		break;
+	case 0x01:
+		str = "Unauthenticated remote CSRK";
+		break;
+	case 0x02:
+		str = "Authenticated local CSRK";
+		break;
+	case 0x03:
+		str = "Authenticated remote CSRK";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("Key type: %s (0x%2.2x)", str, key_type);
+	print_hex_field("Key", data + 8, 16);
+}
+
+static void mgmt_print_oob_data(const void *data)
+{
+	print_hash_p192(data);
+	print_randomizer_p192(data + 16);
+	print_hash_p256(data + 32);
+	print_randomizer_p256(data + 48);
+}
+
 static void mgmt_null_cmd(const void *data, uint16_t size)
 {
 }
@@ -9615,7 +9809,7 @@ static void mgmt_read_controller_info_rsp(const void *data, uint16_t size)
 	uint32_t supported_settings = get_le32(data + 9);
 	uint32_t current_settings = get_le32(data + 13);
 
-	mgmt_print_address(data, 0x00);
+	print_addr_resolve("Address", data, 0x00, false);
 	mgmt_print_version(version);
 	mgmt_print_manufacturer(manufacturer);
 	mgmt_print_settings("Supported settings", supported_settings);
@@ -9707,9 +9901,9 @@ static void mgmt_set_low_energy_cmd(const void *data, uint16_t size)
 
 static void mgmt_new_settings_rsp(const void *data, uint16_t size)
 {
-	uint32_t settings = get_le32(data);
+	uint32_t current_settings = get_le32(data);
 
-	mgmt_print_settings("Current settings", settings);
+	mgmt_print_settings("Current settings", current_settings);
 }
 
 static void mgmt_set_device_class_cmd(const void *data, uint16_t size)
@@ -9759,6 +9953,40 @@ static void mgmt_remove_uuid_rsp(const void *data, uint16_t size)
 	print_dev_class(data);
 }
 
+static void mgmt_load_link_keys_cmd(const void *data, uint16_t size)
+{
+	uint8_t debug_keys = get_u8(data);
+	uint16_t num_keys = get_le16(data + 1);
+	int i;
+
+	mgmt_print_enable("Debug keys", debug_keys);
+	print_field("Keys: %u", num_keys);
+
+	if (size - 3 != num_keys * 25) {
+		packet_hexdump(data + 3, size - 3);
+		return;
+	}
+
+	for (i = 0; i < num_keys; i++)
+		mgmt_print_link_key(data + 3 + (i * 25));
+}
+
+static void mgmt_load_long_term_keys_cmd(const void *data, uint16_t size)
+{
+	uint16_t num_keys = get_le16(data + 1);
+	int i;
+
+	print_field("Keys: %u", num_keys);
+
+	if (size - 2 != num_keys * 36) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_keys; i++)
+		mgmt_print_long_term_key(data + 2 + (i * 36));
+}
+
 static void mgmt_disconnect_cmd(const void *data, uint16_t size)
 {
 	uint8_t address_type = get_u8(data + 6);
@@ -9786,10 +10014,41 @@ static void mgmt_get_connections_rsp(const void *data, uint16_t size)
 	}
 
 	for (i = 0; i < num_connections; i++) {
-		uint16_t address_type = get_le16(data + 2 + (i * 7) + 6);
+		uint8_t address_type = get_u8(data + 2 + (i * 7) + 6);
 
 		mgmt_print_address(data + 2 + (i * 7), address_type);
 	}
+}
+
+static void mgmt_pin_code_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t pin_len = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	print_field("PIN length: %u", pin_len);
+	print_hex_field("PIN code", data + 8, 16);
+}
+
+static void mgmt_pin_code_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_pin_code_neg_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_pin_code_neg_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
 }
 
 static void mgmt_set_io_capability_cmd(const void *data, uint16_t size)
@@ -9839,6 +10098,98 @@ static void mgmt_unpair_device_cmd(const void *data, uint16_t size)
 }
 
 static void mgmt_unpair_device_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_confirmation_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_confirmation_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_confirmation_neg_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_confirmation_neg_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_passkey_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint32_t passkey = get_le32(data + 7);
+
+	mgmt_print_address(data, address_type);
+	print_field("Passkey: 0x%4.4x", passkey);
+}
+
+static void mgmt_user_passkey_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_passkey_neg_reply_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_user_passkey_neg_reply_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_read_local_oob_data_rsp(const void *data, uint16_t size)
+{
+	mgmt_print_oob_data(data);
+}
+
+static void mgmt_add_remote_oob_data_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+	mgmt_print_oob_data(data + 7);
+}
+
+static void mgmt_add_remote_oob_data_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_remove_remote_oob_data_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_remove_remote_oob_data_rsp(const void *data, uint16_t size)
 {
 	uint8_t address_type = get_u8(data + 6);
 
@@ -9966,6 +10317,20 @@ static void mgmt_set_bredr_cmd(const void *data, uint16_t size)
 	mgmt_print_enable("BR/EDR", enable);
 }
 
+static void mgmt_set_static_address_cmd(const void *data, uint16_t size)
+{
+	print_addr_resolve("Address", data, 0x01, false);
+}
+
+static void mgmt_set_scan_parameters_cmd(const void *data, uint16_t size)
+{
+	uint16_t interval = get_le16(data);
+	uint16_t window = get_le16(data + 2);
+
+	print_field("Interval: %u (0x%2.2x)", interval, interval);
+	print_field("Window: %u (0x%2.2x)", window, window);
+}
+
 static void mgmt_set_secure_connections_cmd(const void *data, uint16_t size)
 {
 	uint8_t enable = get_u8(data);
@@ -10033,6 +10398,63 @@ static void mgmt_set_privacy_cmd(const void *data, uint16_t size)
 	}
 
 	print_field("Privacy: %s (0x%2.2x)", str, enable);
+	print_hex_field("Key", data + 1, 16);
+}
+
+static void mgmt_load_identity_resolving_keys_cmd(const void *data, uint16_t size)
+{
+	uint16_t num_keys = get_le16(data + 1);
+	int i;
+
+	print_field("Keys: %u", num_keys);
+
+	if (size - 2 != num_keys * 23) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_keys; i++)
+		mgmt_print_identity_resolving_key(data + 2 + (i * 23));
+}
+
+static void mgmt_get_connection_information_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_get_connection_information_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	int8_t rssi = get_s8(data + 7);
+	int8_t tx_power = get_s8(data + 8);
+	int8_t max_tx_power = get_s8(data + 9);
+
+	mgmt_print_address(data, address_type);
+	print_rssi(rssi);
+	print_power_level(tx_power, NULL);
+	print_power_level(max_tx_power, "max");
+}
+
+static void mgmt_get_clock_information_cmd(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_get_clock_information_rsp(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint32_t local_clock = get_le32(data + 7);
+	uint32_t piconet_clock = get_le32(data + 11);
+	uint16_t accuracy = get_le16(data + 15);
+
+	mgmt_print_address(data, address_type);
+	print_field("Local clock: 0x%8.8x", local_clock);
+	print_field("Piconet clock: 0x%8.8x", piconet_clock);
+	print_field("Accuracy: 0x%4.4x", accuracy);
 }
 
 static void mgmt_add_device_cmd(const void *data, uint16_t size)
@@ -10065,6 +10487,22 @@ static void mgmt_remove_device_rsp(const void *data, uint16_t size)
 	mgmt_print_address(data, address_type);
 }
 
+static void mgmt_load_connection_parameters_cmd(const void *data, uint16_t size)
+{
+	uint16_t num_parameters = get_le16(data);
+	int i;
+
+	print_field("Parameters: %u", num_parameters);
+
+	if (size - 2 != num_parameters * 15) {
+		packet_hexdump(data + 2, size - 2);
+		return;
+	}
+
+	for (i = 0; i < num_parameters; i++)
+		mgmt_print_connection_parameter(data + 2 + (i * 15));
+}
+
 static void mgmt_read_unconf_index_list_rsp(const void *data, uint16_t size)
 {
 	uint16_t num_controllers = get_le16(data);
@@ -10095,6 +10533,52 @@ static void mgmt_read_controller_conf_info_rsp(const void *data, uint16_t size)
 	mgmt_print_options("Missing options", missing_options);
 }
 
+static void mgmt_set_external_configuration_cmd(const void *data, uint16_t size)
+{
+	uint8_t enable = get_u8(data);
+
+	mgmt_print_enable("Configuration", enable);
+}
+
+static void mgmt_set_public_address_cmd(const void *data, uint16_t size)
+{
+	print_addr_resolve("Address", data, 0x00, false);
+}
+
+static void mgmt_new_options_rsp(const void *data, uint16_t size)
+{
+	uint32_t missing_options = get_le32(data);
+
+	mgmt_print_options("Missing options", missing_options);
+}
+
+static void mgmt_start_service_discovery_cmd(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	int8_t rssi = get_s8(data + 1);
+	uint16_t num_uuids = get_le16(data + 2);
+	int i;
+
+	mgmt_print_address_type(type);
+	print_rssi(rssi);
+	print_field("UUIDs: %u", num_uuids);
+
+	if (size - 4 != num_uuids * 16) {
+		packet_hexdump(data + 4, size - 4);
+		return;
+	}
+
+	for (i = 0; i < num_uuids; i++)
+		mgmt_print_uuid(data + 4 + (i * 16));
+}
+
+static void mgmt_start_service_discovery_rsp(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+
+	mgmt_print_address_type(type);
+}
+
 static void mgmt_read_ext_index_list_rsp(const void *data, uint16_t size)
 {
 	uint16_t num_controllers = get_le16(data);
@@ -10111,9 +10595,24 @@ static void mgmt_read_ext_index_list_rsp(const void *data, uint16_t size)
 		uint16_t index = get_le16(data + 2 + (i * 4));
 		uint8_t type = get_u8(data + 4 + (i * 4));
 		uint8_t bus = get_u8(data + 5 + (i * 4));
+		const char *str;
 
-		print_field("  hci%u - type 0x%2.2x - bus 0x%2.2x",
-							index, type, bus);
+		switch (type) {
+		case 0x00:
+			str = "Primary";
+			break;
+		case 0x01:
+			str = "Unconfigured";
+			break;
+		case 0x02:
+			str = "AMP";
+			break;
+		default:
+			str = "Reserved";
+			break;
+		}
+
+		print_field("  hci%u (%s,%s)", index, str, hci_bustostr(bus));
 	}
 }
 
@@ -10122,6 +10621,105 @@ static void mgmt_read_local_oob_ext_data_cmd(const void *data, uint16_t size)
 	uint8_t type = get_u8(data);
 
 	mgmt_print_address_type(type);
+}
+
+static void mgmt_read_local_oob_ext_data_rsp(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	uint16_t data_len = get_le16(data + 1);
+
+	mgmt_print_address_type(type);
+	print_field("Data length: %u", data_len);
+	print_eir(data + 3, size - 3, true);
+}
+
+static void mgmt_read_advertising_features_rsp(const void *data, uint16_t size)
+{
+	uint32_t flags = get_le32(data);
+	uint8_t adv_data_len = get_u8(data + 4);
+	uint8_t scan_rsp_len = get_u8(data + 5);
+	uint8_t max_instances = get_u8(data + 6);
+	uint8_t num_instances = get_u8(data + 7);
+	int i;
+
+	mgmt_print_adv_flags(flags);
+	print_field("Advertising data length: %u", adv_data_len);
+	print_field("Scan response length: %u", scan_rsp_len);
+	print_field("Max instances: %u", max_instances);
+	print_field("Instances: %u", num_instances);
+
+	if (size - 8 != num_instances) {
+		packet_hexdump(data + 8, size - 8);
+		return;
+	}
+
+	for (i = 0; i < num_instances; i++) {
+		uint8_t instance = get_u8(data + 8 + i);
+
+		print_field("  %u", instance);
+	}
+}
+
+static void mgmt_add_advertising_cmd(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+	uint32_t flags = get_le32(data + 1);
+	uint16_t duration = get_le16(data + 5);
+	uint16_t timeout = get_le16(data + 7);
+	uint8_t adv_data_len = get_u8(data + 9);
+	uint8_t scan_rsp_len = get_u8(data + 10);
+
+	print_field("Instance: %u", instance);
+	mgmt_print_adv_flags(flags);
+	print_field("Duration: %u", duration);
+	print_field("Timeout: %u", timeout);
+	print_field("Advertising data length: %u", adv_data_len);
+	print_eir(data + 11, adv_data_len, false);
+	print_field("Scan response length: %u", scan_rsp_len);
+	print_eir(data + 11 + adv_data_len, scan_rsp_len, false);
+}
+
+static void mgmt_add_advertising_rsp(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+
+	print_field("Instance: %u", instance);
+}
+
+static void mgmt_remove_advertising_cmd(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+
+	print_field("Instance: %u", instance);
+}
+
+static void mgmt_remove_advertising_rsp(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+
+	print_field("Instance: %u", instance);
+}
+
+static void mgmt_get_advertising_size_info_cmd(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+	uint32_t flags = get_le32(data + 1);
+
+	print_field("Instance: %u", instance);
+	mgmt_print_adv_flags(flags);
+}
+
+static void mgmt_get_advertising_size_info_rsp(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+	uint32_t flags = get_le32(data + 1);
+	uint8_t adv_data_len = get_u8(data + 5);
+	uint8_t scan_rsp_len = get_u8(data + 6);
+
+	print_field("Instance: %u", instance);
+	mgmt_print_adv_flags(flags);
+	print_field("Advertising data length: %u", adv_data_len);
+	print_field("Scan response length: %u", scan_rsp_len);
 }
 
 static void mgmt_start_limited_discovery_cmd(const void *data, uint16_t size)
@@ -10136,6 +10734,23 @@ static void mgmt_start_limited_discovery_rsp(const void *data, uint16_t size)
 	uint8_t type = get_u8(data);
 
 	mgmt_print_address_type(type);
+}
+
+static void mgmt_read_ext_controller_info_rsp(const void *data, uint16_t size)
+{
+	uint8_t version = get_u8(data + 6);
+	uint16_t manufacturer = get_le16(data + 7);
+	uint32_t supported_settings = get_le32(data + 9);
+	uint32_t current_settings = get_le32(data + 13);
+	uint16_t data_len = get_le16(data + 17);
+
+	print_addr_resolve("Address", data, 0x00, false);
+	mgmt_print_version(version);
+	mgmt_print_manufacturer(manufacturer);
+	mgmt_print_settings("Supported settings", supported_settings);
+	mgmt_print_settings("Current settings", current_settings);
+	print_field("Data length: %u", data_len);
+	print_eir(data + 19, size - 19, false);
 }
 
 struct mgmt_data {
@@ -10201,16 +10816,24 @@ static const struct mgmt_data mgmt_command_table[] = {
 	{ 0x0011, "Remove UUID",
 				mgmt_remove_uuid_cmd, 16, true,
 				mgmt_remove_uuid_rsp, 3, true },
-	{ 0x0012, "Load Link Keys" },
-	{ 0x0013, "Load Long Term Keys" },
+	{ 0x0012, "Load Link Keys",
+				mgmt_load_link_keys_cmd, 3, false,
+				mgmt_null_rsp, 0, true },
+	{ 0x0013, "Load Long Term Keys",
+				mgmt_load_long_term_keys_cmd, 2, false,
+				mgmt_null_rsp, 0, true },
 	{ 0x0014, "Disconnect",
 				mgmt_disconnect_cmd, 7, true,
 				mgmt_disconnect_rsp, 7, true },
 	{ 0x0015, "Get Connections",
 				mgmt_null_cmd, 0, true,
 				mgmt_get_connections_rsp, 2, false },
-	{ 0x0016, "PIN Code Reply" },
-	{ 0x0017, "PIN Code Negative Reply" },
+	{ 0x0016, "PIN Code Reply",
+				mgmt_pin_code_reply_cmd, 24, true,
+				mgmt_pin_code_reply_rsp, 7, true },
+	{ 0x0017, "PIN Code Negative Reply",
+				mgmt_pin_code_neg_reply_cmd, 7, true,
+				mgmt_pin_code_neg_reply_rsp, 7, true },
 	{ 0x0018, "Set IO Capability",
 				mgmt_set_io_capability_cmd, 1, true,
 				mgmt_null_rsp, 0, true },
@@ -10223,14 +10846,27 @@ static const struct mgmt_data mgmt_command_table[] = {
 	{ 0x001b, "Unpair Device",
 				mgmt_unpair_device_cmd, 8, true,
 				mgmt_unpair_device_rsp, 7, true },
-	{ 0x001c, "User Confirmation Reply" },
-	{ 0x001d, "User Confirmation Negative Reply" },
-	{ 0x001e, "User Passkey Reply" },
-	{ 0x001f, "User Passkey Negative Reply" },
+	{ 0x001c, "User Confirmation Reply",
+				mgmt_user_confirmation_reply_cmd, 7, true,
+				mgmt_user_confirmation_reply_rsp, 7, true },
+	{ 0x001d, "User Confirmation Negative Reply",
+				mgmt_user_confirmation_neg_reply_cmd, 7, true,
+				mgmt_user_confirmation_neg_reply_rsp, 7, true },
+	{ 0x001e, "User Passkey Reply",
+				mgmt_user_passkey_reply_cmd, 11, true,
+				mgmt_user_passkey_reply_rsp, 7, true },
+	{ 0x001f, "User Passkey Negative Reply",
+				mgmt_user_passkey_neg_reply_cmd, 7, true,
+				mgmt_user_passkey_neg_reply_rsp, 7, true },
 	{ 0x0020, "Read Local Out Of Band Data",
-				mgmt_null_cmd, 0, true },
-	{ 0x0021, "Add Remote Out Of Band Data" },
-	{ 0x0022, "Remove Remote Out Of Band Data" },
+				mgmt_null_cmd, 0, true,
+				mgmt_read_local_oob_data_rsp, 64, true },
+	{ 0x0021, "Add Remote Out Of Band Data",
+				mgmt_add_remote_oob_data_cmd, 71, true,
+				mgmt_add_remote_oob_data_rsp, 7, true },
+	{ 0x0022, "Remove Remote Out Of Band Data",
+				mgmt_remove_remote_oob_data_cmd, 7, true,
+				mgmt_remove_remote_oob_data_rsp, 7, true },
 	{ 0x0023, "Start Discovery",
 				mgmt_start_discovery_cmd, 1, true,
 				mgmt_start_discovery_rsp, 1, true },
@@ -10255,8 +10891,12 @@ static const struct mgmt_data mgmt_command_table[] = {
 	{ 0x002a, "Set BR/EDR",
 				mgmt_set_bredr_cmd, 1, true,
 				mgmt_new_settings_rsp, 4, true },
-	{ 0x002b, "Set Static Address" },
-	{ 0x002c, "Set Scan Parameters" },
+	{ 0x002b, "Set Static Address",
+				mgmt_set_static_address_cmd, 6, true,
+				mgmt_new_settings_rsp, 4, true },
+	{ 0x002c, "Set Scan Parameters",
+				mgmt_set_scan_parameters_cmd, 4, true,
+				mgmt_null_rsp, 0, true },
 	{ 0x002d, "Set Secure Connections",
 				mgmt_set_secure_connections_cmd, 1, true,
 				mgmt_new_settings_rsp, 4, true },
@@ -10264,40 +10904,65 @@ static const struct mgmt_data mgmt_command_table[] = {
 				mgmt_set_debug_keys_cmd, 1, true,
 				mgmt_new_settings_rsp, 4, true },
 	{ 0x002f, "Set Privacy",
-				mgmt_set_privacy_cmd, 1, true,
+				mgmt_set_privacy_cmd, 17, true,
 				mgmt_new_settings_rsp, 4, true },
-	{ 0x0030, "Load Identity Resolving Keys" },
-	{ 0x0031, "Get Connection Information" },
-	{ 0x0032, "Get Clock Information" },
+	{ 0x0030, "Load Identity Resolving Keys",
+				mgmt_load_identity_resolving_keys_cmd, 2, false,
+				mgmt_null_rsp, 0, true },
+	{ 0x0031, "Get Connection Information",
+				mgmt_get_connection_information_cmd, 7, true,
+				mgmt_get_connection_information_rsp, 10, true },
+	{ 0x0032, "Get Clock Information",
+				mgmt_get_clock_information_cmd, 7, true,
+				mgmt_get_clock_information_rsp, 17, true },
 	{ 0x0033, "Add Device",
 				mgmt_add_device_cmd, 8, true,
 				mgmt_add_device_rsp, 7, true },
 	{ 0x0034, "Remove Device",
 				mgmt_remove_device_cmd, 7, true,
 				mgmt_remove_device_rsp, 7, true },
-	{ 0x0035, "Load Connection Parameters" },
+	{ 0x0035, "Load Connection Parameters",
+				mgmt_load_connection_parameters_cmd, 2, false,
+				mgmt_null_rsp, 0, true },
 	{ 0x0036, "Read Unconfigured Controller Index List",
 				mgmt_null_cmd, 0, true,
 				mgmt_read_unconf_index_list_rsp, 2, false },
 	{ 0x0037, "Read Controller Configuration Information",
 				mgmt_null_cmd, 0, true,
 				mgmt_read_controller_conf_info_rsp, 10, true },
-	{ 0x0038, "Set External Configuration" },
-	{ 0x0039, "Set Public Address" },
-	{ 0x003a, "Start Service Discovery" },
+	{ 0x0038, "Set External Configuration",
+				mgmt_set_external_configuration_cmd, 1, true,
+				mgmt_new_options_rsp, 4, true },
+	{ 0x0039, "Set Public Address",
+				mgmt_set_public_address_cmd, 6, true,
+				mgmt_new_options_rsp, 4, true },
+	{ 0x003a, "Start Service Discovery",
+				mgmt_start_service_discovery_cmd, 3, false,
+				mgmt_start_service_discovery_rsp, 1, true },
 	{ 0x003b, "Read Local Out Of Band Extended Data",
-				mgmt_read_local_oob_ext_data_cmd, 1, true },
+				mgmt_read_local_oob_ext_data_cmd, 1, true,
+				mgmt_read_local_oob_ext_data_rsp, 3, false },
 	{ 0x003c, "Read Extended Controller Index List",
 				mgmt_null_cmd, 0, true,
 				mgmt_read_ext_index_list_rsp, 2, false },
 	{ 0x003d, "Read Advertising Features",
-				mgmt_null_cmd, 0, true },
-	{ 0x003e, "Add Advertising " },
-	{ 0x003f, "Remove Advertising" },
-	{ 0x0040, "Get Advertising Size Information" },
+				mgmt_null_cmd, 0, true,
+				mgmt_read_advertising_features_rsp, 8, false },
+	{ 0x003e, "Add Advertising",
+				mgmt_add_advertising_cmd, 11, false,
+				mgmt_add_advertising_rsp, 1, true },
+	{ 0x003f, "Remove Advertising",
+				mgmt_remove_advertising_cmd, 1, true,
+				mgmt_remove_advertising_rsp, 1, true },
+	{ 0x0040, "Get Advertising Size Information",
+				mgmt_get_advertising_size_info_cmd, 5, true,
+				mgmt_get_advertising_size_info_rsp, 7, true },
 	{ 0x0041, "Start Limited Discovery",
 				mgmt_start_limited_discovery_cmd, 1, true,
 				mgmt_start_limited_discovery_rsp, 1, true },
+	{ 0x0042, "Read Extended Controller Information",
+				mgmt_null_cmd, 0, true,
+				mgmt_read_ext_controller_info_rsp, 19, false },
 	{ }
 };
 
@@ -10420,6 +11085,22 @@ static void mgmt_local_name_changed_evt(const void *data, uint16_t size)
 	mgmt_print_name(data);
 }
 
+static void mgmt_new_link_key_evt(const void *data, uint16_t size)
+{
+	uint8_t store_hint = get_u8(data);
+
+	mgmt_print_store_hint(store_hint);
+	mgmt_print_link_key(data + 1);
+}
+
+static void mgmt_new_long_term_key_evt(const void *data, uint16_t size)
+{
+	uint8_t store_hint = get_u8(data);
+
+	mgmt_print_store_hint(store_hint);
+	mgmt_print_long_term_key(data + 1);
+}
+
 static void mgmt_device_connected_evt(const void *data, uint16_t size)
 {
 	uint8_t address_type = get_u8(data + 6);
@@ -10471,6 +11152,33 @@ static void mgmt_connect_failed_evt(const void *data, uint16_t size)
 
 	mgmt_print_address(data, address_type);
 	mgmt_print_status(status);
+}
+
+static void mgmt_pin_code_request_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t secure_pin = get_u8(data + 7);
+
+	mgmt_print_address(data, address_type);
+	print_field("Secure PIN: 0x%2.2x", secure_pin);
+}
+
+static void mgmt_user_confirmation_request_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint8_t confirm_hint = get_u8(data + 7);
+	uint32_t value = get_le32(data + 8);
+
+	mgmt_print_address(data, address_type);
+	print_field("Confirm hint: 0x%2.2x", confirm_hint);
+	print_field("Value: 0x%8.8x", value);
+}
+
+static void mgmt_user_passkey_request_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+
+	mgmt_print_address(data, address_type);
 }
 
 static void mgmt_authentication_failed_evt(const void *data, uint16_t size)
@@ -10526,6 +11234,34 @@ static void mgmt_device_unpaired_evt(const void *data, uint16_t size)
 	mgmt_print_address(data, address_type);
 }
 
+static void mgmt_passkey_notify_evt(const void *data, uint16_t size)
+{
+	uint8_t address_type = get_u8(data + 6);
+	uint32_t passkey = get_le32(data + 7);
+	uint8_t entered = get_u8(data + 11);
+
+	mgmt_print_address(data, address_type);
+	print_field("Passkey: 0x%8.8x", passkey);
+	print_field("Entered: %u", entered);
+}
+
+static void mgmt_new_identity_resolving_key_evt(const void *data, uint16_t size)
+{
+	uint8_t store_hint = get_u8(data);
+
+	mgmt_print_store_hint(store_hint);
+	print_addr_resolve("Random address", data + 1, 0x01, false);
+	mgmt_print_identity_resolving_key(data + 7);
+}
+
+static void mgmt_new_signature_resolving_key_evt(const void *data, uint16_t size)
+{
+	uint8_t store_hint = get_u8(data);
+
+	mgmt_print_store_hint(store_hint);
+	mgmt_print_signature_resolving_key(data + 1);
+}
+
 static void mgmt_device_added_evt(const void *data, uint16_t size)
 {
 	uint8_t address_type = get_u8(data + 6);
@@ -10540,6 +11276,14 @@ static void mgmt_device_removed_evt(const void *data, uint16_t size)
 	uint8_t address_type = get_u8(data + 6);
 
 	mgmt_print_address(data, address_type);
+}
+
+static void mgmt_new_connection_parameter_evt(const void *data, uint16_t size)
+{
+	uint8_t store_hint = get_u8(data);
+
+	mgmt_print_store_hint(store_hint);
+	mgmt_print_connection_parameter(data + 1);
 }
 
 static void mgmt_new_conf_options_evt(const void *data, uint16_t size)
@@ -10565,6 +11309,38 @@ static void mgmt_ext_index_removed_evt(const void *data, uint16_t size)
 	print_field("type 0x%2.2x - bus 0x%2.2x", type, bus);
 }
 
+static void mgmt_local_oob_ext_data_updated_evt(const void *data, uint16_t size)
+{
+	uint8_t type = get_u8(data);
+	uint16_t data_len = get_le16(data + 1);
+
+	mgmt_print_address_type(type);
+	print_field("Data length: %u", data_len);
+	print_eir(data + 3, size - 3, true);
+}
+
+static void mgmt_advertising_added_evt(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+
+	print_field("Instance: %u", instance);
+}
+
+static void mgmt_advertising_removed_evt(const void *data, uint16_t size)
+{
+	uint8_t instance = get_u8(data);
+
+	print_field("Instance: %u", instance);
+}
+
+static void mgmt_ext_controller_info_changed_evt(const void *data, uint16_t size)
+{
+	uint16_t data_len = get_le16(data);
+
+	print_field("Data length: %u", data_len);
+	print_eir(data + 2, size - 2, false);
+}
+
 static const struct mgmt_data mgmt_event_table[] = {
 	{ 0x0001, "Command Complete",
 			mgmt_command_complete_evt, 3, false },
@@ -10582,17 +11358,22 @@ static const struct mgmt_data mgmt_event_table[] = {
 			mgmt_class_of_dev_changed_evt, 3, true },
 	{ 0x0008, "Local Name Changed",
 			mgmt_local_name_changed_evt, 260, true },
-	{ 0x0009, "New Link Key" },
-	{ 0x000a, "New Long Term Key" },
+	{ 0x0009, "New Link Key",
+			mgmt_new_link_key_evt, 26, true },
+	{ 0x000a, "New Long Term Key",
+			mgmt_new_long_term_key_evt, 37, true },
 	{ 0x000b, "Device Connected",
 			mgmt_device_connected_evt, 13, false },
 	{ 0x000c, "Device Disconnected",
 			mgmt_device_disconnected_evt, 8, true },
 	{ 0x000d, "Connect Failed",
 			mgmt_connect_failed_evt, 8, true },
-	{ 0x000e, "PIN Code Request" },
-	{ 0x000f, "User Confirmation Request" },
-	{ 0x0010, "User Passkey Request" },
+	{ 0x000e, "PIN Code Request",
+			mgmt_pin_code_request_evt, 8, true },
+	{ 0x000f, "User Confirmation Request",
+			mgmt_user_confirmation_request_evt, 12, true },
+	{ 0x0010, "User Passkey Request",
+			mgmt_user_passkey_request_evt, 7, true },
 	{ 0x0011, "Authentication Failed",
 			mgmt_authentication_failed_evt, 8, true },
 	{ 0x0012, "Device Found",
@@ -10605,14 +11386,18 @@ static const struct mgmt_data mgmt_event_table[] = {
 			mgmt_device_unblocked_evt, 7, true },
 	{ 0x0016, "Device Unpaired",
 			mgmt_device_unpaired_evt, 7, true },
-	{ 0x0017, "Passkey Notify" },
-	{ 0x0018, "New Identity Resolving Key" },
-	{ 0x0019, "New Signature Resolving Key" },
+	{ 0x0017, "Passkey Notify",
+			mgmt_passkey_notify_evt, 12, true },
+	{ 0x0018, "New Identity Resolving Key",
+			mgmt_new_identity_resolving_key_evt, 30, true },
+	{ 0x0019, "New Signature Resolving Key",
+			mgmt_new_signature_resolving_key_evt, 25, true },
 	{ 0x001a, "Device Added",
 			mgmt_device_added_evt, 8, true },
 	{ 0x001b, "Device Removed",
 			mgmt_device_removed_evt, 7, true },
-	{ 0x001c, "New Connection Parameter" },
+	{ 0x001c, "New Connection Parameter",
+			mgmt_new_connection_parameter_evt, 16, true },
 	{ 0x001d, "Unconfigured Index Added",
 			mgmt_null_evt, 0, true },
 	{ 0x001e, "Unconfigured Index Removed",
@@ -10623,9 +11408,14 @@ static const struct mgmt_data mgmt_event_table[] = {
 			mgmt_ext_index_added_evt, 2, true },
 	{ 0x0021, "Extended Index Removed",
 			mgmt_ext_index_removed_evt, 2, true },
-	{ 0x0022, "Local Out Of Band Extended Data Updated" },
-	{ 0x0023, "Advertising Added" },
-	{ 0x0024, "Advertising Removed" },
+	{ 0x0022, "Local Out Of Band Extended Data Updated",
+			mgmt_local_oob_ext_data_updated_evt, 3, false },
+	{ 0x0023, "Advertising Added",
+			mgmt_advertising_added_evt, 1, true },
+	{ 0x0024, "Advertising Removed",
+			mgmt_advertising_removed_evt, 1, true },
+	{ 0x0025, "Extended Controller Information Changed",
+			mgmt_ext_controller_info_changed_evt, 2, false },
 	{ }
 };
 
@@ -10891,23 +11681,5 @@ void packet_todo(void)
 			continue;
 
 		printf("\t%s\n", le_meta_event_table[i].str);
-	}
-
-	printf("MGMT commands with missing decodings:\n");
-
-	for (i = 0; mgmt_command_table[i].str; i++) {
-		if (mgmt_command_table[i].func)
-			continue;
-
-		printf("\t%s\n", mgmt_command_table[i].str);
-	}
-
-	printf("MGMT events with missing decodings:\n");
-
-	for (i = 0; mgmt_event_table[i].str; i++) {
-		if (mgmt_event_table[i].func)
-			continue;
-
-		printf("\t%s\n", mgmt_event_table[i].str);
 	}
 }
