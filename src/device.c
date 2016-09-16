@@ -4792,7 +4792,7 @@ bool device_attach_att(struct btd_device *dev, GIOChannel *io)
 	}
 
 	dev->att_mtu = MIN(mtu, BT_ATT_MAX_LE_MTU);
-	attrib = g_attrib_new(io, dev->att_mtu, false);
+	attrib = g_attrib_new(io, BT_ATT_DEFAULT_LE_MTU, false);
 	if (!attrib) {
 		error("Unable to create new GAttrib instance");
 		return false;
@@ -4823,11 +4823,11 @@ bool device_attach_att(struct btd_device *dev, GIOChannel *io)
 	dst = device_get_address(dev);
 	ba2str(dst, dstaddr);
 
-	gatt_client_init(dev);
-	gatt_server_init(dev, btd_gatt_database_get_db(database));
-
 	if (gatt_db_isempty(dev->db))
 		load_gatt_db(dev, srcaddr, dstaddr);
+
+	gatt_client_init(dev);
+	gatt_server_init(dev, btd_gatt_database_get_db(database));
 
 	/*
 	 * Remove the device from the connect_list and give the passive
