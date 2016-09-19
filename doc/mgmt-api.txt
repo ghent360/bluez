@@ -81,7 +81,9 @@ Version 1.13 introduces a new authentication failure reason code for the
 Device Disconnected event.
 
 Version 1.14 introduces Read Extended Controller Information command and
-Extended Controller Information Changed event.
+Extended Controller Information Changed event. It also adds Set Appearance
+command. The advertising flags Appearance and Local Name for adding scan
+response information are now supported.
 
 
 Example
@@ -2880,6 +2882,31 @@ Read Extended Controller Information Command
 
 	This command generates a Command Complete event on success or
 	a Command Status event on failure.
+
+	Possible errors:	Invalid Parameters
+				Invalid Index
+
+
+Set Appearance Command
+======================
+
+	Command Code:		0x0042
+	Controller Index:	<controller id>
+	Command Parameters:	Appearance (2 Octets)
+	Return Parameters:
+
+	This command is used to set the appearance value of a controller.
+
+	This command can be used when the controller is not
+	powered and all settings will be programmed once powered.
+
+	The value of appearance will be remembered when switching
+	the controller off and back on again. So the appearance only
+	have to be set once when a new controller is found and will
+	stay until removed.
+
+	This command generates a Command Complete event on success
+	or a Command Status event on failure.
 
 	Possible errors:	Invalid Parameters
 				Invalid Index
