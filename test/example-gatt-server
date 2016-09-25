@@ -234,7 +234,7 @@ class Descriptor(dbus.service.Object):
         if interface != GATT_DESC_IFACE:
             raise InvalidArgsException()
 
-        return self.get_properties()[GATT_CHRC_IFACE]
+        return self.get_properties()[GATT_DESC_IFACE]
 
     @dbus.service.method(GATT_DESC_IFACE,
                         in_signature='a{sv}',
@@ -438,7 +438,7 @@ class TestService(Service):
     TEST_SVC_UUID = '12345678-1234-5678-1234-56789abcdef0'
 
     def __init__(self, bus, index):
-        Service.__init__(self, bus, index, self.TEST_SVC_UUID, False)
+        Service.__init__(self, bus, index, self.TEST_SVC_UUID, True)
         self.add_characteristic(TestCharacteristic(bus, 0, self))
         self.add_characteristic(TestEncryptCharacteristic(bus, 1, self))
         self.add_characteristic(TestSecureCharacteristic(bus, 2, self))
@@ -535,11 +535,11 @@ class TestEncryptCharacteristic(Characteristic):
                 CharacteristicUserDescriptionDescriptor(bus, 3, self))
 
     def ReadValue(self, options):
-        print('TestCharacteristic Read: ' + repr(self.value))
+        print('TestEncryptCharacteristic Read: ' + repr(self.value))
         return self.value
 
     def WriteValue(self, value, options):
-        print('TestCharacteristic Write: ' + repr(value))
+        print('TestEncryptCharacteristic Write: ' + repr(value))
         self.value = value
 
 class TestEncryptDescriptor(Descriptor):
@@ -576,16 +576,16 @@ class TestSecureCharacteristic(Characteristic):
                 ['secure-read', 'secure-write'],
                 service)
         self.value = []
-        self.add_descriptor(TestEncryptDescriptor(bus, 2, self))
+        self.add_descriptor(TestSecureDescriptor(bus, 2, self))
         self.add_descriptor(
                 CharacteristicUserDescriptionDescriptor(bus, 3, self))
 
     def ReadValue(self, options):
-        print('TestCharacteristic Read: ' + repr(self.value))
+        print('TestSecureCharacteristic Read: ' + repr(self.value))
         return self.value
 
     def WriteValue(self, value, options):
-        print('TestCharacteristic Write: ' + repr(value))
+        print('TestSecureCharacteristic Write: ' + repr(value))
         self.value = value
 
 
