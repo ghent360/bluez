@@ -218,6 +218,8 @@ static const struct {
 	{ "bcm",   HCI_UART_BCM   },
 	{ "qca",   HCI_UART_QCA   },
 	{ "ag6xx", HCI_UART_AG6XX },
+	{ "nokia", HCI_UART_NOKIA },
+	{ "mrvl",  HCI_UART_MRVL  },
 	{ }
 };
 
