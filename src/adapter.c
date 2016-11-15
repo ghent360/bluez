@@ -438,6 +438,11 @@ static const char *adapter_dir(struct btd_adapter *adapter)
 	return dir;
 }
 
+uint8_t btd_adapter_get_address_type(struct btd_adapter *adapter)
+{
+	return adapter->bdaddr_type;
+}
+
 static void store_adapter_info(struct btd_adapter *adapter)
 {
 	GKeyFile *key_file;
@@ -8080,7 +8085,7 @@ static void read_info_complete(uint8_t status, uint16_t length,
 		}
 	} else {
 		bacpy(&adapter->bdaddr, &rp->bdaddr);
-		if (adapter->supported_settings & MGMT_SETTING_BREDR)
+		if (!(adapter->supported_settings & MGMT_SETTING_LE))
 			adapter->bdaddr_type = BDADDR_BREDR;
 		else
 			adapter->bdaddr_type = BDADDR_LE_PUBLIC;
