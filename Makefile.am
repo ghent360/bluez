@@ -147,6 +147,7 @@ gobex_sources = gobex/gobex.h gobex/gobex.c \
 builtin_modules =
 builtin_sources =
 builtin_nodist =
+builtin_ldadd =
 
 include Makefile.plugins
 
@@ -191,7 +192,8 @@ src_bluetoothd_SOURCES = $(builtin_sources) \
 src_bluetoothd_LDADD = lib/libbluetooth-internal.la \
 			gdbus/libgdbus-internal.la \
 			src/libshared-glib.la \
-			@BACKTRACE_LIBS@ @GLIB_LIBS@ @DBUS_LIBS@ -ldl -lrt
+			@BACKTRACE_LIBS@ @GLIB_LIBS@ @DBUS_LIBS@ -ldl -lrt \
+			$(builtin_ldadd)
 src_bluetoothd_LDFLAGS = $(AM_LDFLAGS) -Wl,--export-dynamic \
 				-Wl,--version-script=$(srcdir)/src/bluetooth.ver
 
@@ -420,6 +422,16 @@ unit_test_gattrib_SOURCES = unit/test-gattrib.c attrib/gattrib.c $(btio_sources)
 unit_test_gattrib_LDADD = lib/libbluetooth-internal.la \
 			src/libshared-glib.la \
 			@GLIB_LIBS@ @DBUS_LIBS@ -ldl -lrt
+
+if MIDI
+unit_tests += unit/test-midi
+unit_test_midi_CFLAGS = $(AM_CFLAGS) @ALSA_CFLAGS@ -DMIDI_TEST
+unit_test_midi_SOURCES = unit/test-midi.c \
+			profiles/midi/libmidi.h \
+			profiles/midi/libmidi.c
+unit_test_midi_LDADD = src/libshared-glib.la \
+			@GLIB_LIBS@ @ALSA_LIBS@
+endif
 
 if MAINTAINER_MODE
 noinst_PROGRAMS += $(unit_tests)
