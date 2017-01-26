@@ -155,6 +155,17 @@ For a working system, certain configuration options need to be enabled:
 		This option is provided for distributions that do not have any
 		input capabilities.
 
+	--enable-testing
+
+		Enable testing tools
+
+		By default tools used only for testing emulation are disabled.
+		This option can be used to enable them.
+
+		It is not recommended to enable this option for production
+		systems. These tools may contain tests that depend on specific
+		environment or kernel features in development.
+
 	--enable-experimental
 
 		Enable experimental tools
@@ -165,6 +176,17 @@ For a working system, certain configuration options need to be enabled:
 		It is not recommended to enable this option for production
 		systems. The behavior of the experimental tools is unstable
 		and might still change.
+
+	--enable-deprecated
+
+		Enable deprecated tools
+
+		By defauld all tools that are no longer maintained are
+		disabled. This option can be used to enable them.
+
+		It is not recommended to enable this option for production
+		systems. The behavior of the deprecated tools may be unstable
+		or simply don't work anymore.
 
 	--enable-nfc
 
