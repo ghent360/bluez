@@ -372,17 +372,9 @@ tools_obexctl_LDADD = gdbus/libgdbus-internal.la \
 
 tools_btmgmt_SOURCES = tools/btmgmt.c src/uuid-helper.c client/display.c
 tools_btmgmt_LDADD = lib/libbluetooth-internal.la src/libshared-mainloop.la \
-<<<<<<< HEAD
 				-lreadline -lncurses
-endif
-
-if EXPERIMENTAL
-noinst_PROGRAMS += tools/gatt-service
-=======
-				-lreadline
 if DEPRECATED
 noinst_PROGRAMS += attrib/gatttool
->>>>>>> 848423c1146f3dba71f9d961db0b2ba6199e91a6
 
 attrib_gatttool_SOURCES = attrib/gatttool.c attrib/att.c attrib/gatt.c \
 				attrib/gattrib.c btio/btio.c \
