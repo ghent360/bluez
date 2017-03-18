@@ -670,7 +670,7 @@ static struct adapter *find_ctrl_by_address(GList *source, const char *address)
 
 		dbus_message_iter_get_basic(&iter, &str);
 
-		if (!strcmp(str, address))
+		if (!strcasecmp(str, address))
 			return adapter;
 	}
 
@@ -691,7 +691,7 @@ static GDBusProxy *find_proxy_by_address(GList *source, const char *address)
 
 		dbus_message_iter_get_basic(&iter, &str);
 
-		if (!strcmp(str, address))
+		if (!strcasecmp(str, address))
 			return proxy;
 	}
 
@@ -1704,7 +1704,7 @@ static void cmd_select_attribute(const char *arg)
 		return;
 	}
 
-	proxy = gatt_select_attribute(arg);
+	proxy = gatt_select_attribute(default_attr, arg);
 	if (proxy)
 		set_default_attribute(proxy);
 }
@@ -1720,7 +1720,7 @@ static struct GDBusProxy *find_attribute(const char *arg)
 		return NULL;
 	}
 
-	proxy = gatt_select_attribute(arg);
+	proxy = gatt_select_attribute(default_attr, arg);
 	if (!proxy) {
 		rl_printf("Attribute %s not available\n", arg);
 		return NULL;
@@ -1878,7 +1878,7 @@ static char *generic_generator(const char *text, int state,
 
 		dbus_message_iter_get_basic(&iter, &str);
 
-		if (!strncmp(str, text, len))
+		if (!strncasecmp(str, text, len))
 			return strdup(str);
         }
 
@@ -1910,7 +1910,7 @@ static char *ctrl_generator(const char *text, int state)
 
 		dbus_message_iter_get_basic(&iter, &str);
 
-		if (!strncmp(str, text, len))
+		if (!strncasecmp(str, text, len))
 			return strdup(str);
 	}
 
@@ -2130,9 +2130,9 @@ static const struct {
 	{ "list-attributes", "[dev]", cmd_list_attributes, "List attributes",
 							dev_generator },
 	{ "set-alias",    "<alias>",  cmd_set_alias, "Set device alias" },
-	{ "select-attribute", "<attribute>",  cmd_select_attribute,
+	{ "select-attribute", "<attribute/UUID>",  cmd_select_attribute,
 				"Select attribute", attribute_generator },
-	{ "attribute-info", "[attribute]",  cmd_attribute_info,
+	{ "attribute-info", "[attribute/UUID]",  cmd_attribute_info,
 				"Select attribute", attribute_generator },
 	{ "read",         NULL,       cmd_read, "Read attribute value" },
 	{ "write",        "<data=[xx xx ...]>", cmd_write,
