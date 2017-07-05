@@ -11,7 +11,7 @@ client_bluetoothctl_SOURCES = client/main.c \
 					monitor/uuid.h monitor/uuid.c
 
 client_bluetoothctl_LDADD = gdbus/libgdbus-internal.la src/libshared-glib.la \
-				@GLIB_LIBS@ @DBUS_LIBS@ -lreadline
+				@GLIB_LIBS@ @DBUS_LIBS@ -lreadline -lncurses
 endif
 
 if MONITOR
