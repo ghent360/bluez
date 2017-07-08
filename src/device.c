@@ -136,6 +136,7 @@ struct authentication_req {
 struct browse_req {
 	DBusMessage *msg;
 	struct btd_device *device;
+	uint8_t bdaddr_type;
 	GSList *match_uuids;
 	GSList *profiles_added;
 	sdp_list_t *records;
@@ -224,6 +225,7 @@ struct btd_device {
 	 * attribute cache support can be built.
 	 */
 	struct gatt_db *db;			/* GATT db cache */
+	unsigned int db_id;
 	struct bt_gatt_client *client;		/* GATT client instance */
 	struct bt_gatt_server *server;		/* GATT server instance */
 	unsigned int gatt_ready_id;
@@ -512,6 +514,11 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
 
 static void browse_request_free(struct browse_req *req)
 {
+	struct btd_device *device = req->device;
+
+	if (device->browse == req)
+		device->browse = NULL;
+
 	if (req->listener_id)
 		g_dbus_remove_watch(dbus_conn, req->listener_id);
 	if (req->msg)
@@ -611,7 +618,6 @@ static void browse_request_cancel(struct browse_req *req)
 
 	attio_cleanup(device);
 
-	device->browse = NULL;
 	browse_request_free(req);
 }
 
@@ -639,7 +645,7 @@ static void device_free(gpointer user_data)
 	g_slist_free_full(device->svc_callbacks, svc_dev_remove);
 
 	/* Reset callbacks since the device is going to be freed */
-	gatt_db_register(device->db, NULL, NULL, NULL, NULL);
+	gatt_db_unregister(device->db, device->db_id);
 
 	attio_cleanup(device);
 
@@ -2188,6 +2194,9 @@ static void browse_request_complete(struct browse_req *req, uint8_t bdaddr_type,
 	struct btd_device *dev = req->device;
 	DBusMessage *reply = NULL;
 
+	if (req->bdaddr_type != bdaddr_type)
+		return;
+
 	if (!req->msg)
 		goto done;
 
@@ -2287,7 +2296,6 @@ static void device_svc_resolved(struct btd_device *dev, uint8_t bdaddr_type,
 	if (!req)
 		return;
 
-	dev->browse = NULL;
 	browse_request_complete(req, bdaddr_type, err);
 }
 
@@ -3659,8 +3667,8 @@ static struct btd_device *device_new(struct btd_adapter *adapter,
 	device->adapter = adapter;
 	device->temporary = true;
 
-	gatt_db_register(device->db, gatt_service_added, gatt_service_removed,
-								device, NULL);
+	device->db_id = gatt_db_register(device->db, gatt_service_added,
+					gatt_service_removed, device, NULL);
 
 	return btd_device_ref(device);
 }
@@ -4893,12 +4901,10 @@ static void att_connect_cb(GIOChannel *io, GError *gerr, gpointer user_data)
 			adapter_connect_list_add(device->adapter, device);
 		}
 
-		if (device->browse) {
+		if (device->browse)
 			browse_request_complete(device->browse,
 						device->bdaddr_type,
 						-ECONNABORTED);
-			device->browse = NULL;
-		}
 
 		err = -ECONNABORTED;
 		goto done;
@@ -4999,6 +5005,7 @@ int device_connect_le(struct btd_device *dev)
 }
 
 static struct browse_req *browse_request_new(struct btd_device *device,
+							uint8_t bdaddr_type,
 							DBusMessage *msg)
 {
 	struct browse_req *req;
@@ -5008,6 +5015,7 @@ static struct browse_req *browse_request_new(struct btd_device *device,
 
 	req = g_new0(struct browse_req, 1);
 	req->device = device;
+	req->bdaddr_type = bdaddr_type;
 
 	device->browse = req;
 
@@ -5033,7 +5041,7 @@ static int device_browse_gatt(struct btd_device *device, DBusMessage *msg)
 	struct btd_adapter *adapter = device->adapter;
 	struct browse_req *req;
 
-	req = browse_request_new(device, msg);
+	req = browse_request_new(device, device->bdaddr_type, msg);
 	if (!req)
 		return -EBUSY;
 
@@ -5066,7 +5074,6 @@ static int device_browse_gatt(struct btd_device *device, DBusMessage *msg)
 				BT_IO_OPT_INVALID);
 
 	if (device->att_io == NULL) {
-		device->browse = NULL;
 		browse_request_free(req);
 		return -EIO;
 	}
@@ -5106,7 +5113,7 @@ static int device_browse_sdp(struct btd_device *device, DBusMessage *msg)
 	uuid_t uuid;
 	int err;
 
-	req = browse_request_new(device, msg);
+	req = browse_request_new(device, BDADDR_BREDR, msg);
 	if (!req)
 		return -EBUSY;
 
