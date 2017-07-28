@@ -80,7 +80,6 @@ static const char * const supported_options[] = {
 	"Name",
 	"Class",
 	"DiscoverableTimeout",
-	"AlwaysPairable",
 	"PairableTimeout",
 	"AutoConnectTimeout",
 	"DeviceID",
@@ -89,8 +88,34 @@ static const char * const supported_options[] = {
 	"DebugKeys",
 	"ControllerMode",
 	"MultiProfile",
+	"FastConnectable",
 	"Privacy",
+	NULL
 };
+
+static const char * const policy_options[] = {
+	"ReconnectUUIDs",
+	"ReconnectAttempts",
+	"ReconnectIntervals",
+	"AutoEnable",
+	NULL
+};
+
+static const char * const gatt_options[] = {
+	"Cache",
+	NULL
+};
+
+static const struct group_table {
+	const char *name;
+	const char * const *options;
+} valid_groups[] = {
+	{ "General",	supported_options },
+	{ "Policy",	policy_options },
+	{ "GATT",	gatt_options },
+	{ }
+};
+
 
 GKeyFile *btd_get_main_conf(void)
 {
@@ -163,11 +188,39 @@ static bt_gatt_cache_t parse_gatt_cache(const char *cache)
 	}
 }
 
-static void check_config(GKeyFile *config)
+static void check_options(GKeyFile *config, const char *group,
+						const char * const *options)
 {
-	const char *valid_groups[] = { "General", "Policy", "GATT", NULL };
 	char **keys;
 	int i;
+
+	keys = g_key_file_get_keys(config, group, NULL, NULL);
+
+	for (i = 0; keys != NULL && keys[i] != NULL; i++) {
+		bool found;
+		unsigned int j;
+
+		found = false;
+		for (j = 0; options != NULL && options[j] != NULL; j++) {
+			if (g_str_equal(keys[i], options[j])) {
+				found = true;
+				break;
+			}
+		}
+
+		if (!found)
+			warn("Unknown key %s for group %s in main.conf",
+							keys[i], group);
+	}
+
+	g_strfreev(keys);
+}
+
+static void check_config(GKeyFile *config)
+{
+	char **keys;
+	int i;
+	const struct group_table *group;
 
 	if (!config)
 		return;
@@ -175,11 +228,10 @@ static void check_config(GKeyFile *config)
 	keys = g_key_file_get_groups(config, NULL);
 
 	for (i = 0; keys != NULL && keys[i] != NULL; i++) {
-		const char **group;
 		bool match = false;
 
-		for (group = valid_groups; *group; group++) {
-			if (g_str_equal(keys[i], *group)) {
+		for (group = valid_groups; group && group->name ; group++) {
+			if (g_str_equal(keys[i], group->name)) {
 				match = true;
 				break;
 			}
@@ -191,25 +243,8 @@ static void check_config(GKeyFile *config)
 
 	g_strfreev(keys);
 
-	keys = g_key_file_get_keys(config, "General", NULL, NULL);
-
-	for (i = 0; keys != NULL && keys[i] != NULL; i++) {
-		bool found;
-		unsigned int j;
-
-		found = false;
-		for (j = 0; j < G_N_ELEMENTS(supported_options); j++) {
-			if (g_str_equal(keys[i], supported_options[j])) {
-				found = true;
-				break;
-			}
-		}
-
-		if (!found)
-			warn("Unknown key %s in main.conf", keys[i]);
-	}
-
-	g_strfreev(keys);
+	for (group = valid_groups; group && group->name; group++)
+		check_options(config, group->name, group->options);
 }
 
 static int get_mode(const char *str)
