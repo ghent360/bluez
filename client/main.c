@@ -203,6 +203,72 @@ static void print_device(GDBusProxy *proxy, const char *description)
 				address, name);
 }
 
+static void print_fixed_iter(const char *label, const char *name,
+						DBusMessageIter *iter)
+{
+	dbus_bool_t *valbool;
+	dbus_uint32_t *valu32;
+	dbus_uint16_t *valu16;
+	dbus_int16_t *vals16;
+	unsigned char *byte;
+	int len;
+
+	switch (dbus_message_iter_get_arg_type(iter)) {
+	case DBUS_TYPE_BOOLEAN:
+		dbus_message_iter_get_fixed_array(iter, &valbool, &len);
+
+		if (len <= 0)
+			return;
+
+		rl_printf("%s%s:\n", label, name);
+		rl_hexdump((void *)valbool, len * sizeof(*valbool));
+
+		break;
+	case DBUS_TYPE_UINT32:
+		dbus_message_iter_get_fixed_array(iter, &valu32, &len);
+
+		if (len <= 0)
+			return;
+
+		rl_printf("%s%s:\n", label, name);
+		rl_hexdump((void *)valu32, len * sizeof(*valu32));
+
+		break;
+	case DBUS_TYPE_UINT16:
+		dbus_message_iter_get_fixed_array(iter, &valu16, &len);
+
+		if (len <= 0)
+			return;
+
+		rl_printf("%s%s:\n", label, name);
+		rl_hexdump((void *)valu16, len * sizeof(*valu16));
+
+		break;
+	case DBUS_TYPE_INT16:
+		dbus_message_iter_get_fixed_array(iter, &vals16, &len);
+
+		if (len <= 0)
+			return;
+
+		rl_printf("%s%s:\n", label, name);
+		rl_hexdump((void *)vals16, len * sizeof(*vals16));
+
+		break;
+	case DBUS_TYPE_BYTE:
+		dbus_message_iter_get_fixed_array(iter, &byte, &len);
+
+		if (len <= 0)
+			return;
+
+		rl_printf("%s%s:\n", label, name);
+		rl_hexdump((void *)byte, len * sizeof(*byte));
+
+		break;
+	default:
+		return;
+	};
+}
+
 static void print_iter(const char *label, const char *name,
 						DBusMessageIter *iter)
 {
@@ -236,7 +302,7 @@ static void print_iter(const char *label, const char *name,
 		break;
 	case DBUS_TYPE_UINT32:
 		dbus_message_iter_get_basic(iter, &valu32);
-		rl_printf("%s%s: 0x%06x\n", label, name, valu32);
+		rl_printf("%s%s: 0x%08x\n", label, name, valu32);
 		break;
 	case DBUS_TYPE_UINT16:
 		dbus_message_iter_get_basic(iter, &valu16);
@@ -256,6 +322,13 @@ static void print_iter(const char *label, const char *name,
 		break;
 	case DBUS_TYPE_ARRAY:
 		dbus_message_iter_recurse(iter, &subiter);
+
+		if (dbus_type_is_fixed(
+				dbus_message_iter_get_arg_type(&subiter))) {
+			print_fixed_iter(label, name, &subiter);
+			break;
+		}
+
 		while (dbus_message_iter_get_arg_type(&subiter) !=
 							DBUS_TYPE_INVALID) {
 			print_iter(label, name, &subiter);
@@ -1189,6 +1262,7 @@ struct set_discovery_filter_args {
 	dbus_int16_t pathloss;
 	char **uuids;
 	size_t uuids_len;
+	dbus_bool_t reset;
 };
 
 static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
@@ -1216,6 +1290,10 @@ static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
 		dict_append_entry(&dict, "Transport", DBUS_TYPE_STRING,
 						&args->transport);
 
+	if (args->reset)
+		dict_append_entry(&dict, "ResetData", DBUS_TYPE_BOOLEAN,
+						&args->reset);
+
 	dbus_message_iter_close_container(iter, &dict);
 }
 
@@ -1239,6 +1317,7 @@ static gint filtered_scan_pathloss = DISTANCE_VAL_INVALID;
 static char **filtered_scan_uuids;
 static size_t filtered_scan_uuids_len;
 static char *filtered_scan_transport;
+static bool filtered_scan_reset_data;
 
 static void cmd_set_scan_filter_commit(void)
 {
@@ -1250,6 +1329,7 @@ static void cmd_set_scan_filter_commit(void)
 	args.transport = filtered_scan_transport;
 	args.uuids = filtered_scan_uuids;
 	args.uuids_len = filtered_scan_uuids_len;
+	args.reset = filtered_scan_reset_data;
 
 	if (check_default_ctrl() == FALSE)
 		return;
@@ -1315,6 +1395,22 @@ static void cmd_set_scan_filter_transport(const char *arg)
 		filtered_scan_transport = NULL;
 	else
 		filtered_scan_transport = g_strdup(arg);
+
+	cmd_set_scan_filter_commit();
+}
+
+static void cmd_set_scan_filter_reset_data(const char *arg)
+{
+	if (!arg || !strlen(arg))
+		filtered_scan_reset_data = false;
+	else if (!strcmp(arg, "on"))
+		filtered_scan_reset_data = true;
+	else if (!strcmp(arg, "off"))
+		filtered_scan_reset_data = false;
+	else {
+		rl_printf("Invalid option: %s\n", arg);
+		return;
+	}
 
 	cmd_set_scan_filter_commit();
 }
@@ -2254,16 +2350,65 @@ static void cmd_set_advertise_tx_power(const char *arg)
 	}
 
 	if (strcmp(arg, "on") == 0 || strcmp(arg, "yes") == 0) {
-		ad_advertise_tx_power(TRUE);
+		ad_advertise_tx_power(true);
 		return;
 	}
 
 	if (strcmp(arg, "off") == 0 || strcmp(arg, "no") == 0) {
-		ad_advertise_tx_power(FALSE);
+		ad_advertise_tx_power(false);
 		return;
 	}
 
 	rl_printf("Invalid argument\n");
+}
+
+static void cmd_set_advertise_name(const char *arg)
+{
+	if (arg == NULL || strlen(arg) == 0) {
+		rl_printf("Missing on/off argument\n");
+		return;
+	}
+
+	if (strcmp(arg, "on") == 0 || strcmp(arg, "yes") == 0) {
+		ad_advertise_name(true);
+		return;
+	}
+
+	if (strcmp(arg, "off") == 0 || strcmp(arg, "no") == 0) {
+		ad_advertise_name(false);
+		return;
+	}
+
+	ad_advertise_local_name(arg);
+}
+
+static void cmd_set_advertise_appearance(const char *arg)
+{
+	long int value;
+	char *endptr = NULL;
+
+	if (arg == NULL || strlen(arg) == 0) {
+		rl_printf("Missing value argument\n");
+		return;
+	}
+
+	if (strcmp(arg, "on") == 0 || strcmp(arg, "yes") == 0) {
+		ad_advertise_appearance(true);
+		return;
+	}
+
+	if (strcmp(arg, "off") == 0 || strcmp(arg, "no") == 0) {
+		ad_advertise_appearance(false);
+		return;
+	}
+
+	value = strtol(arg, &endptr, 0);
+	if (!endptr || *endptr != '\0' || value > UINT16_MAX) {
+		rl_printf("Invalid argument\n");
+		return;
+	}
+
+	ad_advertise_local_appearance(value);
 }
 
 static const struct {
@@ -2310,6 +2455,10 @@ static const struct {
 	{ "set-advertise-tx-power", "<on/off>",
 			cmd_set_advertise_tx_power,
 			"Enable/disable TX power to be advertised" },
+	{ "set-advertise-name", "<on/off/name>", cmd_set_advertise_name,
+			"Enable/disable local name to be advertised" },
+	{ "set-advertise-appearance", "<value>", cmd_set_advertise_appearance,
+			"Set custom appearance to be advertised" },
 	{ "set-scan-filter-uuids", "[uuid1 uuid2 ...]",
 			cmd_set_scan_filter_uuids, "Set scan filter uuids" },
 	{ "set-scan-filter-rssi", "[rssi]", cmd_set_scan_filter_rssi,
@@ -2319,6 +2468,8 @@ static const struct {
 				"Set scan filter pathloss, and clears rssi" },
 	{ "set-scan-filter-transport", "[transport]",
 		cmd_set_scan_filter_transport, "Set scan filter transport" },
+	{ "set-scan-filter-reset-data", "[on/off]",
+		cmd_set_scan_filter_reset_data, "Set scan filter reset data" },
 	{ "set-scan-filter-clear", "", cmd_set_scan_filter_clear,
 						"Clears discovery filter." },
 	{ "scan",         "<on/off>", cmd_scan, "Scan for devices" },
