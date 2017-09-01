@@ -73,6 +73,12 @@ static GList *ctrl_list;
 
 static guint input = 0;
 
+static const char * const mode_arguments[] = {
+	"on",
+	"off",
+	NULL
+};
+
 static const char * const agent_arguments[] = {
 	"on",
 	"off",
@@ -1261,7 +1267,7 @@ struct set_discovery_filter_args {
 	dbus_int16_t pathloss;
 	char **uuids;
 	size_t uuids_len;
-	dbus_bool_t reset;
+	dbus_bool_t duplicate;
 };
 
 static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
@@ -1289,9 +1295,9 @@ static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
 		dict_append_entry(&dict, "Transport", DBUS_TYPE_STRING,
 						&args->transport);
 
-	if (args->reset)
-		dict_append_entry(&dict, "ResetData", DBUS_TYPE_BOOLEAN,
-						&args->reset);
+	if (args->duplicate)
+		dict_append_entry(&dict, "DuplicateData", DBUS_TYPE_BOOLEAN,
+						&args->duplicate);
 
 	dbus_message_iter_close_container(iter, &dict);
 }
@@ -1316,7 +1322,7 @@ static gint filtered_scan_pathloss = DISTANCE_VAL_INVALID;
 static char **filtered_scan_uuids;
 static size_t filtered_scan_uuids_len;
 static char *filtered_scan_transport;
-static bool filtered_scan_reset_data;
+static bool filtered_scan_duplicate_data;
 
 static void cmd_set_scan_filter_commit(void)
 {
@@ -1328,7 +1334,7 @@ static void cmd_set_scan_filter_commit(void)
 	args.transport = filtered_scan_transport;
 	args.uuids = filtered_scan_uuids;
 	args.uuids_len = filtered_scan_uuids_len;
-	args.reset = filtered_scan_reset_data;
+	args.duplicate = filtered_scan_duplicate_data;
 
 	if (check_default_ctrl() == FALSE)
 		return;
@@ -1398,14 +1404,14 @@ static void cmd_set_scan_filter_transport(const char *arg)
 	cmd_set_scan_filter_commit();
 }
 
-static void cmd_set_scan_filter_reset_data(const char *arg)
+static void cmd_set_scan_filter_duplicate_data(const char *arg)
 {
 	if (!arg || !strlen(arg))
-		filtered_scan_reset_data = false;
+		filtered_scan_duplicate_data = false;
 	else if (!strcmp(arg, "on"))
-		filtered_scan_reset_data = true;
+		filtered_scan_duplicate_data = true;
 	else if (!strcmp(arg, "off"))
-		filtered_scan_reset_data = false;
+		filtered_scan_duplicate_data = false;
 	else {
 		rl_printf("Invalid option: %s\n", arg);
 		return;
@@ -2234,7 +2240,8 @@ static char *attribute_generator(const char *text, int state)
 	return gatt_attribute_generator(text, state);
 }
 
-static char *capability_generator(const char *text, int state)
+static char *argument_generator(const char *text, int state,
+					const char * const *args_list)
 {
 	static int index, len;
 	const char *arg;
@@ -2244,7 +2251,7 @@ static char *capability_generator(const char *text, int state)
 		len = strlen(text);
 	}
 
-	while ((arg = agent_arguments[index])) {
+	while ((arg = args_list[index])) {
 		index++;
 
 		if (!strncmp(arg, text, len))
@@ -2252,6 +2259,16 @@ static char *capability_generator(const char *text, int state)
 	}
 
 	return NULL;
+}
+
+static char *mode_generator(const char *text, int state)
+{
+	return argument_generator(text, state, mode_arguments);
+}
+
+static char *capability_generator(const char *text, int state)
+{
+	return argument_generator(text, state, agent_arguments);
 }
 
 static gboolean parse_argument_advertise(const char *arg, dbus_bool_t *value,
@@ -2308,22 +2325,7 @@ static void cmd_advertise(const char *arg)
 
 static char *ad_generator(const char *text, int state)
 {
-	static int index, len;
-	const char *arg;
-
-	if (!state) {
-		index = 0;
-		len = strlen(text);
-	}
-
-	while ((arg = ad_arguments[index])) {
-		index++;
-
-		if (!strncmp(arg, text, len))
-			return strdup(arg);
-	}
-
-	return NULL;
+	return argument_generator(text, state, ad_arguments);
 }
 
 static void cmd_set_advertise_uuids(const char *arg)
@@ -2430,11 +2432,14 @@ static const struct {
 					"Set controller alias" },
 	{ "reset-alias",  NULL,       cmd_reset_alias,
 					"Reset controller alias" },
-	{ "power",        "<on/off>", cmd_power, "Set controller power" },
+	{ "power",        "<on/off>", cmd_power, "Set controller power",
+							mode_generator },
 	{ "pairable",     "<on/off>", cmd_pairable,
-					"Set controller pairable mode" },
+					"Set controller pairable mode",
+							mode_generator },
 	{ "discoverable", "<on/off>", cmd_discoverable,
-					"Set controller discoverable mode" },
+					"Set controller discoverable mode",
+							mode_generator },
 	{ "agent",        "<on/off/capability>", cmd_agent,
 				"Enable/disable agent with given capability",
 							capability_generator},
@@ -2453,7 +2458,8 @@ static const struct {
 			"Set advertise manufacturer data" },
 	{ "set-advertise-tx-power", "<on/off>",
 			cmd_set_advertise_tx_power,
-			"Enable/disable TX power to be advertised" },
+			"Enable/disable TX power to be advertised",
+							mode_generator },
 	{ "set-advertise-name", "<on/off/name>", cmd_set_advertise_name,
 			"Enable/disable local name to be advertised" },
 	{ "set-advertise-appearance", "<value>", cmd_set_advertise_appearance,
@@ -2467,11 +2473,14 @@ static const struct {
 				"Set scan filter pathloss, and clears rssi" },
 	{ "set-scan-filter-transport", "[transport]",
 		cmd_set_scan_filter_transport, "Set scan filter transport" },
-	{ "set-scan-filter-reset-data", "[on/off]",
-		cmd_set_scan_filter_reset_data, "Set scan filter reset data" },
+	{ "set-scan-filter-duplicate-data", "[on/off]",
+			cmd_set_scan_filter_duplicate_data,
+				"Set scan filter duplicate data",
+				mode_generator },
 	{ "set-scan-filter-clear", "", cmd_set_scan_filter_clear,
 						"Clears discovery filter." },
-	{ "scan",         "<on/off>", cmd_scan, "Scan for devices" },
+	{ "scan",         "<on/off>", cmd_scan, "Scan for devices",
+							mode_generator },
 	{ "info",         "[dev]",    cmd_info, "Device information",
 							dev_generator },
 	{ "pair",         "[dev]",    cmd_pair, "Pair with device",
@@ -2508,7 +2517,8 @@ static const struct {
 					"Acquire Notify file descriptor" },
 	{ "release-notify", NULL, cmd_release_notify,
 					"Release Notify file descriptor" },
-	{ "notify",       "<on/off>", cmd_notify, "Notify attribute value" },
+	{ "notify",       "<on/off>", cmd_notify, "Notify attribute value",
+							mode_generator },
 	{ "register-application", "[UUID ...]", cmd_register_app,
 						"Register profile to connect" },
 	{ "unregister-application", NULL, cmd_unregister_app,
