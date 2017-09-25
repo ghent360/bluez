@@ -525,17 +525,40 @@ static void device_added(GDBusProxy *proxy)
 	}
 }
 
+static struct adapter *find_ctrl(GList *source, const char *path);
+
+static struct adapter *adapter_new(GDBusProxy *proxy)
+{
+	struct adapter *adapter = g_malloc0(sizeof(struct adapter));
+
+	ctrl_list = g_list_append(ctrl_list, adapter);
+
+	if (!default_ctrl)
+		default_ctrl = adapter;
+
+	return adapter;
+}
+
 static void adapter_added(GDBusProxy *proxy)
 {
-	default_ctrl = g_malloc0(sizeof(struct adapter));
-	default_ctrl->proxy = proxy;
-	ctrl_list = g_list_append(ctrl_list, default_ctrl);
+	struct adapter *adapter;
+	adapter = find_ctrl(ctrl_list, g_dbus_proxy_get_path(proxy));
+	if (!adapter)
+		adapter = adapter_new(proxy);
+
+	adapter->proxy = proxy;
+
 	print_adapter(proxy, COLORED_NEW);
 }
 
 static void ad_manager_added(GDBusProxy *proxy)
 {
-	default_ctrl->ad_proxy = proxy;
+	struct adapter *adapter;
+	adapter = find_ctrl(ctrl_list, g_dbus_proxy_get_path(proxy));
+	if (!adapter)
+		adapter = adapter_new(proxy);
+
+	adapter->ad_proxy = proxy;
 }
 
 static void proxy_added(GDBusProxy *proxy, void *user_data)
@@ -2192,7 +2215,7 @@ static char *generic_generator(const char *text, int state,
 
 		if (!strncasecmp(str, text, len))
 			return strdup(str);
-        }
+	}
 
 	return NULL;
 }
@@ -2578,10 +2601,11 @@ static char **cmd_completion(const char *text, int start, int end)
 
 	if (start > 0) {
 		int i;
+		char *input_cmd;
 
+		input_cmd = g_strndup(rl_line_buffer, start -1);
 		for (i = 0; cmd_table[i].cmd; i++) {
-			if (strncmp(cmd_table[i].cmd,
-					rl_line_buffer, start - 1))
+			if (strcmp(cmd_table[i].cmd, input_cmd))
 				continue;
 
 			if (!cmd_table[i].gen)
@@ -2591,6 +2615,7 @@ static char **cmd_completion(const char *text, int start, int end)
 			matches = rl_completion_matches(text, cmd_table[i].gen);
 			break;
 		}
+		g_free(input_cmd);
 	} else {
 		rl_completion_display_matches_hook = NULL;
 		matches = rl_completion_matches(text, cmd_generator);
@@ -2621,7 +2646,8 @@ static void rl_handler(char *input)
 	if (!rl_release_prompt(input))
 		goto done;
 
-	add_history(input);
+	if (history_search(input, -1))
+		add_history(input);
 
 	cmd = strtok_r(input, " ", &arg);
 	if (!cmd)
