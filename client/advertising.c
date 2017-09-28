@@ -131,7 +131,7 @@ static gboolean get_type(const GDBusPropertyTable *property,
 {
 	const char *type = "peripheral";
 
-	if (!ad.type || strlen(ad.type) > 0)
+	if (ad.type && strlen(ad.type) > 0)
 		type = ad.type;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_STRING, &type);
@@ -340,6 +340,7 @@ void ad_register(DBusConnection *conn, GDBusProxy *manager, const char *type)
 		return;
 	}
 
+	g_free(ad.type);
 	ad.type = g_strdup(type);
 
 	if (g_dbus_register_interface(conn, AD_PATH, AD_IFACE, ad_methods,
@@ -390,6 +391,9 @@ void ad_unregister(DBusConnection *conn, GDBusProxy *manager)
 
 	if (!ad.registered)
 		return;
+
+	g_free(ad.type);
+	ad.type = NULL;
 
 	if (g_dbus_proxy_method_call(manager, "UnregisterAdvertisement",
 					unregister_setup, unregister_reply,
@@ -543,8 +547,10 @@ void ad_advertise_name(DBusConnection *conn, bool value)
 
 	ad.name = value;
 
-	if (!value)
-		free(ad.local_name);
+	if (!value) {
+		g_free(ad.local_name);
+		ad.local_name = NULL;
+	}
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Includes");
 }
@@ -554,7 +560,7 @@ void ad_advertise_local_name(DBusConnection *conn, const char *name)
 	if (ad.local_name && !strcmp(name, ad.local_name))
 		return;
 
-	free(ad.local_name);
+	g_free(ad.local_name);
 	ad.local_name = strdup(name);
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "LocalName");
