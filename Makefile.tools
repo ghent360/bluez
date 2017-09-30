@@ -35,7 +35,7 @@ mesh_meshctl_SOURCES = mesh/main.c \
 				monitor/uuid.h monitor/uuid.c
 mesh_meshctl_LDADD = gdbus/libgdbus-internal.la src/libshared-glib.la \
 				lib/libbluetooth-internal.la \
-				@GLIB_LIBS@ @DBUS_LIBS@ -ljson-c -lreadline
+				@GLIB_LIBS@ @DBUS_LIBS@ -ljson-c -lreadline -lncurses
 endif
 
 if MONITOR
@@ -413,7 +413,7 @@ attrib_gatttool_SOURCES = attrib/gatttool.c attrib/att.c attrib/gatt.c \
 				attrib/utils.c src/log.c client/display.c \
 				client/display.h
 attrib_gatttool_LDADD = lib/libbluetooth-internal.la \
-			src/libshared-glib.la @GLIB_LIBS@ -lreadline
+			src/libshared-glib.la @GLIB_LIBS@ -lreadline -lncurses
 
 endif
 endif
