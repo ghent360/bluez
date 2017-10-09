@@ -1830,7 +1830,8 @@ static bool pipe_io_read(struct io *io, void *user_data)
 				gatt_db_attribute_get_handle(chrc->attrib),
 				buf, bytes_read,
 				gatt_db_attribute_get_handle(chrc->ccc),
-				false, NULL);
+				chrc->props & BT_GATT_CHRC_PROP_INDICATE,
+				chrc->proxy);
 
 	return true;
 }
@@ -1891,6 +1892,8 @@ static void acquire_write_reply(DBusMessage *message, void *user_data)
 	if (pipe_io_send(chrc->write_io, op->data.iov_base,
 				op->data.iov_len) < 0)
 		goto retry;
+
+	gatt_db_attribute_write_result(op->attrib, op->id, 0);
 
 	return;
 
