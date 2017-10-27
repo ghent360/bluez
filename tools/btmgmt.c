@@ -1129,6 +1129,8 @@ done:
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
+static void cmd_usage(char *cmd);
+
 static void cmd_version(struct mgmt *mgmt, uint16_t index, int argc,
 								char **argv)
 {
@@ -1785,22 +1787,29 @@ done:
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
+static bool parse_setting(int argc, char **argv, uint8_t *val)
+{
+	if (argc < 2) {
+		cmd_usage(argv[0]);
+		return false;
+	}
+
+	if (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "yes") == 0)
+		*val = 1;
+	else if (strcasecmp(argv[1], "off") == 0)
+		*val = 0;
+	else
+		*val = atoi(argv[1]);
+	return true;
+}
+
 static void cmd_setting(struct mgmt *mgmt, uint16_t index, uint16_t op,
 							int argc, char **argv)
 {
 	uint8_t val;
 
-	if (argc < 2) {
-		print("Specify \"on\" or \"off\"");
+	if (parse_setting(argc, argv, &val) == false)
 		return noninteractive_quit(EXIT_FAILURE);
-	}
-
-	if (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "yes") == 0)
-		val = 1;
-	else if (strcasecmp(argv[1], "off") == 0)
-		val = 0;
-	else
-		val = atoi(argv[1]);
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -1822,7 +1831,7 @@ static void cmd_discov(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_cp_set_discoverable cp;
 
 	if (argc < 2) {
-		print("Usage: %s <yes/no/limited> [timeout]", argv[0]);
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -1884,7 +1893,7 @@ static void cmd_sc(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	uint8_t val;
 
 	if (argc < 2) {
-		print("Specify \"on\" or \"off\" or \"only\"");
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -1933,17 +1942,8 @@ static void cmd_privacy(struct mgmt *mgmt, uint16_t index, int argc,
 {
 	struct mgmt_cp_set_privacy cp;
 
-	if (argc < 2) {
-		print("Specify \"on\" or \"off\"");
+	if (parse_setting(argc, argv, &cp.privacy) == false)
 		return noninteractive_quit(EXIT_FAILURE);
-	}
-
-	if (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "yes") == 0)
-		cp.privacy = 0x01;
-	else if (strcasecmp(argv[1], "off") == 0)
-		cp.privacy = 0x00;
-	else
-		cp.privacy = atoi(argv[1]);
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -2006,7 +2006,7 @@ static void cmd_class(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	uint8_t class[2];
 
 	if (argc < 3) {
-		print("Usage: %s <major> <minor>", argv[0]);
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2051,11 +2051,6 @@ static void disconnect_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void disconnect_usage(void)
-{
-	print("Usage: disconnect [-t type] <remote address>");
-}
-
 static struct option disconnect_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -2068,6 +2063,7 @@ static void cmd_disconnect(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_cp_disconnect cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", disconnect_options,
 								NULL)) != -1) {
@@ -2076,11 +2072,11 @@ static void cmd_disconnect(struct mgmt *mgmt, uint16_t index, int argc,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			disconnect_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			disconnect_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2091,7 +2087,7 @@ static void cmd_disconnect(struct mgmt *mgmt, uint16_t index, int argc,
 	optind = 0;
 
 	if (argc < 1) {
-		disconnect_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2163,11 +2159,6 @@ static void find_service_rsp(uint8_t status, uint16_t len, const void *param,
 	discovery = true;
 }
 
-static void find_service_usage(void)
-{
-	print("Usage: find-service [-u UUID] [-r RSSI_Threshold] [-l|-b]");
-}
-
 static struct option find_service_options[] = {
 	{ "help",	no_argument, 0, 'h' },
 	{ "le-only",	no_argument, 0, 'l' },
@@ -2201,6 +2192,7 @@ static void cmd_find_service(struct mgmt *mgmt, uint16_t index, int argc,
 	int8_t rssi;
 	uint16_t count;
 	int opt;
+	char *cmd = argv[0];
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -2209,11 +2201,11 @@ static void cmd_find_service(struct mgmt *mgmt, uint16_t index, int argc,
 	count = 0;
 
 	if (argc == 1) {
-		find_service_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
-	while ((opt = getopt_long(argc, argv, "+lbu:r:p:h",
+	while ((opt = getopt_long(argc, argv, "+lbu:r:h",
 					find_service_options, NULL)) != -1) {
 		switch (opt) {
 		case 'l':
@@ -2246,11 +2238,11 @@ static void cmd_find_service(struct mgmt *mgmt, uint16_t index, int argc,
 			rssi = atoi(optarg);
 			break;
 		case 'h':
-			find_service_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			find_service_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2261,7 +2253,7 @@ static void cmd_find_service(struct mgmt *mgmt, uint16_t index, int argc,
 	optind = 0;
 
 	if (argc > 0) {
-		find_service_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2291,11 +2283,6 @@ static void find_rsp(uint8_t status, uint16_t len, const void *param,
 	discovery = true;
 }
 
-static void find_usage(void)
-{
-	print("Usage: find [-l|-b]>");
-}
-
 static struct option find_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "le-only",	1, 0, 'l' },
@@ -2310,6 +2297,7 @@ static void cmd_find(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	uint8_t op = MGMT_OP_START_DISCOVERY;
 	uint8_t type = SCAN_TYPE_DUAL;
 	int opt;
+	char *cmd = argv[0];
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -2329,11 +2317,11 @@ static void cmd_find(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 			op = MGMT_OP_START_LIMITED_DISCOVERY;
 			break;
 		case 'h':
-			find_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			find_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2368,11 +2356,6 @@ static void stop_find_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void stop_find_usage(void)
-{
-	print("Usage: stop-find [-l|-b]");
-}
-
 static struct option stop_find_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "le-only",	1, 0, 'l' },
@@ -2386,6 +2369,7 @@ static void cmd_stop_find(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_cp_stop_discovery cp;
 	uint8_t type = SCAN_TYPE_DUAL;
 	int opt;
+	char *cmd = argv[0];
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -2403,7 +2387,7 @@ static void cmd_stop_find(struct mgmt *mgmt, uint16_t index, int argc,
 			break;
 		case 'h':
 		default:
-			stop_find_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		}
@@ -2438,7 +2422,7 @@ static void cmd_name(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	struct mgmt_cp_set_local_name cp;
 
 	if (argc < 2) {
-		print("Usage: %s <name> [shortname]", argv[0]);
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2490,11 +2474,6 @@ static void pair_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void pair_usage(void)
-{
-	print("Usage: pair [-c cap] [-t type] <remote address>");
-}
-
 static struct option pair_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "capability",	1, 0, 'c' },
@@ -2509,6 +2488,7 @@ static void cmd_pair(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	uint8_t type = BDADDR_BREDR;
 	char addr[18];
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+c:t:h", pair_options,
 								NULL)) != -1) {
@@ -2520,11 +2500,11 @@ static void cmd_pair(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			pair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			pair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2535,7 +2515,7 @@ static void cmd_pair(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	optind = 0;
 
 	if (argc < 1) {
-		pair_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2586,11 +2566,6 @@ static void cancel_pair_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void cancel_pair_usage(void)
-{
-	print("Usage: cancelpair [-t type] <remote address>");
-}
-
 static struct option cancel_pair_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -2603,6 +2578,7 @@ static void cmd_cancel_pair(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_addr_info cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", cancel_pair_options,
 								NULL)) != -1) {
@@ -2611,11 +2587,11 @@ static void cmd_cancel_pair(struct mgmt *mgmt, uint16_t index, int argc,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			cancel_pair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			cancel_pair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2626,7 +2602,7 @@ static void cmd_cancel_pair(struct mgmt *mgmt, uint16_t index, int argc,
 	optind = 0;
 
 	if (argc < 1) {
-		cancel_pair_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2672,11 +2648,6 @@ static void unpair_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void unpair_usage(void)
-{
-	print("Usage: unpair [-t type] <remote address>");
-}
-
 static struct option unpair_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -2689,6 +2660,7 @@ static void cmd_unpair(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_cp_unpair_device cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", unpair_options,
 								NULL)) != -1) {
@@ -2697,11 +2669,11 @@ static void cmd_unpair(struct mgmt *mgmt, uint16_t index, int argc,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			unpair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			unpair_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2712,7 +2684,7 @@ static void cmd_unpair(struct mgmt *mgmt, uint16_t index, int argc,
 	optind = 0;
 
 	if (argc < 1) {
-		unpair_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2799,11 +2771,6 @@ static void irks_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void irks_usage(void)
-{
-	print("Usage: irks [--local]");
-}
-
 static struct option irks_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "local",	1, 0, 'l' },
@@ -2820,6 +2787,7 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	uint16_t count, local_index;
 	char path[PATH_MAX];
 	int opt;
+	char *cmd = argv[0];
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -2865,11 +2833,11 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 			count++;
 			break;
 		case 'h':
-			irks_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			irks_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2880,7 +2848,7 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	optind = 0;
 
 	if (argc > 0) {
-		irks_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2923,11 +2891,6 @@ static void block_rsp(uint16_t op, uint16_t id, uint8_t status, uint16_t len,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void block_usage(void)
-{
-	print("Usage: block [-t type] <remote address>");
-}
-
 static struct option block_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -2939,6 +2902,7 @@ static void cmd_block(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	struct mgmt_cp_block_device cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", block_options,
 							NULL)) != -1) {
@@ -2947,11 +2911,11 @@ static void cmd_block(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			block_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			block_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -2962,7 +2926,7 @@ static void cmd_block(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	optind = 0;
 
 	if (argc < 1) {
-		block_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -2980,17 +2944,13 @@ static void cmd_block(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	}
 }
 
-static void unblock_usage(void)
-{
-	print("Usage: unblock [-t type] <remote address>");
-}
-
 static void cmd_unblock(struct mgmt *mgmt, uint16_t index, int argc,
 								char **argv)
 {
 	struct mgmt_cp_unblock_device cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", block_options,
 							NULL)) != -1) {
@@ -2999,11 +2959,11 @@ static void cmd_unblock(struct mgmt *mgmt, uint16_t index, int argc,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			unblock_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			unblock_usage();
+			cmd_usage(cmd);
 			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
@@ -3014,7 +2974,7 @@ static void cmd_unblock(struct mgmt *mgmt, uint16_t index, int argc,
 	optind = 0;
 
 	if (argc < 1) {
-		unblock_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3178,15 +3138,8 @@ static void remote_oob_rsp(uint8_t status, uint16_t len, const void *param,
 	print("Remote OOB data added for %s (%u)", addr, rp->type);
 }
 
-static void remote_oob_usage(void)
-{
-	print("Usage: remote-oob [-t <addr_type>] "
-		"[-r <rand192>] [-h <hash192>] [-R <rand256>] [-H <hash256>] "
-		"<addr>");
-}
-
 static struct option remote_oob_opt[] = {
-	{ "help",	0, 0, 'h' },
+	{ "help",	0, 0, '?' },
 	{ "type",	1, 0, 't' },
 	{ 0, 0, 0, 0 }
 };
@@ -3196,6 +3149,7 @@ static void cmd_remote_oob(struct mgmt *mgmt, uint16_t index,
 {
 	struct mgmt_cp_add_remote_oob_data cp;
 	int opt;
+	char *cmd = argv[0];
 
 	memset(&cp, 0, sizeof(cp));
 	cp.addr.type = BDADDR_BREDR;
@@ -3219,7 +3173,8 @@ static void cmd_remote_oob(struct mgmt *mgmt, uint16_t index,
 			hex2bin(optarg, cp.hash256, 16);
 			break;
 		default:
-			remote_oob_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
 	}
@@ -3229,7 +3184,7 @@ static void cmd_remote_oob(struct mgmt *mgmt, uint16_t index,
 	optind = 0;
 
 	if (argc < 1) {
-		remote_oob_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3262,7 +3217,7 @@ static void did_rsp(uint8_t status, uint16_t len, const void *param,
 
 static void did_usage(void)
 {
-	print("Usage: did <source>:<vendor>:<product>:<version>");
+	cmd_usage("did");
 	print("       possible source values: bluetooth, usb");
 }
 
@@ -3322,18 +3277,13 @@ static void static_addr_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void static_addr_usage(void)
-{
-	print("Usage: static-addr <address>");
-}
-
 static void cmd_static_addr(struct mgmt *mgmt, uint16_t index,
 							int argc, char **argv)
 {
 	struct mgmt_cp_set_static_address cp;
 
 	if (argc < 2) {
-		static_addr_usage();
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3378,7 +3328,7 @@ static void cmd_public_addr(struct mgmt *mgmt, uint16_t index,
 	struct mgmt_cp_set_public_address cp;
 
 	if (argc < 2) {
-		print("Usage: public-addr <address>");
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3399,17 +3349,8 @@ static void cmd_ext_config(struct mgmt *mgmt, uint16_t index,
 {
 	struct mgmt_cp_set_external_config cp;
 
-	if (argc < 2) {
-		print("Specify \"on\" or \"off\"");
+	if (parse_setting(argc, argv, &cp.config) == false)
 		return noninteractive_quit(EXIT_FAILURE);
-	}
-
-	if (strcasecmp(argv[1], "on") == 0 || strcasecmp(argv[1], "yes") == 0)
-		cp.config = 0x01;
-	else if (strcasecmp(argv[1], "off") == 0)
-		cp.config = 0x00;
-	else
-		cp.config = atoi(argv[1]);
 
 	if (index == MGMT_INDEX_NONE)
 		index = 0;
@@ -3459,11 +3400,6 @@ static void conn_info_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void conn_info_usage(void)
-{
-	print("Usage: conn-info [-t type] <remote address>");
-}
-
 static struct option conn_info_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -3476,6 +3412,7 @@ static void cmd_conn_info(struct mgmt *mgmt, uint16_t index,
 	struct mgmt_cp_get_conn_info cp;
 	uint8_t type = BDADDR_BREDR;
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", conn_info_options,
 								NULL)) != -1) {
@@ -3484,10 +3421,12 @@ static void cmd_conn_info(struct mgmt *mgmt, uint16_t index,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			conn_info_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			conn_info_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
 	}
@@ -3497,7 +3436,7 @@ static void cmd_conn_info(struct mgmt *mgmt, uint16_t index,
 	optind = 0;
 
 	if (argc < 1) {
-		conn_info_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3527,11 +3466,6 @@ static void io_cap_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void io_cap_usage(void)
-{
-	print("Usage: io-cap <cap>");
-}
-
 static void cmd_io_cap(struct mgmt *mgmt, uint16_t index,
 						int argc, char **argv)
 {
@@ -3539,7 +3473,7 @@ static void cmd_io_cap(struct mgmt *mgmt, uint16_t index,
 	uint8_t cap;
 
 	if (argc < 2) {
-		io_cap_usage();
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3569,18 +3503,13 @@ static void scan_params_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void scan_params_usage(void)
-{
-	print("Usage: scan-params <interval> <window>");
-}
-
 static void cmd_scan_params(struct mgmt *mgmt, uint16_t index,
 							int argc, char **argv)
 {
 	struct mgmt_cp_set_scan_params cp;
 
 	if (argc < 3) {
-		scan_params_usage();
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3649,11 +3578,6 @@ static void add_device_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void add_device_usage(void)
-{
-	print("Usage: add-device [-a action] [-t type] <address>");
-}
-
 static struct option add_device_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "action",	1, 0, 'a' },
@@ -3669,6 +3593,7 @@ static void cmd_add_device(struct mgmt *mgmt, uint16_t index,
 	uint8_t type = BDADDR_BREDR;
 	char addr[18];
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+a:t:h", add_device_options,
 								NULL)) != -1) {
@@ -3680,10 +3605,12 @@ static void cmd_add_device(struct mgmt *mgmt, uint16_t index,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			add_device_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			add_device_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
 	}
@@ -3693,7 +3620,7 @@ static void cmd_add_device(struct mgmt *mgmt, uint16_t index,
 	optind = 0;
 
 	if (argc < 1) {
-		add_device_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3724,11 +3651,6 @@ static void remove_device_rsp(uint8_t status, uint16_t len, const void *param,
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void del_device_usage(void)
-{
-	print("Usage: del-device [-t type] <address>");
-}
-
 static struct option del_device_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "type",	1, 0, 't' },
@@ -3742,6 +3664,7 @@ static void cmd_del_device(struct mgmt *mgmt, uint16_t index,
 	uint8_t type = BDADDR_BREDR;
 	char addr[18];
 	int opt;
+	char *cmd = argv[0];
 
 	while ((opt = getopt_long(argc, argv, "+t:h", del_device_options,
 								NULL)) != -1) {
@@ -3750,10 +3673,12 @@ static void cmd_del_device(struct mgmt *mgmt, uint16_t index,
 			type = strtol(optarg, NULL, 0);
 			break;
 		case 'h':
-			del_device_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_SUCCESS);
 		default:
-			del_device_usage();
+			cmd_usage(cmd);
+			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
 	}
@@ -3763,7 +3688,7 @@ static void cmd_del_device(struct mgmt *mgmt, uint16_t index,
 	optind = 0;
 
 	if (argc < 1) {
-		del_device_usage();
+		cmd_usage(cmd);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -3962,7 +3887,8 @@ static void adv_size_info_rsp(uint8_t status, uint16_t len, const void *param,
 
 static void advsize_usage(void)
 {
-	print("Usage: advsize [options] <instance_id>\nOptions:\n"
+	cmd_usage("advsize");
+	print("Options:\n"
 		"\t -c, --connectable         \"connectable\" flag\n"
 		"\t -g, --general-discov      \"general-discoverable\" flag\n"
 		"\t -l, --limited-discov      \"limited-discoverable\" flag\n"
@@ -4018,6 +3944,7 @@ static void cmd_advsize(struct mgmt *mgmt, uint16_t index,
 			break;
 		default:
 			advsize_usage();
+			optind = 0;
 			return noninteractive_quit(EXIT_FAILURE);
 		}
 	}
@@ -4071,7 +3998,8 @@ static void add_adv_rsp(uint8_t status, uint16_t len, const void *param,
 
 static void add_adv_usage(void)
 {
-	print("Usage: add-adv [options] <instance_id>\nOptions:\n"
+	cmd_usage("add-adv");
+	print("Options:\n"
 		"\t -u, --uuid <uuid>         Service UUID\n"
 		"\t -d, --adv-data <data>     Advertising Data bytes\n"
 		"\t -s, --scan-rsp <data>     Scan Response Data bytes\n"
@@ -4253,6 +4181,7 @@ static void cmd_add_adv(struct mgmt *mgmt, uint16_t index,
 			/* fall through */
 		default:
 			add_adv_usage();
+			optind = 0;
 			goto done;
 		}
 	}
@@ -4333,18 +4262,13 @@ static void rm_adv_rsp(uint8_t status, uint16_t len, const void *param,
 	return noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void rm_adv_usage(void)
-{
-	print("Usage: rm-adv <instance_id>");
-}
-
 static void cmd_rm_adv(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 {
 	struct mgmt_cp_remove_advertising cp;
 	uint8_t instance;
 
 	if (argc != 2) {
-		rm_adv_usage();
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -4390,7 +4314,7 @@ static void cmd_appearance(struct mgmt *mgmt, uint16_t index, int argc,
 	struct mgmt_cp_set_appearance cp;
 
 	if (argc < 2) {
-		print("Usage: appearance <appearance>");
+		cmd_usage(argv[0]);
 		return noninteractive_quit(EXIT_FAILURE);
 	}
 
@@ -4408,6 +4332,7 @@ static void cmd_appearance(struct mgmt *mgmt, uint16_t index, int argc,
 
 struct cmd_info {
 	char *cmd;
+	const char *arg;
 	void (*func)(struct mgmt *mgmt, uint16_t index, int argc, char **argv);
 	char *doc;
 	char * (*gen) (const char *text, int state);
@@ -4415,66 +4340,128 @@ struct cmd_info {
 };
 
 static struct cmd_info all_cmd[] = {
-	{ "version",	cmd_version,	"Get the MGMT Version"		},
-	{ "commands",	cmd_commands,	"List supported commands"	},
-	{ "config",	cmd_config,	"Show configuration info"	},
-	{ "info",	cmd_info,	"Show controller info"		},
-	{ "extinfo",	cmd_extinfo,	"Show extended controller info"	},
-	{ "auto-power",	cmd_auto_power,	"Power all available features"	},
-	{ "power",	cmd_power,	"Toggle powered state"		},
-	{ "discov",	cmd_discov,	"Toggle discoverable state"	},
-	{ "connectable",cmd_connectable,"Toggle connectable state"	},
-	{ "fast-conn",	cmd_fast_conn,	"Toggle fast connectable state"	},
-	{ "bondable",	cmd_bondable,	"Toggle bondable state"		},
-	{ "pairable",	cmd_bondable,	"Toggle bondable state"		},
-	{ "linksec",	cmd_linksec,	"Toggle link level security"	},
-	{ "ssp",	cmd_ssp,	"Toggle SSP mode"		},
-	{ "sc",		cmd_sc,		"Toogle SC support"		},
-	{ "hs",		cmd_hs,		"Toggle HS support"		},
-	{ "le",		cmd_le,		"Toggle LE support"		},
-	{ "advertising",cmd_advertising,"Toggle LE advertising",	},
-	{ "bredr",	cmd_bredr,	"Toggle BR/EDR support",	},
-	{ "privacy",	cmd_privacy,	"Toggle privacy support"	},
-	{ "class",	cmd_class,	"Set device major/minor class"	},
-	{ "disconnect", cmd_disconnect, "Disconnect device"		},
-	{ "con",	cmd_con,	"List connections"		},
-	{ "find",	cmd_find,	"Discover nearby devices"	},
-	{ "find-service", cmd_find_service, "Discover nearby service"	},
-	{ "stop-find",	cmd_stop_find,	"Stop discovery"		},
-	{ "name",	cmd_name,	"Set local name"		},
-	{ "pair",	cmd_pair,	"Pair with a remote device"	},
-	{ "cancelpair",	cmd_cancel_pair,"Cancel pairing"		},
-	{ "unpair",	cmd_unpair,	"Unpair device"			},
-	{ "keys",	cmd_keys,	"Load Link Keys"		},
-	{ "ltks",	cmd_ltks,	"Load Long Term Keys"		},
-	{ "irks",	cmd_irks,	"Load Identity Resolving Keys"	},
-	{ "block",	cmd_block,	"Block Device"			},
-	{ "unblock",	cmd_unblock,	"Unblock Device"		},
-	{ "add-uuid",	cmd_add_uuid,	"Add UUID"			},
-	{ "rm-uuid",	cmd_remove_uuid,"Remove UUID"			},
-	{ "clr-uuids",	cmd_clr_uuids,	"Clear UUIDs"			},
-	{ "local-oob",	cmd_local_oob,	"Local OOB data"		},
-	{ "remote-oob",	cmd_remote_oob,	"Remote OOB data"		},
-	{ "did",	cmd_did,	"Set Device ID"			},
-	{ "static-addr",cmd_static_addr,"Set static address"		},
-	{ "public-addr",cmd_public_addr,"Set public address"		},
-	{ "ext-config",	cmd_ext_config,	"External configuration"	},
-	{ "debug-keys",	cmd_debug_keys,	"Toogle debug keys"		},
-	{ "conn-info",	cmd_conn_info,	"Get connection information"	},
-	{ "io-cap",	cmd_io_cap,	"Set IO Capability"		},
-	{ "scan-params",cmd_scan_params,"Set Scan Parameters"		},
-	{ "get-clock",	cmd_clock_info,	"Get Clock Information"		},
-	{ "add-device", cmd_add_device, "Add Device"			},
-	{ "del-device", cmd_del_device, "Remove Device"			},
-	{ "clr-devices",cmd_clr_devices,"Clear Devices"			},
-	{ "bredr-oob",	cmd_bredr_oob,	"Local OOB data (BR/EDR)"	},
-	{ "le-oob",	cmd_le_oob,	"Local OOB data (LE)"		},
-	{ "advinfo",	cmd_advinfo,	"Show advertising features"	},
-	{ "advsize",	cmd_advsize,	"Show advertising size info"	},
-	{ "add-adv",	cmd_add_adv,	"Add advertising instance"	},
-	{ "rm-adv",	cmd_rm_adv,	"Remove advertising instance"	},
-	{ "clr-adv",	cmd_clr_adv,	"Clear advertising instances"	},
-	{ "appearance",	cmd_appearance,	"Set appearance"		},
+	{ "version",		NULL,
+		cmd_version,		"Get the MGMT Version"		},
+	{ "commands",		NULL,
+		cmd_commands,		"List supported commands"	},
+	{ "config",		NULL,
+		cmd_config,		"Show configuration info"	},
+	{ "info",		NULL,
+		cmd_info,		"Show controller info"		},
+	{ "extinfo",		NULL,
+		cmd_extinfo,		"Show extended controller info"	},
+	{ "auto-power",		NULL,
+		cmd_auto_power,		"Power all available features"	},
+	{ "power",		"<on/off>",
+		cmd_power,		"Toggle powered state"		},
+	{ "discov",		"<yes/no/limited> [timeout]",
+		cmd_discov,		"Toggle discoverable state"	},
+	{ "connectable",	"<on/off>",
+	cmd_connectable,		"Toggle connectable state"	},
+	{ "fast-conn",		"<on/off>",
+		cmd_fast_conn,		"Toggle fast connectable state"	},
+	{ "bondable",		"<on/off>",
+		cmd_bondable,		"Toggle bondable state"		},
+	{ "pairable",		"<on/off>",
+		cmd_bondable,		"Toggle bondable state"		},
+	{ "linksec",		"<on/off>",
+		cmd_linksec,		"Toggle link level security"	},
+	{ "ssp",		"<on/off>",
+		cmd_ssp,		"Toggle SSP mode"		},
+	{ "sc",			"<on/off/only>",
+		cmd_sc,			"Toogle SC support"		},
+	{ "hs",			"<on/off>",
+		cmd_hs,			"Toggle HS support"		},
+	{ "le",			"<on/off>",
+		cmd_le,			"Toggle LE support"		},
+	{ "advertising",	"<on/off>",
+	cmd_advertising,		"Toggle LE advertising",	},
+	{ "bredr",		"<on/off>",
+		cmd_bredr,		"Toggle BR/EDR support",	},
+	{ "privacy",		"<on/off>",
+		cmd_privacy,		"Toggle privacy support"	},
+	{ "class",		"<major> <minor>",
+		cmd_class,		"Set device major/minor class"	},
+	{ "disconnect", 	"[-t type] <remote address>",
+		cmd_disconnect,		"Disconnect device"		},
+	{ "con",		NULL,
+		cmd_con,		"List connections"		},
+	{ "find",		"[-l|-b] [-L]",
+		cmd_find,		"Discover nearby devices"	},
+	{ "find-service",	"[-u UUID] [-r RSSI_Threshold] [-l|-b]",
+		cmd_find_service,	"Discover nearby service"	},
+	{ "stop-find",		"[-l|-b]",
+		cmd_stop_find,		"Stop discovery"		},
+	{ "name",		"<name> [shortname]",
+		cmd_name,		"Set local name"		},
+	{ "pair",		"[-c cap] [-t type] <remote address>",
+		cmd_pair,		"Pair with a remote device"	},
+	{ "cancelpair",		"[-t type] <remote address>",
+		cmd_cancel_pair,	"Cancel pairing"		},
+	{ "unpair",		"[-t type] <remote address>",
+		cmd_unpair,		"Unpair device"			},
+	{ "keys",		NULL,
+		cmd_keys,		"Load Link Keys"		},
+	{ "ltks",		NULL,
+		cmd_ltks,		"Load Long Term Keys"		},
+	{ "irks",		"[--local <index>] [--file <file path>]",
+		cmd_irks,		"Load Identity Resolving Keys"	},
+	{ "block",		"[-t type] <remote address>",
+		cmd_block,		"Block Device"			},
+	{ "unblock",		"[-t type] <remote address>",
+		cmd_unblock,		"Unblock Device"		},
+	{ "add-uuid",		"<UUID> <service class hint>",
+		cmd_add_uuid,		"Add UUID"			},
+	{ "rm-uuid",		"<UUID>",
+		cmd_remove_uuid,	"Remove UUID"			},
+	{ "clr-uuids",		NULL,
+		cmd_clr_uuids,		"Clear UUIDs"			},
+	{ "local-oob",		NULL,
+		cmd_local_oob,		"Local OOB data"		},
+	{ "remote-oob",		"[-t <addr_type>] [-r <rand192>] "
+				"[-h <hash192>] [-R <rand256>] "
+				"[-H <hash256>] <addr>",
+		cmd_remote_oob,		"Remote OOB data"		},
+	{ "did",		"<source>:<vendor>:<product>:<version>",
+		cmd_did,		"Set Device ID"			},
+	{ "static-addr",	"<address>",
+		cmd_static_addr,	"Set static address"		},
+	{ "public-addr",	"<address>",
+		cmd_public_addr,	"Set public address"		},
+	{ "ext-config",		"<on/off>",
+		cmd_ext_config,		"External configuration"	},
+	{ "debug-keys",		"<on/off>",
+		cmd_debug_keys,		"Toogle debug keys"		},
+	{ "conn-info",		"[-t type] <remote address>",
+		cmd_conn_info,		"Get connection information"	},
+	{ "io-cap",		"<cap>",
+		cmd_io_cap,		"Set IO Capability"		},
+	{ "scan-params",	"<interval> <window>",
+		cmd_scan_params,	"Set Scan Parameters"		},
+	{ "get-clock",		"[address]",
+		cmd_clock_info,		"Get Clock Information"		},
+	{ "add-device", 	"[-a action] [-t type] <address>",
+		cmd_add_device,		"Add Device"			},
+	{ "del-device", 	"[-t type] <address>",
+		cmd_del_device,		"Remove Device"			},
+	{ "clr-devices",	NULL,
+		cmd_clr_devices,	"Clear Devices"			},
+	{ "bredr-oob",		NULL,
+		cmd_bredr_oob,		"Local OOB data (BR/EDR)"	},
+	{ "le-oob",		NULL,
+		cmd_le_oob,		"Local OOB data (LE)"		},
+	{ "advinfo",		NULL,
+		cmd_advinfo,		"Show advertising features"	},
+	{ "advsize",		"[options] <instance_id>",
+		cmd_advsize,		"Show advertising size info"	},
+	{ "add-adv",		"[options] <instance_id>",
+		cmd_add_adv,		"Add advertising instance"	},
+	{ "rm-adv",		"<instance_id>",
+		cmd_rm_adv,		"Remove advertising instance"	},
+	{ "clr-adv",		NULL,
+		cmd_clr_adv,		"Clear advertising instances"	},
+	{ "appearance",		"<appearance>",
+		cmd_appearance,		"Set appearance"		},
 };
 
 static void cmd_quit(struct mgmt *mgmt, uint16_t index,
@@ -4541,7 +4528,7 @@ static void cmd_select(struct mgmt *mgmt, uint16_t index,
 						int argc, char **argv)
 {
 	if (argc != 2) {
-		error("Usage: select <index>");
+		cmd_usage(argv[0]);
 		return;
 	}
 
@@ -4564,10 +4551,14 @@ static void cmd_select(struct mgmt *mgmt, uint16_t index,
 }
 
 static struct cmd_info interactive_cmd[] = {
-	{ "select",	cmd_select,	"Select a different index"	},
-	{ "quit",	cmd_quit,	"Exit program"			},
-	{ "exit",	cmd_quit,	"Exit program"			},
-	{ "help",	NULL,		"List supported commands"	},
+	{ "select",	"<index>",
+			cmd_select,	"Select a different index"	},
+	{ "quit",	NULL,
+			cmd_quit,	"Exit program"			},
+	{ "exit",	NULL,
+			cmd_quit,	"Exit program"			},
+	{ "help",	NULL,
+			NULL,		"List supported commands"	},
 };
 
 static char *cmd_generator(const char *text, int state)
@@ -4642,6 +4633,29 @@ static struct cmd_info *find_cmd(const char *cmd, struct cmd_info table[],
 	return NULL;
 }
 
+static void cmd_usage(char *cmd)
+{
+	struct cmd_info *c;
+
+	if (!cmd)
+		return;
+
+	c = find_cmd(cmd, all_cmd, NELEM(all_cmd));
+	if (!c && interactive) {
+		c = find_cmd(cmd, interactive_cmd, NELEM(interactive_cmd));
+		if (!c)
+			return;
+		error("Usage: %s %s", cmd, c->arg ? : "");
+		return;
+	}
+
+	if (!c)
+		return;
+
+	print("Usage: %s %s", cmd, c->arg ? : "");
+
+}
+
 static void rl_handler(char *input)
 {
 	struct cmd_info *c;
@@ -4694,9 +4708,18 @@ static void rl_handler(char *input)
 
 	for (i = 0; i < NELEM(all_cmd); i++) {
 		c = &all_cmd[i];
-		if (c->doc)
-			print("  %s %-*s %s", c->cmd,
-				(int)(25 - strlen(c->cmd)), "", c->doc ? : "");
+		if ((int)strlen(c->arg ? : "") <=
+					(int)(25 - strlen(c->cmd)))
+			printf("  %s %-*s %s\n", c->cmd,
+					(int)(25 - strlen(c->cmd)),
+					c->arg ? : "",
+					c->doc ? : "");
+		else
+			printf("  %s %-s\n" "  %s %-25s %s\n",
+					c->cmd,
+					c->arg ? : "",
+					"", "",
+					c->doc ? : "");
 	}
 
 	if (!interactive)
@@ -4704,9 +4727,18 @@ static void rl_handler(char *input)
 
 	for (i = 0; i < NELEM(interactive_cmd); i++) {
 		c = &interactive_cmd[i];
-		if (c->doc)
-			print("  %s %-*s %s", c->cmd,
-				(int)(25 - strlen(c->cmd)), "", c->doc ? : "");
+		if ((int)strlen(c->arg ? : "") <=
+					(int)(25 - strlen(c->cmd)))
+			printf("  %s %-*s %s\n", c->cmd,
+					(int)(25 - strlen(c->cmd)),
+					c->arg ? : "",
+					c->doc ? : "");
+		else
+			printf("  %s %-s\n" "  %s %-25s %s\n",
+					c->cmd,
+					c->arg ? : "",
+					"", "",
+					c->doc ? : "");
 	}
 
 free_we:
