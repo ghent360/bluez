@@ -44,38 +44,48 @@
 
 #include "src/adapter.h"
 #include "src/device.h"
+#include "src/agent.h"
 #include "src/plugin.h"
 #include "src/log.h"
 #include "src/shared/util.h"
+#include "profiles/input/sixaxis.h"
 
-static const struct {
-	const char *name;
-	uint16_t source;
-	uint16_t vid;
-	uint16_t pid;
-	uint16_t version;
-} devices[] = {
-	{
-		.name = "Sony PLAYSTATION(R)3 Controller",
-		.source = 0x0002,
-		.vid = 0x054c,
-		.pid = 0x0268,
-		.version = 0x0000,
-	},
-	{
-		.name = "Navigation Controller",
-		.source = 0x0002,
-		.vid = 0x054c,
-		.pid = 0x042f,
-		.version = 0x0000,
-	},
+struct authentication_closure {
+	guint auth_id;
+	char *sysfs_path;
+	struct btd_adapter *adapter;
+	struct btd_device *device;
+	int fd;
+	bdaddr_t bdaddr; /* device bdaddr */
+	CablePairingType type;
+};
+
+struct authentication_destroy_closure {
+	struct authentication_closure *closure;
+	bool remove_device;
 };
 
 static struct udev *ctx = NULL;
 static struct udev_monitor *monitor = NULL;
 static guint watch_id = 0;
+/* key = sysfs_path (const str), value = auth_closure */
+static GHashTable *pending_auths = NULL;
 
-static int get_device_bdaddr(int fd, bdaddr_t *bdaddr)
+/* Make sure to unset auth_id if already handled */
+static void auth_closure_destroy(struct authentication_closure *closure,
+				bool remove_device)
+{
+	if (closure->auth_id)
+		btd_cancel_authorization(closure->auth_id);
+
+	if (remove_device)
+		btd_adapter_remove_device(closure->adapter, closure->device);
+	close(closure->fd);
+	g_free(closure->sysfs_path);
+	g_free(closure);
+}
+
+static int sixaxis_get_device_bdaddr(int fd, bdaddr_t *bdaddr)
 {
 	uint8_t buf[18];
 	int ret;
@@ -96,7 +106,38 @@ static int get_device_bdaddr(int fd, bdaddr_t *bdaddr)
 	return 0;
 }
 
-static int get_master_bdaddr(int fd, bdaddr_t *bdaddr)
+static int ds4_get_device_bdaddr(int fd, bdaddr_t *bdaddr)
+{
+	uint8_t buf[7];
+	int ret;
+
+	memset(buf, 0, sizeof(buf));
+
+	buf[0] = 0x81;
+
+	ret = ioctl(fd, HIDIOCGFEATURE(sizeof(buf)), buf);
+	if (ret < 0) {
+		error("sixaxis: failed to read DS4 device address (%s)",
+		      strerror(errno));
+		return ret;
+	}
+
+	/* address is little-endian on DS4 */
+	bacpy(bdaddr, (bdaddr_t*) (buf + 1));
+
+	return 0;
+}
+
+static int get_device_bdaddr(int fd, bdaddr_t *bdaddr, CablePairingType type)
+{
+	if (type == CABLE_PAIRING_SIXAXIS)
+		return sixaxis_get_device_bdaddr(fd, bdaddr);
+	else if (type == CABLE_PAIRING_DS4)
+		return ds4_get_device_bdaddr(fd, bdaddr);
+	return -1;
+}
+
+static int sixaxis_get_master_bdaddr(int fd, bdaddr_t *bdaddr)
 {
 	uint8_t buf[8];
 	int ret;
@@ -117,7 +158,38 @@ static int get_master_bdaddr(int fd, bdaddr_t *bdaddr)
 	return 0;
 }
 
-static int set_master_bdaddr(int fd, const bdaddr_t *bdaddr)
+static int ds4_get_master_bdaddr(int fd, bdaddr_t *bdaddr)
+{
+	uint8_t buf[16];
+	int ret;
+
+	memset(buf, 0, sizeof(buf));
+
+	buf[0] = 0x12;
+
+	ret = ioctl(fd, HIDIOCGFEATURE(sizeof(buf)), buf);
+	if (ret < 0) {
+		error("sixaxis: failed to read DS4 master address (%s)",
+		      strerror(errno));
+		return ret;
+	}
+
+	/* address is little-endian on DS4 */
+	bacpy(bdaddr, (bdaddr_t*) (buf + 10));
+
+	return 0;
+}
+
+static int get_master_bdaddr(int fd, bdaddr_t *bdaddr, CablePairingType type)
+{
+	if (type == CABLE_PAIRING_SIXAXIS)
+		return sixaxis_get_master_bdaddr(fd, bdaddr);
+	else if (type == CABLE_PAIRING_DS4)
+		return ds4_get_master_bdaddr(fd, bdaddr);
+	return -1;
+}
+
+static int sixaxis_set_master_bdaddr(int fd, const bdaddr_t *bdaddr)
 {
 	uint8_t buf[8];
 	int ret;
@@ -135,17 +207,123 @@ static int set_master_bdaddr(int fd, const bdaddr_t *bdaddr)
 	return ret;
 }
 
-static bool setup_device(int fd, int index, struct btd_adapter *adapter)
+static int ds4_set_master_bdaddr(int fd, const bdaddr_t *bdaddr)
 {
-	char device_addr[18], master_addr[18], adapter_addr[18];
-	bdaddr_t device_bdaddr, master_bdaddr;
+	uint8_t buf[23];
+	int ret;
+
+	buf[0] = 0x13;
+	bacpy((bdaddr_t*) (buf + 1), bdaddr);
+	/* TODO: we could put the key here but
+	   there is no way to force a re-loading
+	   of link keys to the kernel from here. */
+	memset(buf + 7, 0, 16);
+
+	ret = ioctl(fd, HIDIOCSFEATURE(sizeof(buf)), buf);
+	if (ret < 0)
+		error("sixaxis: failed to write DS4 master address (%s)",
+		      strerror(errno));
+
+	return ret;
+}
+
+static int set_master_bdaddr(int fd, const bdaddr_t *bdaddr,
+					CablePairingType type)
+{
+	if (type == CABLE_PAIRING_SIXAXIS)
+		return sixaxis_set_master_bdaddr(fd, bdaddr);
+	else if (type == CABLE_PAIRING_DS4)
+		return ds4_set_master_bdaddr(fd, bdaddr);
+	return -1;
+}
+
+static bool is_auth_pending(struct authentication_closure *closure)
+{
+	GHashTableIter iter;
+	gpointer value;
+
+	g_hash_table_iter_init(&iter, pending_auths);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		struct authentication_closure *c = value;
+		if (c == closure)
+			return true;
+	}
+	return false;
+}
+
+static gboolean auth_closure_destroy_idle(gpointer user_data)
+{
+	struct authentication_destroy_closure *destroy = user_data;
+
+	auth_closure_destroy(destroy->closure, destroy->remove_device);
+	g_free(destroy);
+
+	return false;
+}
+
+static void agent_auth_cb(DBusError *derr, void *user_data)
+{
+	struct authentication_closure *closure = user_data;
+	struct authentication_destroy_closure *destroy;
+	char master_addr[18], adapter_addr[18], device_addr[18];
+	bdaddr_t master_bdaddr;
+	const bdaddr_t *adapter_bdaddr;
+	bool remove_device = true;
+
+	if (!is_auth_pending(closure))
+		return;
+
+	/* Don't try to remove this auth, we're handling it already */
+	closure->auth_id = 0;
+
+	if (derr != NULL) {
+		DBG("Agent replied negatively, removing temporary device");
+		goto out;
+	}
+
+	if (get_master_bdaddr(closure->fd, &master_bdaddr, closure->type) < 0)
+		goto out;
+
+	adapter_bdaddr = btd_adapter_get_address(closure->adapter);
+	if (bacmp(adapter_bdaddr, &master_bdaddr)) {
+		if (set_master_bdaddr(closure->fd, adapter_bdaddr,
+							closure->type) < 0)
+			goto out;
+	}
+
+	remove_device = false;
+	btd_device_set_trusted(closure->device, true);
+	btd_device_set_temporary(closure->device, false);
+
+	ba2str(&closure->bdaddr, device_addr);
+	ba2str(&master_bdaddr, master_addr);
+	ba2str(adapter_bdaddr, adapter_addr);
+	DBG("remote %s old_master %s new_master %s",
+				device_addr, master_addr, adapter_addr);
+
+out:
+	g_hash_table_steal(pending_auths, closure->sysfs_path);
+
+	/* btd_adapter_remove_device() cannot be called in this
+	 * callback or it would lead to a double-free in while
+	 * trying to cancel the authentication that's being processed,
+	 * so clean up in an idle */
+	destroy = g_new0(struct authentication_destroy_closure, 1);
+	destroy->closure = closure;
+	destroy->remove_device = remove_device;
+	g_idle_add(auth_closure_destroy_idle, destroy);
+}
+
+static bool setup_device(int fd, const char *sysfs_path,
+			const struct cable_pairing *cp,
+			struct btd_adapter *adapter)
+{
+	bdaddr_t device_bdaddr;
 	const bdaddr_t *adapter_bdaddr;
 	struct btd_device *device;
+	struct authentication_closure *closure;
 
-	if (get_device_bdaddr(fd, &device_bdaddr) < 0)
-		return false;
-
-	if (get_master_bdaddr(fd, &master_bdaddr) < 0)
+	if (get_device_bdaddr(fd, &device_bdaddr, cp->type) < 0)
 		return false;
 
 	/* This can happen if controller was plugged while already connected
@@ -155,89 +333,118 @@ static bool setup_device(int fd, int index, struct btd_adapter *adapter)
 	if (device && btd_device_is_connected(device))
 		return false;
 
-	adapter_bdaddr = btd_adapter_get_address(adapter);
-
-	if (bacmp(adapter_bdaddr, &master_bdaddr)) {
-		if (set_master_bdaddr(fd, adapter_bdaddr) < 0)
-			return false;
-	}
-
-	ba2str(&device_bdaddr, device_addr);
-	ba2str(&master_bdaddr, master_addr);
-	ba2str(adapter_bdaddr, adapter_addr);
-	DBG("remote %s old_master %s new_master %s",
-				device_addr, master_addr, adapter_addr);
-
 	device = btd_adapter_get_device(adapter, &device_bdaddr, BDADDR_BREDR);
 
 	if (g_slist_find_custom(btd_device_get_uuids(device), HID_UUID,
 						(GCompareFunc)strcasecmp)) {
+		char device_addr[18];
+		ba2str(&device_bdaddr, device_addr);
 		DBG("device %s already known, skipping", device_addr);
-		return true;
+		return false;
 	}
 
 	info("sixaxis: setting up new device");
 
-	btd_device_device_set_name(device, devices[index].name);
-	btd_device_set_pnpid(device, devices[index].source, devices[index].vid,
-				devices[index].pid, devices[index].version);
-	btd_device_set_temporary(device, false);
+	btd_device_device_set_name(device, cp->name);
+	btd_device_set_pnpid(device, cp->source, cp->vid, cp->pid, cp->version);
+	btd_device_set_temporary(device, true);
+
+	closure = g_new0(struct authentication_closure, 1);
+	if (!closure) {
+		btd_adapter_remove_device(adapter, device);
+		return false;
+	}
+	closure->adapter = adapter;
+	closure->device = device;
+	closure->sysfs_path = g_strdup(sysfs_path);
+	closure->fd = fd;
+	bacpy(&closure->bdaddr, &device_bdaddr);
+	closure->type = cp->type;
+	adapter_bdaddr = btd_adapter_get_address(adapter);
+	closure->auth_id = btd_request_authorization_cable_configured(
+					adapter_bdaddr, &device_bdaddr,
+					HID_UUID, agent_auth_cb, closure);
+
+	g_hash_table_insert(pending_auths, closure->sysfs_path, closure);
 
 	return true;
 }
 
-static int get_supported_device(struct udev_device *udevice, uint16_t *bus)
+static const struct cable_pairing *
+get_pairing_type_for_device(struct udev_device *udevice, uint16_t *bus,
+						char **sysfs_path)
 {
 	struct udev_device *hid_parent;
-	uint16_t vid, pid;
 	const char *hid_id;
-	guint i;
+	const struct cable_pairing *cp;
+	uint16_t vid, pid;
 
 	hid_parent = udev_device_get_parent_with_subsystem_devtype(udevice,
 								"hid", NULL);
 	if (!hid_parent)
-		return -1;
+		return NULL;
 
 	hid_id = udev_device_get_property_value(hid_parent, "HID_ID");
 
 	if (sscanf(hid_id, "%hx:%hx:%hx", bus, &vid, &pid) != 3)
-		return -1;
+		return NULL;
 
-	for (i = 0; i < G_N_ELEMENTS(devices); i++) {
-		if (devices[i].vid == vid && devices[i].pid == pid)
-			return i;
-	}
+	cp = get_pairing(vid, pid);
+	*sysfs_path = g_strdup(udev_device_get_syspath(udevice));
 
-	return -1;
+	return cp;
 }
 
 static void device_added(struct udev_device *udevice)
 {
 	struct btd_adapter *adapter;
 	uint16_t bus;
-	int index;
+	char *sysfs_path = NULL;
+	const struct cable_pairing *cp;
 	int fd;
 
 	adapter = btd_adapter_get_default();
 	if (!adapter)
 		return;
 
-	index = get_supported_device(udevice, &bus);
-	if (index < 0)
+	cp = get_pairing_type_for_device(udevice, &bus, &sysfs_path);
+	if (!cp || (cp->type != CABLE_PAIRING_SIXAXIS &&
+				cp->type != CABLE_PAIRING_DS4))
 		return;
 	if (bus != BUS_USB)
 		return;
 
-	info("sixaxis: compatible device connected: %s (%04X:%04X)",
-				devices[index].name, devices[index].vid,
-				devices[index].pid);
+	info("sixaxis: compatible device connected: %s (%04X:%04X %s)",
+				cp->name, cp->vid, cp->pid, sysfs_path);
 
 	fd = open(udev_device_get_devnode(udevice), O_RDWR);
-	if (fd < 0)
+	if (fd < 0) {
+		g_free(sysfs_path);
+		return;
+	}
+
+	/* Only close the fd if an authentication is not pending */
+	if (!setup_device(fd, sysfs_path, cp, adapter))
+		close(fd);
+
+	g_free(sysfs_path);
+}
+
+static void device_removed(struct udev_device *udevice)
+{
+	struct authentication_closure *closure;
+	const char *sysfs_path;
+
+	sysfs_path = udev_device_get_syspath(udevice);
+	if (!sysfs_path)
 		return;
 
-	setup_device(fd, index, adapter);
-	close(fd);
+	closure = g_hash_table_lookup(pending_auths, sysfs_path);
+	if (!closure)
+		return;
+
+	g_hash_table_steal(pending_auths, sysfs_path);
+	auth_closure_destroy(closure, true);
 }
 
 static gboolean monitor_watch(GIOChannel *source, GIOCondition condition,
@@ -251,6 +458,8 @@ static gboolean monitor_watch(GIOChannel *source, GIOCondition condition,
 
 	if (!g_strcmp0(udev_device_get_action(udevice), "add"))
 		device_added(udevice);
+	else if (!g_strcmp0(udev_device_get_action(udevice), "remove"))
+		device_removed(udevice);
 
 	udev_device_unref(udevice);
 
@@ -284,12 +493,26 @@ static int sixaxis_init(void)
 	watch_id = g_io_add_watch(channel, G_IO_IN, monitor_watch, NULL);
 	g_io_channel_unref(channel);
 
+	pending_auths = g_hash_table_new(g_str_hash,
+					g_str_equal);
+
 	return 0;
 }
 
 static void sixaxis_exit(void)
 {
+	GHashTableIter iter;
+	gpointer value;
+
 	DBG("");
+
+	g_hash_table_iter_init(&iter, pending_auths);
+	while (g_hash_table_iter_next(&iter, NULL, &value)) {
+		struct authentication_closure *closure = value;
+		auth_closure_destroy(closure, true);
+	}
+	g_hash_table_destroy(pending_auths);
+	pending_auths = NULL;
 
 	g_source_remove(watch_id);
 	watch_id = 0;
