@@ -62,6 +62,7 @@
 #define AVC_PRESS_TIMEOUT	2
 
 #define CONTROL_TIMEOUT		AVC_PRESS_TIMEOUT
+#define BROWSING_TIMEOUT	10
 
 #define QUIRK_NO_RELEASE 1 << 0
 
@@ -156,6 +157,7 @@ struct avctp_pending_req {
 	struct avctp_channel *chan;
 	uint8_t transaction;
 	guint timeout;
+	bool retry;
 	int err;
 	avctp_process_cb process;
 	void *data;
@@ -617,6 +619,39 @@ static void avctp_set_state(struct avctp *session, avctp_state_t new_state,
 	}
 }
 
+static uint8_t chan_get_transaction(struct avctp_channel *chan)
+{
+	GSList *l, *tmp;
+	uint8_t transaction;
+
+	if (!chan->processed)
+		goto done;
+
+	tmp = g_slist_copy(chan->processed);
+
+	/* Find first unused transaction id */
+	for (l = tmp; l; l = g_slist_next(l)) {
+		struct avctp_pending_req *req = l->data;
+
+		if (req->transaction == chan->transaction) {
+			chan->transaction++;
+			chan->transaction %= 16;
+			tmp = g_slist_delete_link(tmp, l);
+			l = tmp;
+		}
+	}
+
+	g_slist_free(tmp);
+
+done:
+	transaction = chan->transaction;
+
+	chan->transaction++;
+	chan->transaction %= 16;
+
+	return transaction;
+}
+
 static int avctp_send(struct avctp_channel *control, uint8_t transaction,
 				uint8_t cr, uint8_t code,
 				uint8_t subunit, uint8_t opcode,
@@ -642,6 +677,9 @@ static int avctp_send(struct avctp_channel *control, uint8_t transaction,
 
 	avctp = (void *) control->buffer;
 	avc = (void *) avctp + sizeof(*avctp);
+
+	if (transaction > 16)
+		transaction = chan_get_transaction(control);
 
 	avctp->transaction = transaction;
 	avctp->packet_type = AVCTP_PACKET_SINGLE;
@@ -738,9 +776,16 @@ static gboolean req_timeout(gpointer user_data)
 	struct avctp_channel *chan = user_data;
 	struct avctp_pending_req *p = chan->p;
 
-	DBG("transaction %u", p->transaction);
+	DBG("transaction %u retry %s", p->transaction, p->retry ? "true" :
+								"false");
 
 	p->timeout = 0;
+
+	if (p->retry) {
+		p->process(p->data);
+		return FALSE;
+	}
+
 	p->err = -ETIMEDOUT;
 
 	pending_destroy(p, NULL);
@@ -764,6 +809,9 @@ static int process_control(void *data)
 	if (ret < 0)
 		return ret;
 
+	if (req->op != AVC_OP_PASSTHROUGH)
+		p->retry = !p->retry;
+
 	p->timeout = g_timeout_add_seconds(CONTROL_TIMEOUT, req_timeout,
 								p->chan);
 
@@ -774,9 +822,17 @@ static int process_browsing(void *data)
 {
 	struct avctp_browsing_req *req = data;
 	struct avctp_pending_req *p = req->p;
+	int ret;
 
-	return avctp_browsing_send(p->chan, p->transaction, AVCTP_COMMAND,
+	ret = avctp_browsing_send(p->chan, p->transaction, AVCTP_COMMAND,
 					req->operands, req->operand_count);
+	if (ret < 0)
+		return ret;
+
+	p->timeout = g_timeout_add_seconds(BROWSING_TIMEOUT, req_timeout,
+								p->chan);
+
+	return 0;
 }
 
 static gboolean process_queue(void *user_data)
@@ -1556,37 +1612,13 @@ static struct avctp_pending_req *pending_create(struct avctp_channel *chan,
 						GDestroyNotify destroy)
 {
 	struct avctp_pending_req *p;
-	GSList *l, *tmp;
 
-	if (!chan->processed)
-		goto done;
-
-	tmp = g_slist_copy(chan->processed);
-
-	/* Find first unused transaction id */
-	for (l = tmp; l; l = g_slist_next(l)) {
-		struct avctp_pending_req *req = l->data;
-
-		if (req->transaction == chan->transaction) {
-			chan->transaction++;
-			chan->transaction %= 16;
-			tmp = g_slist_delete_link(tmp, l);
-			l = tmp;
-		}
-	}
-
-	g_slist_free(tmp);
-
-done:
 	p = g_new0(struct avctp_pending_req, 1);
 	p->chan = chan;
-	p->transaction = chan->transaction;
+	p->transaction = chan_get_transaction(chan);
 	p->process = process;
 	p->data = data;
 	p->destroy = destroy;
-
-	chan->transaction++;
-	chan->transaction %= 16;
 
 	return p;
 }
@@ -1602,6 +1634,11 @@ static int avctp_send_req(struct avctp *session, uint8_t code,
 
 	if (control == NULL)
 		return -ENOTCONN;
+
+	/* If the request set a callback send it directly */
+	if (!func)
+		return avctp_send(session->control, -1, AVCTP_COMMAND,
+				code, subunit, opcode, operands, operand_count);
 
 	req = g_new0(struct avctp_control_req, 1);
 	req->code = code;
