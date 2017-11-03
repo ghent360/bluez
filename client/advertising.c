@@ -456,6 +456,7 @@ void ad_advertise_service(DBusConnection *conn, const char *arg)
 
 		if (i >= G_N_ELEMENTS(data->data)) {
 			rl_printf("Too much data\n");
+			ad_clear_service();
 			goto done;
 		}
 
@@ -511,13 +512,14 @@ void ad_advertise_manufacturer(DBusConnection *conn, const char *arg)
 	for (i = 1; i < w.we_wordc; i++) {
 		if (i >= G_N_ELEMENTS(data->data)) {
 			rl_printf("Too much data\n");
+			ad_clear_manufacturer();
 			goto done;
 		}
 
 		val = strtol(w.we_wordv[i], &endptr, 0);
 		if (!endptr || *endptr != '\0' || val > UINT8_MAX) {
 			rl_printf("Invalid value at index %d\n", i);
-			ad_clear_service();
+			ad_clear_manufacturer();
 			goto done;
 		}
 
