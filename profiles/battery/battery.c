@@ -85,8 +85,6 @@ static void batt_reset(struct batt *batt)
 	batt->attr = NULL;
 	gatt_db_unref(batt->db);
 	batt->db = NULL;
-	bt_gatt_client_unregister_notify(batt->client, batt->batt_level_cb_id);
-	bt_gatt_client_cancel_all(batt->client);
 	bt_gatt_client_unref(batt->client);
 	batt->client = NULL;
 	g_free (batt->initial_value);
@@ -97,7 +95,6 @@ static void batt_reset(struct batt *batt)
 		g_free(batt->path);
 		batt->path = NULL;
 	}
-	btd_device_unref(batt->device);
 }
 
 static void parse_battery_level(struct batt *batt,
