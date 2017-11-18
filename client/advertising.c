@@ -29,11 +29,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <readline/readline.h>
-#include <wordexp.h>
+#include <string.h>
 
 #include "gdbus/gdbus.h"
-#include "display.h"
+#include "src/shared/shell.h"
 #include "advertising.h"
 
 #define AD_PATH "/org/bluez/advertising"
@@ -82,7 +81,7 @@ static void ad_release(DBusConnection *conn)
 static DBusMessage *release_advertising(DBusConnection *conn,
 					DBusMessage *msg, void *user_data)
 {
-	rl_printf("Advertising released\n");
+	bt_shell_printf("Advertising released\n");
 
 	ad_release(conn);
 
@@ -117,14 +116,14 @@ static void register_reply(DBusMessage *message, void *user_data)
 
 	if (dbus_set_error_from_message(&error, message) == FALSE) {
 		ad.registered = true;
-		rl_printf("Advertising object registered\n");
+		bt_shell_printf("Advertising object registered\n");
 	} else {
-		rl_printf("Failed to register advertisement: %s\n", error.name);
+		bt_shell_printf("Failed to register advertisement: %s\n", error.name);
 		dbus_error_free(&error);
 
 		if (g_dbus_unregister_interface(conn, AD_PATH,
 						AD_IFACE) == FALSE)
-			rl_printf("Failed to unregister advertising object\n");
+			bt_shell_printf("Failed to unregister advertising object\n");
 	}
 }
 
@@ -368,7 +367,7 @@ static const GDBusPropertyTable ad_props[] = {
 void ad_register(DBusConnection *conn, GDBusProxy *manager, const char *type)
 {
 	if (ad.registered) {
-		rl_printf("Advertisement is already registered\n");
+		bt_shell_printf("Advertisement is already registered\n");
 		return;
 	}
 
@@ -377,14 +376,14 @@ void ad_register(DBusConnection *conn, GDBusProxy *manager, const char *type)
 
 	if (g_dbus_register_interface(conn, AD_PATH, AD_IFACE, ad_methods,
 					NULL, ad_props, NULL, NULL) == FALSE) {
-		rl_printf("Failed to register advertising object\n");
+		bt_shell_printf("Failed to register advertising object\n");
 		return;
 	}
 
 	if (g_dbus_proxy_method_call(manager, "RegisterAdvertisement",
 					register_setup, register_reply,
 					conn, NULL) == FALSE) {
-		rl_printf("Failed to register advertising\n");
+		bt_shell_printf("Failed to register advertising\n");
 		return;
 	}
 }
@@ -405,12 +404,12 @@ static void unregister_reply(DBusMessage *message, void *user_data)
 
 	if (dbus_set_error_from_message(&error, message) == FALSE) {
 		ad.registered = false;
-		rl_printf("Advertising object unregistered\n");
+		bt_shell_printf("Advertising object unregistered\n");
 		if (g_dbus_unregister_interface(conn, AD_PATH,
 							AD_IFACE) == FALSE)
-			rl_printf("Failed to unregister advertising object\n");
+			bt_shell_printf("Failed to unregister advertising object\n");
 	} else {
-		rl_printf("Failed to unregister advertisement: %s\n",
+		bt_shell_printf("Failed to unregister advertisement: %s\n",
 								error.name);
 		dbus_error_free(&error);
 	}
@@ -430,23 +429,23 @@ void ad_unregister(DBusConnection *conn, GDBusProxy *manager)
 	if (g_dbus_proxy_method_call(manager, "UnregisterAdvertisement",
 					unregister_setup, unregister_reply,
 					conn, NULL) == FALSE) {
-		rl_printf("Failed to unregister advertisement method\n");
+		bt_shell_printf("Failed to unregister advertisement method\n");
 		return;
 	}
 }
 
-void ad_advertise_uuids(DBusConnection *conn, const char *arg)
+void ad_advertise_uuids(DBusConnection *conn, int argc, char *argv[])
 {
 	g_strfreev(ad.uuids);
 	ad.uuids = NULL;
 	ad.uuids_len = 0;
 
-	if (!arg || !strlen(arg))
+	if (!argc || !strlen(argv[0]))
 		return;
 
-	ad.uuids = g_strsplit(arg, " ", -1);
+	ad.uuids = g_strdupv(argv);
 	if (!ad.uuids) {
-		rl_printf("Failed to parse input\n");
+		bt_shell_printf("Failed to parse input\n");
 		return;
 	}
 
@@ -461,40 +460,34 @@ static void ad_clear_service(void)
 	memset(&ad.service, 0, sizeof(ad.service));
 }
 
-void ad_advertise_service(DBusConnection *conn, const char *arg)
+void ad_advertise_service(DBusConnection *conn, int argc, char *argv[])
 {
-	wordexp_t w;
 	unsigned int i;
 	struct ad_data *data;
 
-	if (wordexp(arg, &w, WRDE_NOCMD)) {
-		rl_printf("Invalid argument\n");
-		return;
-	}
-
 	ad_clear_service();
 
-	if (w.we_wordc == 0)
-		goto done;
+	if (!argc)
+		return;
 
-	ad.service.uuid = g_strdup(w.we_wordv[0]);
+	ad.service.uuid = g_strdup(argv[0]);
 	data = &ad.service.data;
 
-	for (i = 1; i < w.we_wordc; i++) {
+	for (i = 1; i < (unsigned int) argc; i++) {
 		long int val;
 		char *endptr = NULL;
 
 		if (i >= G_N_ELEMENTS(data->data)) {
-			rl_printf("Too much data\n");
+			bt_shell_printf("Too much data\n");
 			ad_clear_service();
-			goto done;
+			return;
 		}
 
-		val = strtol(w.we_wordv[i], &endptr, 0);
+		val = strtol(argv[i], &endptr, 0);
 		if (!endptr || *endptr != '\0' || val > UINT8_MAX) {
-			rl_printf("Invalid value at index %d\n", i);
+			bt_shell_printf("Invalid value at index %d\n", i);
 			ad_clear_service();
-			goto done;
+			return;
 		}
 
 		data->data[data->len] = val;
@@ -502,9 +495,6 @@ void ad_advertise_service(DBusConnection *conn, const char *arg)
 	}
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "ServiceData");
-
-done:
-	wordfree(&w);
 }
 
 static void ad_clear_manufacturer(void)
@@ -512,45 +502,39 @@ static void ad_clear_manufacturer(void)
 	memset(&ad.manufacturer, 0, sizeof(ad.manufacturer));
 }
 
-void ad_advertise_manufacturer(DBusConnection *conn, const char *arg)
+void ad_advertise_manufacturer(DBusConnection *conn, int argc, char *argv[])
 {
-	wordexp_t w;
 	unsigned int i;
 	char *endptr = NULL;
 	long int val;
 	struct ad_data *data;
 
-	if (wordexp(arg, &w, WRDE_NOCMD)) {
-		rl_printf("Invalid argument\n");
-		return;
-	}
-
 	ad_clear_manufacturer();
 
-	if (w.we_wordc == 0)
-		goto done;
+	if (argc == 0)
+		return;
 
-	val = strtol(w.we_wordv[0], &endptr, 0);
+	val = strtol(argv[0], &endptr, 0);
 	if (!endptr || *endptr != '\0' || val > UINT16_MAX) {
-		rl_printf("Invalid manufacture id\n");
-		goto done;
+		bt_shell_printf("Invalid manufacture id\n");
+		return;
 	}
 
 	ad.manufacturer.id = val;
 	data = &ad.manufacturer.data;
 
-	for (i = 1; i < w.we_wordc; i++) {
+	for (i = 1; i < (unsigned int) argc; i++) {
 		if (i >= G_N_ELEMENTS(data->data)) {
-			rl_printf("Too much data\n");
+			bt_shell_printf("Too much data\n");
 			ad_clear_manufacturer();
-			goto done;
+			return;
 		}
 
-		val = strtol(w.we_wordv[i], &endptr, 0);
+		val = strtol(argv[i], &endptr, 0);
 		if (!endptr || *endptr != '\0' || val > UINT8_MAX) {
-			rl_printf("Invalid value at index %d\n", i);
+			bt_shell_printf("Invalid value at index %d\n", i);
 			ad_clear_manufacturer();
-			goto done;
+			return;
 		}
 
 		data->data[data->len] = val;
@@ -559,9 +543,6 @@ void ad_advertise_manufacturer(DBusConnection *conn, const char *arg)
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE,
 							"ManufacturerData");
-
-done:
-	wordfree(&w);
 }
 
 void ad_advertise_tx_power(DBusConnection *conn, bool value)
