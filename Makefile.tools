@@ -30,7 +30,6 @@ mesh_meshctl_SOURCES = mesh/main.c \
 				mesh/config-model.h mesh/config-client.c \
 				mesh/config-server.c \
 				mesh/onoff-model.h mesh/onoff-model.c \
-				client/display.h client/display.c \
 				monitor/uuid.h monitor/uuid.c
 mesh_meshctl_LDADD = gdbus/libgdbus-internal.la src/libshared-glib.la \
 				lib/libbluetooth-internal.la \
@@ -390,14 +389,13 @@ tools_obex_server_tool_SOURCES = $(gobex_sources) $(btio_sources) \
 						tools/obex-server-tool.c
 tools_obex_server_tool_LDADD = lib/libbluetooth-internal.la @GLIB_LIBS@
 
-tools_bluetooth_player_SOURCES = tools/bluetooth-player.c \
-				client/display.h client/display.c
+tools_bluetooth_player_SOURCES = tools/bluetooth-player.c
 tools_bluetooth_player_LDADD = gdbus/libgdbus-internal.la \
-				@GLIB_LIBS@ @DBUS_LIBS@ -lreadline -lncurses
+				src/libshared-glib.la \
+				@GLIB_LIBS@ @DBUS_LIBS@ -lreadline
 
-tools_obexctl_SOURCES = tools/obexctl.c \
-				client/display.h client/display.c
-tools_obexctl_LDADD = gdbus/libgdbus-internal.la \
+tools_obexctl_SOURCES = tools/obexctl.c
+tools_obexctl_LDADD = gdbus/libgdbus-internal.la src/libshared-glib.la \
 				@GLIB_LIBS@ @DBUS_LIBS@ -lreadline -lncurses
 
 tools_btmgmt_SOURCES = tools/btmgmt.c src/uuid-helper.c client/display.c

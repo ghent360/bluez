@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <wordexp.h>
+#include <getopt.h>
 
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -54,7 +55,6 @@
 			cmd, (int)(CMD_LENGTH - strlen(cmd)), "", desc)
 
 static GMainLoop *main_loop;
-static gboolean option_version = FALSE;
 
 static struct {
 	struct io *input;
@@ -129,14 +129,14 @@ static void cmd_menu(int argc, char *argv[])
 {
 	const struct bt_shell_menu *menu;
 
-	if (!argc || !strlen(argv[0])) {
+	if (argc < 2 || !strlen(argv[1])) {
 		bt_shell_printf("Missing name argument\n");
 		return;
 	}
 
-	menu = find_menu(argv[0]);
+	menu = find_menu(argv[1]);
 	if (!menu) {
-		bt_shell_printf("Unable find menu with name: %s\n", argv[0]);
+		bt_shell_printf("Unable find menu with name: %s\n", argv[1]);
 		return;
 	}
 
@@ -195,8 +195,11 @@ static void shell_print_menu(void)
 	}
 
 	for (entry = default_menu; entry->cmd; entry++) {
-		/* Skip menu command if not on main menu */
-		if (data.menu != data.main && !strcmp(entry->cmd, "menu"))
+		/* Skip menu command if not on main menu or if there are no
+		 * submenus.
+		 */
+		if ((data.menu != data.main && !strcmp(entry->cmd, "menu")) ||
+					queue_isempty(data.submenus))
 			continue;
 
 		/* Skip back command if on main menu */
@@ -236,7 +239,7 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	int flags = WRDE_NOCMD;
 
 	if (!entry->arg || entry->arg[0] == '\0') {
-		if (argc) {
+		if (argc > 1) {
 			print_text(COLOR_HIGHLIGHT, "Too many arguments");
 			return -EINVAL;
 		}
@@ -260,9 +263,9 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	}
 
 	/* Check if there are enough arguments */
-	if ((unsigned) argc < w.we_wordc && !w.we_offs) {
+	if ((unsigned) argc - 1 < w.we_wordc && !w.we_offs) {
 		print_text(COLOR_HIGHLIGHT, "Missing %s argument",
-						w.we_wordv[argc]);
+						w.we_wordv[argc - 1]);
 		goto fail;
 	}
 
@@ -277,9 +280,9 @@ optional:
 	}
 
 	/* Check if there are too many arguments */
-	if ((unsigned) argc > w.we_wordc && !w.we_offs) {
+	if ((unsigned) argc - 1 > w.we_wordc && !w.we_offs) {
 		print_text(COLOR_HIGHLIGHT, "Too many arguments: %d > %zu",
-					argc, w.we_wordc);
+					argc - 1, w.we_wordc);
 		goto fail;
 	}
 
@@ -311,7 +314,7 @@ static int menu_exec(const struct bt_shell_menu_entry *entry,
 		if (data.menu == data.main && !strcmp(entry->cmd, "back"))
 			continue;
 
-		return cmd_exec(entry, --argc, ++argv);
+		return cmd_exec(entry, argc, argv);
 	}
 
 	return -ENOENT;
@@ -654,12 +657,6 @@ static struct io *setup_signalfd(void)
 	return io;
 }
 
-static GOptionEntry main_options[] = {
-	{ "version", 'v', 0, G_OPTION_ARG_NONE, &option_version,
-				"Show version information and exit" },
-	{ NULL },
-};
-
 static void rl_init(void)
 {
 	setlinebuf(stdout);
@@ -669,30 +666,65 @@ static void rl_init(void)
 	rl_callback_handler_install(NULL, rl_handler);
 }
 
-void bt_shell_init(int *argc, char ***argv, GOptionEntry *options)
+static const struct option main_options[] = {
+	{ "version",	no_argument, 0, 'v' },
+	{ "help",	no_argument, 0, 'h' },
+};
+
+static void usage(int argc, char **argv, const struct bt_shell_opt *opt)
 {
-	GOptionContext *context;
-	GError *error = NULL;
+	unsigned int i;
 
-	context = g_option_context_new(NULL);
-	g_option_context_add_main_entries(context, main_options, NULL);
-	if (options)
-		g_option_context_add_main_entries(context, options, NULL);
+	printf("%s ver %s\n", argv[0], VERSION);
+	printf("Usage:\n"
+		"\t%s [options]\n", argv[0]);
 
-	if (g_option_context_parse(context, argc, argv, &error) == FALSE) {
-		if (error != NULL) {
-			g_printerr("%s\n", error->message);
-			g_error_free(error);
-		} else
-			g_printerr("An unknown error occurred\n");
-		exit(1);
-	}
+	printf("Options:\n");
 
-	g_option_context_free(context);
+	for (i = 0; opt && opt->options[i].name; i++)
+		printf("\t--%s \t%s\n", opt->options[i].name, opt->help[i]);
 
-	if (option_version == TRUE) {
-		g_print("%s\n", VERSION);
-		exit(EXIT_SUCCESS);
+	printf("\t--version \tDisplay version\n"
+		"\t--help \t\tDisplay help\n");
+}
+
+void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
+{
+	int c, index = 0;
+	struct option options[256];
+	char optstr[256];
+	size_t offset;
+
+	offset = sizeof(main_options) / sizeof(struct option);
+
+	memcpy(options, main_options, sizeof(struct option) * offset);
+
+	if (opt) {
+		memcpy(options + offset, opt->options,
+				sizeof(struct option) * opt->optno);
+		snprintf(optstr, sizeof(optstr), "+hv%s", opt->optstr);
+	} else
+		snprintf(optstr, sizeof(optstr), "+hv");
+
+	while ((c = getopt_long(argc, argv, optstr, options, &index)) != -1) {
+		switch (c) {
+		case 'v':
+			printf("%s: %s\n", argv[0], VERSION);
+			exit(EXIT_SUCCESS);
+			return;
+		case 'h':
+			usage(argc, argv, opt);
+			exit(EXIT_SUCCESS);
+			return;
+		default:
+			if (c != opt->options[index - offset].val) {
+				usage(argc, argv, opt);
+				exit(EXIT_SUCCESS);
+				return;
+			}
+
+			*opt->optarg[index - offset] = optarg;
+		}
 	}
 
 	main_loop = g_main_loop_new(NULL, FALSE);
