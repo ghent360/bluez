@@ -184,7 +184,7 @@ static void print_fixed_iter(const char *label, const char *name,
 			return;
 
 		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_printf((void *)valbool, len * sizeof(*valbool));
+		bt_shell_hexdump((void *)valbool, len * sizeof(*valbool));
 
 		break;
 	case DBUS_TYPE_UINT32:
@@ -194,7 +194,7 @@ static void print_fixed_iter(const char *label, const char *name,
 			return;
 
 		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_printf((void *)valu32, len * sizeof(*valu32));
+		bt_shell_hexdump((void *)valu32, len * sizeof(*valu32));
 
 		break;
 	case DBUS_TYPE_UINT16:
@@ -204,7 +204,7 @@ static void print_fixed_iter(const char *label, const char *name,
 			return;
 
 		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_printf((void *)valu16, len * sizeof(*valu16));
+		bt_shell_hexdump((void *)valu16, len * sizeof(*valu16));
 
 		break;
 	case DBUS_TYPE_INT16:
@@ -214,7 +214,7 @@ static void print_fixed_iter(const char *label, const char *name,
 			return;
 
 		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_printf((void *)vals16, len * sizeof(*vals16));
+		bt_shell_hexdump((void *)vals16, len * sizeof(*vals16));
 
 		break;
 	case DBUS_TYPE_BYTE:
@@ -224,7 +224,7 @@ static void print_fixed_iter(const char *label, const char *name,
 			return;
 
 		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_printf((void *)byte, len * sizeof(*byte));
+		bt_shell_hexdump((void *)byte, len * sizeof(*byte));
 
 		break;
 	default:
@@ -2202,6 +2202,7 @@ static void cmd_set_advertise_timeout(int argc, char *argv[])
 
 static const struct bt_shell_menu advertise_menu = {
 	.name = "advertise",
+	.desc = "Advertise Options Submenu",
 	.entries = {
 	{ "set-uuids", "[uuid1 uuid2 ...]",
 			cmd_set_advertise_uuids, "Set advertise uuids" },
@@ -2226,6 +2227,7 @@ static const struct bt_shell_menu advertise_menu = {
 
 static const struct bt_shell_menu scan_menu = {
 	.name = "scan",
+	.desc = "Scan Options Submenu",
 	.entries = {
 	{ "set-filter-uuids", "[uuid1 uuid2 ...]", cmd_set_scan_filter_uuids,
 				"Set scan filter uuids" },
@@ -2246,6 +2248,7 @@ static const struct bt_shell_menu scan_menu = {
 
 static const struct bt_shell_menu gatt_menu = {
 	.name = "gatt",
+	.desc = "Generic Attribute Submenu",
 	.entries = {
 	{ "list-attributes", "[dev]", cmd_list_attributes, "List attributes",
 							dev_generator },
