@@ -870,7 +870,16 @@ static void cmd_show(int argc, char *argv[])
 		return;
 
 	dbus_message_iter_get_basic(&iter, &address);
-	bt_shell_printf("Controller %s\n", address);
+
+	if (g_dbus_proxy_get_property(proxy, "AddressType", &iter) == TRUE) {
+		const char *type;
+
+		dbus_message_iter_get_basic(&iter, &type);
+
+		bt_shell_printf("Controller %s (%s)\n", address, type);
+	} else {
+		bt_shell_printf("Controller %s\n", address);
+	}
 
 	print_property(proxy, "Name");
 	print_property(proxy, "Alias");
@@ -1097,31 +1106,6 @@ static void start_discovery_reply(DBusMessage *message, void *user_data)
 	bt_shell_printf("Discovery %s\n", enable == TRUE ? "started" : "stopped");
 }
 
-static void cmd_scan(int argc, char *argv[])
-{
-	dbus_bool_t enable;
-	const char *method;
-
-	if (!parse_argument(argc, argv, NULL, NULL, &enable, NULL))
-		return;
-
-	if (check_default_ctrl() == FALSE)
-		return;
-
-	if (enable == TRUE)
-		method = "StartDiscovery";
-	else
-		method = "StopDiscovery";
-
-	if (g_dbus_proxy_method_call(default_ctrl->proxy, method,
-				NULL, start_discovery_reply,
-				GUINT_TO_POINTER(enable), NULL) == FALSE) {
-		bt_shell_printf("Failed to %s discovery\n",
-					enable == TRUE ? "start" : "stop");
-		return;
-	}
-}
-
 static void append_variant(DBusMessageIter *iter, int type, void *val)
 {
 	DBusMessageIter value;
@@ -1211,13 +1195,18 @@ static void dict_append_array(DBusMessageIter *dict, const char *key, int type,
 
 #define	DISTANCE_VAL_INVALID	0x7FFF
 
-struct set_discovery_filter_args {
+static struct set_discovery_filter_args {
 	char *transport;
 	dbus_uint16_t rssi;
 	dbus_int16_t pathloss;
 	char **uuids;
 	size_t uuids_len;
 	dbus_bool_t duplicate;
+	bool set;
+} filter = {
+	.rssi = DISTANCE_VAL_INVALID,
+	.pathloss = DISTANCE_VAL_INVALID,
+	.set = true,
 };
 
 static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
@@ -1264,35 +1253,48 @@ static void set_discovery_filter_reply(DBusMessage *message, void *user_data)
 		return;
 	}
 
+	filter.set = true;
+
 	bt_shell_printf("SetDiscoveryFilter success\n");
 }
 
-static gint filtered_scan_rssi = DISTANCE_VAL_INVALID;
-static gint filtered_scan_pathloss = DISTANCE_VAL_INVALID;
-static char **filtered_scan_uuids;
-static size_t filtered_scan_uuids_len;
-static char *filtered_scan_transport;
-static bool filtered_scan_duplicate_data;
-
-static void cmd_set_scan_filter_commit(void)
+static void set_discovery_filter(void)
 {
-	struct set_discovery_filter_args args;
-
-	args.uuids = NULL;
-	args.pathloss = filtered_scan_pathloss;
-	args.rssi = filtered_scan_rssi;
-	args.transport = filtered_scan_transport;
-	args.uuids = filtered_scan_uuids;
-	args.uuids_len = filtered_scan_uuids_len;
-	args.duplicate = filtered_scan_duplicate_data;
-
-	if (check_default_ctrl() == FALSE)
+	if (check_default_ctrl() == FALSE || filter.set)
 		return;
 
 	if (g_dbus_proxy_method_call(default_ctrl->proxy, "SetDiscoveryFilter",
 		set_discovery_filter_setup, set_discovery_filter_reply,
-		&args, NULL) == FALSE) {
+		&filter, NULL) == FALSE) {
 		bt_shell_printf("Failed to set discovery filter\n");
+		return;
+	}
+
+	filter.set = true;
+}
+
+static void cmd_scan(int argc, char *argv[])
+{
+	dbus_bool_t enable;
+	const char *method;
+
+	if (!parse_argument(argc, argv, NULL, NULL, &enable, NULL))
+		return;
+
+	if (check_default_ctrl() == FALSE)
+		return;
+
+	if (enable == TRUE) {
+		set_discovery_filter();
+		method = "StartDiscovery";
+	} else
+		method = "StopDiscovery";
+
+	if (g_dbus_proxy_method_call(default_ctrl->proxy, method,
+				NULL, start_discovery_reply,
+				GUINT_TO_POINTER(enable), NULL) == FALSE) {
+		bt_shell_printf("Failed to %s discovery\n",
+					enable == TRUE ? "start" : "stop");
 		return;
 	}
 }
@@ -1302,128 +1304,182 @@ static void cmd_scan_filter_uuids(int argc, char *argv[])
 	if (argc < 2 || !strlen(argv[1])) {
 		char **uuid;
 
-		for (uuid = filtered_scan_uuids; uuid && *uuid; uuid++)
+		for (uuid = filter.uuids; uuid && *uuid; uuid++)
 			print_uuid(*uuid);
 
 		return;
 	}
 
-	g_strfreev(filtered_scan_uuids);
-	filtered_scan_uuids = NULL;
-	filtered_scan_uuids_len = 0;
+	g_strfreev(filter.uuids);
+	filter.uuids = NULL;
+	filter.uuids_len = 0;
 
 	if (!strcmp(argv[1], "all"))
 		goto commit;
 
-	filtered_scan_uuids = g_strdupv(&argv[1]);
-	if (!filtered_scan_uuids) {
+	filter.uuids = g_strdupv(&argv[1]);
+	if (!filter.uuids) {
 		bt_shell_printf("Failed to parse input\n");
 		return;
 	}
 
-	filtered_scan_uuids_len = g_strv_length(filtered_scan_uuids);
+	filter.uuids_len = g_strv_length(filter.uuids);
 
 commit:
-	cmd_set_scan_filter_commit();
+	filter.set = false;
 }
 
 static void cmd_scan_filter_rssi(int argc, char *argv[])
 {
 	if (argc < 2 || !strlen(argv[1])) {
-		if (filtered_scan_rssi != DISTANCE_VAL_INVALID)
-			bt_shell_printf("RSSI: %d\n", filtered_scan_rssi);
+		if (filter.rssi != DISTANCE_VAL_INVALID)
+			bt_shell_printf("RSSI: %d\n", filter.rssi);
 		return;
 	}
 
-	filtered_scan_pathloss = DISTANCE_VAL_INVALID;
-	filtered_scan_rssi = atoi(argv[1]);
+	filter.pathloss = DISTANCE_VAL_INVALID;
+	filter.rssi = atoi(argv[1]);
 
-	cmd_set_scan_filter_commit();
+	filter.set = false;
 }
 
 static void cmd_scan_filter_pathloss(int argc, char *argv[])
 {
 	if (argc < 2 || !strlen(argv[1])) {
-		if (filtered_scan_pathloss != DISTANCE_VAL_INVALID)
+		if (filter.pathloss != DISTANCE_VAL_INVALID)
 			bt_shell_printf("Pathloss: %d\n",
-						filtered_scan_pathloss);
+						filter.pathloss);
 		return;
 	}
 
-	filtered_scan_rssi = DISTANCE_VAL_INVALID;
-	filtered_scan_pathloss = atoi(argv[1]);
+	filter.rssi = DISTANCE_VAL_INVALID;
+	filter.pathloss = atoi(argv[1]);
 
-	cmd_set_scan_filter_commit();
+	filter.set = false;
 }
 
 static void cmd_scan_filter_transport(int argc, char *argv[])
 {
 	if (argc < 2 || !strlen(argv[1])) {
-		if (filtered_scan_transport)
+		if (filter.transport)
 			bt_shell_printf("Transport: %s\n",
-					filtered_scan_transport);
+					filter.transport);
 		return;
 	}
 
-	g_free(filtered_scan_transport);
-	filtered_scan_transport = g_strdup(argv[1]);
+	g_free(filter.transport);
+	filter.transport = g_strdup(argv[1]);
 
-	cmd_set_scan_filter_commit();
+	filter.set = false;
 }
 
 static void cmd_scan_filter_duplicate_data(int argc, char *argv[])
 {
 	if (argc < 2 || !strlen(argv[1])) {
 		bt_shell_printf("DuplicateData: %s\n",
-				filtered_scan_duplicate_data ? "on" : "off");
+				filter.duplicate ? "on" : "off");
 		return;
 	}
 
 	if (!strcmp(argv[1], "on"))
-		filtered_scan_duplicate_data = true;
+		filter.duplicate = true;
 	else if (!strcmp(argv[1], "off"))
-		filtered_scan_duplicate_data = false;
+		filter.duplicate = false;
 	else {
 		bt_shell_printf("Invalid option: %s\n", argv[1]);
 		return;
 	}
 
-	cmd_set_scan_filter_commit();
+	filter.set = false;
 }
 
-static void clear_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
+static void filter_clear_uuids(void)
 {
-	DBusMessageIter dict;
+	g_strfreev(filter.uuids);
+	filter.uuids = NULL;
+	filter.uuids_len = 0;
+}
 
-	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
-				DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
-				DBUS_TYPE_STRING_AS_STRING
-				DBUS_TYPE_VARIANT_AS_STRING
-				DBUS_DICT_ENTRY_END_CHAR_AS_STRING, &dict);
+static void filter_clear_rssi(void)
+{
+	filter.rssi = DISTANCE_VAL_INVALID;
+}
 
-	dbus_message_iter_close_container(iter, &dict);
+static void filter_clear_pathloss(void)
+{
+	filter.pathloss = DISTANCE_VAL_INVALID;
+}
+
+static void filter_clear_transport(void)
+{
+	g_free(filter.transport);
+	filter.transport = NULL;
+}
+
+static void filter_clear_duplicate(void)
+{
+	filter.duplicate = false;
+}
+
+static const struct filter_clear {
+	const char *name;
+	void (*clear) (void);
+} filter_clear[] = {
+	{ "uuids", filter_clear_uuids },
+	{ "rssi", filter_clear_rssi },
+	{ "pathloss", filter_clear_pathloss },
+	{ "transport", filter_clear_transport },
+	{ "duplicate-data", filter_clear_duplicate },
+	{}
+};
+
+static char *filter_clear_generator(const char *text, int state)
+{
+	static int index, len;
+	const char *arg;
+
+	if (!state) {
+		index = 0;
+		len = strlen(text);
+	}
+
+	while ((arg = filter_clear[index].name)) {
+		index++;
+
+		if (!strncmp(arg, text, len))
+			return strdup(arg);
+	}
+
+	return NULL;
 }
 
 static void cmd_scan_filter_clear(int argc, char *argv[])
 {
-	/* set default values for all options */
-	filtered_scan_rssi = DISTANCE_VAL_INVALID;
-	filtered_scan_pathloss = DISTANCE_VAL_INVALID;
-	g_strfreev(filtered_scan_uuids);
-	filtered_scan_uuids = NULL;
-	filtered_scan_uuids_len = 0;
-	g_free(filtered_scan_transport);
-	filtered_scan_transport = NULL;
-	filtered_scan_duplicate_data = false;
+	const struct filter_clear *fc;
+	bool all = false;
 
+	if (argc < 2 || !strlen(argv[1]))
+		all = true;
+
+	for (fc = filter_clear; fc && fc->name; fc++) {
+		if (all || !strcmp(fc->name, argv[1])) {
+			fc->clear();
+			filter.set = false;
+			if (!all)
+				goto done;
+		}
+	}
+
+	if (!all) {
+		bt_shell_printf("Invalid argument %s\n", argv[1]);
+		return;
+	}
+
+done:
 	if (check_default_ctrl() == FALSE)
 		return;
 
-	if (g_dbus_proxy_method_call(default_ctrl->proxy, "SetDiscoveryFilter",
-		clear_discovery_filter_setup, set_discovery_filter_reply,
-		NULL, NULL) == FALSE) {
-		bt_shell_printf("Failed to clear discovery filter\n");
-	}
+	set_discovery_filter();
 }
 
 static struct GDBusProxy *find_device(int argc, char *argv[])
@@ -1463,7 +1519,16 @@ static void cmd_info(int argc, char *argv[])
 		return;
 
 	dbus_message_iter_get_basic(&iter, &address);
-	bt_shell_printf("Device %s\n", address);
+
+	if (g_dbus_proxy_get_property(proxy, "AddressType", &iter) == TRUE) {
+		const char *type;
+
+		dbus_message_iter_get_basic(&iter, &type);
+
+		bt_shell_printf("Device %s (%s)\n", address, type);
+	} else {
+		bt_shell_printf("Device %s\n", address);
+	}
 
 	print_property(proxy, "Name");
 	print_property(proxy, "Alias");
@@ -2268,8 +2333,10 @@ static const struct bt_shell_menu scan_menu = {
 	{ "duplicate-data", "[on/off]", cmd_scan_filter_duplicate_data,
 				"Set/Get duplicate data filter",
 				mode_generator },
-	{ "clear", NULL, cmd_scan_filter_clear,
-				"Clears discovery filter." },
+	{ "clear", "[uuids/rssi/pathloss/transport/duplicate-data]",
+				cmd_scan_filter_clear,
+				"Clears discovery filter.",
+				filter_clear_generator },
 	{ } },
 };
 

@@ -61,6 +61,7 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 	uint8_t ele_idx;
 	struct mesh_publication pub;
 	int n;
+	uint16_t i;
 
 	if (mesh_opcode_get(data, len, &opcode, &n)) {
 		len -= n;
@@ -158,6 +159,30 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 			prov_db_add_binding(node, addr - src, mod_id, app_idx);
 		break;
 
+	case OP_NODE_IDENTITY_STATUS:
+		if (len != 4)
+			return true;
+		bt_shell_printf("Network index 0x%04x has "
+				"Node Identity state 0x%02x %s\n",
+				get_le16(data + 1), data[3],
+				mesh_status_str(data[0]));
+		break;
+
+	case OP_CONFIG_RELAY_STATUS:
+		if (len != 2)
+			return true;
+		bt_shell_printf("Node %4.4x Relay state: 0x%02x"
+				" count: %d steps: %d\n",
+				src, data[0], data[1]>>5, data[1] & 0x1f);
+		break;
+
+	case OP_CONFIG_PROXY_STATUS:
+		if (len != 1)
+			return true;
+		bt_shell_printf("Node %4.4x Proxy state: 0x%02x\n",
+				src, data[0]);
+		break;
+
 	case OP_CONFIG_DEFAULT_TTL_STATUS:
 		if (len != 1)
 			return true;
@@ -170,9 +195,9 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 		if (len != 12 && len != 14)
 			return true;
 
-		bt_shell_printf("\nSet publication for node %4.4x status: %s\n", src,
-				data[0] == MESH_STATUS_SUCCESS ? "Success" :
-						mesh_status_str(data[0]));
+		bt_shell_printf("\nSet publication for node %4.4x status: %s\n",
+				src, data[0] == MESH_STATUS_SUCCESS ?
+				"Success" : mesh_status_str(data[0]));
 
 		if (data[0] != MESH_STATUS_SUCCESS)
 			return true;
@@ -189,6 +214,7 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 		pub.ttl = data[7];
 		pub.period = data[8];
 		n = (data[8] & 0x3f);
+		bt_shell_printf("Publication address: 0x%04x\n", pub.u.addr16);
 		switch (data[8] >> 6) {
 		case 0:
 			bt_shell_printf("Period: %d ms\n", n * 100);
@@ -206,7 +232,8 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 
 		pub.retransmit = data[9];
 		bt_shell_printf("Retransmit count: %d\n", data[9] >> 5);
-		bt_shell_printf("Retransmit Interval Steps: %d\n", data[9] & 0x1f);
+		bt_shell_printf("Retransmit Interval Steps: %d\n",
+				data[9] & 0x1f);
 
 		ele_idx = ele_addr - node_get_primary(node);
 
@@ -218,7 +245,81 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 			prov_db_node_set_model_pub(node, ele_idx, mod_id,
 				     node_model_pub_get(node, ele_idx, mod_id));
 		break;
+
+	/* Per Mesh Profile 4.3.2.19 */
+	case OP_CONFIG_MODEL_SUB_STATUS:
+		bt_shell_printf("\nSubscription changed"
+				" for node %4.4x status: %s\n", src,
+				data[0] == MESH_STATUS_SUCCESS ? "Success" :
+						mesh_status_str(data[0]));
+
+		if (data[0] != MESH_STATUS_SUCCESS)
+			return true;
+
+		bt_shell_printf("Element Addr:\t%4.4x\n", get_le16(data + 1));
+		bt_shell_printf("Subscr Addr:\t%4.4x\n", get_le16(data + 3));
+		bt_shell_printf("Model ID:\t%4.4x\n", get_le16(data + 5));
+		break;
+
+		/* TODO */
+		/* Save subscription info in database */
+
+	/* Per Mesh Profile 4.3.2.27 */
+	case OP_CONFIG_MODEL_SUB_LIST:
+
+		bt_shell_printf("\nSubscription list for node %4.4x "
+				"length: %u status: %s\n", src, len,
+				data[0] == MESH_STATUS_SUCCESS ? "Success" :
+						mesh_status_str(data[0]));
+
+		if (data[0] != MESH_STATUS_SUCCESS)
+			return true;
+
+		bt_shell_printf("Element Addr:\t%4.4x\n", get_le16(data + 1));
+		bt_shell_printf("Model ID:\t%4.4x\n", get_le16(data + 3));
+
+		for (i = 5; i < len; i += 2)
+			bt_shell_printf("Subscr Addr:\t%4.4x\n",
+					get_le16(data + i));
+		break;
+
+	/* Per Mesh Profile 4.3.2.50 */
+	case OP_MODEL_APP_LIST:
+		bt_shell_printf("\nModel App Key list for node %4.4x "
+				"length: %u status: %s\n", src, len,
+				data[0] == MESH_STATUS_SUCCESS ? "Success" :
+						mesh_status_str(data[0]));
+
+		if (data[0] != MESH_STATUS_SUCCESS)
+			return true;
+
+		bt_shell_printf("Element Addr:\t%4.4x\n", get_le16(data + 1));
+		bt_shell_printf("Model ID:\t%4.4x\n", get_le16(data + 3));
+
+		for (i = 5; i < len; i += 2)
+			bt_shell_printf("Model App Key:\t%4.4x\n",
+					get_le16(data + i));
+		break;
+
+	/* Per Mesh Profile 4.3.2.63 */
+	case OP_CONFIG_HEARTBEAT_PUB_STATUS:
+		bt_shell_printf("\nSet heartbeat for node %4.4x status: %s\n",
+				src,
+				data[0] == MESH_STATUS_SUCCESS ? "Success" :
+						mesh_status_str(data[0]));
+
+		if (data[0] != MESH_STATUS_SUCCESS)
+			return true;
+
+		bt_shell_printf("Destination:\t%4.4x\n", get_le16(data + 1));
+		bt_shell_printf("Count:\t\t%2.2x\n", data[3]);
+		bt_shell_printf("Period:\t\t%2.2x\n", data[4]);
+		bt_shell_printf("TTL:\t\t%2.2x\n", data[5]);
+		bt_shell_printf("Features:\t%4.4x\n", get_le16(data + 6));
+		bt_shell_printf("Net_Idx:\t%4.4x\n", get_le16(data + 8));
+		break;
 	}
+
 	return true;
 }
 
@@ -285,6 +386,23 @@ static bool config_send(uint8_t *buf, uint16_t len)
 				buf, len);
 	return true;
 
+}
+
+static void cmd_default(uint32_t opcode)
+{
+	uint16_t n;
+	uint8_t msg[32];
+
+	if (IS_UNASSIGNED(target)) {
+		bt_shell_printf("Destination not set\n");
+		return;
+	}
+
+	n = mesh_opcode_set(opcode, msg);
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send command (opcode 0x%x)\n",
+								opcode);
 }
 
 static void cmd_get_composition(int argc, char *argv[])
@@ -518,6 +636,113 @@ static void cmd_bind(int argc, char *argv[])
 		bt_shell_printf("Failed to send \"MODEL APP BIND\"\n");
 }
 
+static void cmd_set_ident(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[2 + 3 + 4];
+	int parm_cnt;
+
+	if (!verify_config_target(target))
+		return;
+
+	n = mesh_opcode_set(OP_NODE_IDENTITY_SET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 2) {
+		bt_shell_printf("bad arguments\n");
+		return;
+	}
+
+	put_le16(parms[0], msg + n);
+	n += 2;
+	msg[n++] = parms[1];
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"SET IDENTITY\"\n");
+}
+
+static void cmd_get_ident(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[2 + 2 + 4];
+	int parm_cnt;
+
+	if (!verify_config_target(target))
+		return;
+
+	n = mesh_opcode_set(OP_NODE_IDENTITY_GET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 1) {
+		bt_shell_printf("bad arguments\n");
+		return;
+	}
+
+	put_le16(parms[0], msg + n);
+	n += 2;
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"GET IDENTITY\"\n");
+}
+
+static void cmd_set_proxy(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[2 + 1 + 4];
+	int parm_cnt;
+
+	if (!verify_config_target(target))
+		return;
+
+	n = mesh_opcode_set(OP_CONFIG_PROXY_SET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 1) {
+		bt_shell_printf("bad arguments");
+		return;
+	}
+
+	msg[n++] = parms[0];
+	msg[n++] = parms[1];
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"SET PROXY\"\n");
+}
+
+static void cmd_get_proxy(int argc, char *argv[])
+{
+	cmd_default(OP_CONFIG_PROXY_GET);
+}
+
+static void cmd_set_relay(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[2 + 2 + 4];
+	int parm_cnt;
+
+	if (!verify_config_target(target))
+		return;
+
+	n = mesh_opcode_set(OP_CONFIG_RELAY_SET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 3) {
+		bt_shell_printf("bad arguments\n");
+		return;
+	}
+
+	msg[n++] = parms[0];
+	msg[n++] = (parms[1] << 5) | parms[2];
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"SET RELAY\"\n");
+}
+
+static void cmd_get_relay(int argc, char *argv[])
+{
+	cmd_default(OP_CONFIG_RELAY_GET);
+}
+
 static void cmd_set_ttl(int argc, char *argv[])
 {
 	uint16_t n;
@@ -556,7 +781,7 @@ static void cmd_set_pub(int argc, char *argv[])
 	n = mesh_opcode_set(OP_CONFIG_MODEL_PUB_SET, msg);
 
 	parm_cnt = read_input_parameters(argc, argv);
-	if (parm_cnt != 5) {
+	if (parm_cnt != 6 && parm_cnt != 7) {
 		bt_shell_printf("Bad arguments\n");
 		return;
 	}
@@ -574,14 +799,14 @@ static void cmd_set_pub(int argc, char *argv[])
 	/* Publish period  step count and step resolution */
 	msg[n++] = parms[3];
 	/* Publish retransmit count & interval steps */
-	msg[n++] = (1 << 5) + 2;
+	msg[n++] = parms[4];
 	/* Model Id */
-	if (parms[4] > 0xffff) {
-		put_le16(parms[4] >> 16, msg + n);
-		put_le16(parms[4], msg + n + 2);
+	if (parm_cnt == 7) {
+		put_le16(parms[6], msg + n);
+		put_le16(parms[5], msg + n + 2);
 		n += 4;
 	} else {
-		put_le16(parms[4], msg + n);
+		put_le16(parms[5], msg + n);
 		n += 2;
 	}
 
@@ -589,21 +814,176 @@ static void cmd_set_pub(int argc, char *argv[])
 		bt_shell_printf("Failed to send \"SET MODEL PUBLICATION\"\n");
 }
 
-static void cmd_default(uint32_t opcode)
+static void cmd_get_pub(int argc, char *argv[])
 {
 	uint16_t n;
 	uint8_t msg[32];
+	int parm_cnt;
 
 	if (IS_UNASSIGNED(target)) {
 		bt_shell_printf("Destination not set\n");
 		return;
 	}
 
-	n = mesh_opcode_set(opcode, msg);
+	n = mesh_opcode_set(OP_CONFIG_MODEL_PUB_GET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 2 && parm_cnt != 3) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return;
+	}
+
+	/* Element Address */
+	put_le16(parms[0], msg + n);
+	n += 2;
+	/* Model Id */
+	if (parm_cnt == 3) {
+		put_le16(parms[2], msg + n);
+		put_le16(parms[1], msg + n + 2);
+		n += 4;
+	} else {
+		put_le16(parms[1], msg + n);
+		n += 2;
+	}
 
 	if (!config_send(msg, n))
-		bt_shell_printf("Failed to send command (opcode 0x%x)\n",
-								opcode);
+		bt_shell_printf("Failed to send \"GET MODEL PUBLICATION\"\n");
+}
+
+static void cmd_sub_add(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[32];
+	int parm_cnt;
+
+	if (IS_UNASSIGNED(target)) {
+		bt_shell_printf("Destination not set\n");
+		return;
+	}
+
+	n = mesh_opcode_set(OP_CONFIG_MODEL_SUB_ADD, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 3) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return;
+	}
+
+	/* Per Mesh Profile 4.3.2.19 */
+	/* Element Address */
+	put_le16(parms[0], msg + n);
+	n += 2;
+	/* Subscription Address */
+	put_le16(parms[1], msg + n);
+	n += 2;
+	/* SIG Model ID */
+	put_le16(parms[2], msg + n);
+	n += 2;
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"ADD SUBSCRIPTION\"\n");
+}
+
+static void cmd_sub_get(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[32];
+	int parm_cnt;
+
+	if (IS_UNASSIGNED(target)) {
+		bt_shell_printf("Destination not set\n");
+		return;
+	}
+
+	n = mesh_opcode_set(OP_CONFIG_MODEL_SUB_GET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 2) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return;
+	}
+
+	/* Per Mesh Profile 4.3.2.27 */
+	/* Element Address */
+	put_le16(parms[0], msg + n);
+	n += 2;
+	/* Model ID */
+	put_le16(parms[1], msg + n);
+	n += 2;
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"GET SUB GET\"\n");
+}
+
+static void cmd_get_app(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[32];
+	int parm_cnt;
+
+	if (IS_UNASSIGNED(target)) {
+		bt_shell_printf("Destination not set\n");
+		return;
+	}
+
+	n = mesh_opcode_set(OP_MODEL_APP_GET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 2) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return;
+	}
+
+	/* Per Mesh Profile 4.3.2.49 */
+	/* Element Address */
+	put_le16(parms[0], msg + n);
+	n += 2;
+	/* Model ID */
+	put_le16(parms[1], msg + n);
+	n += 2;
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"GET APP GET\"\n");
+}
+
+static void cmd_set_hb(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[32];
+	int parm_cnt;
+
+	if (IS_UNASSIGNED(target)) {
+		bt_shell_printf("Destination not set\n");
+		return;
+	}
+
+	n = mesh_opcode_set(OP_CONFIG_HEARTBEAT_PUB_SET, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 5) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return;
+	}
+
+	/* Per Mesh Profile 4.3.2.62 */
+	/* Publish address */
+	put_le16(parms[0], msg + n);
+	n += 2;
+	/* Count Log */
+	msg[n++] = parms[1];
+	/* Period Log */
+	msg[n++] = parms[2];
+	/* Heartbeat TTL */
+	msg[n++] = DEFAULT_TTL;
+	/* Features */
+	put_le16(parms[3], msg + n);
+	n += 2;
+	/* NetKey Index */
+	put_le16(parms[4], msg + n);
+	n += 2;
+
+	if (!config_send(msg, n))
+		bt_shell_printf("Failed to send \"SET HEARTBEAT PUBLICATION\"\n");
 }
 
 static void cmd_get_ttl(int argc, char *argv[])
@@ -615,27 +995,51 @@ static const struct bt_shell_menu cfg_menu = {
 	.name = "config",
 	.desc = "Configuration Model Submenu",
 	.entries = {
-	{"target",		"<unicast>",			cmd_set_node,
+	{"target",		"<unicast>",		cmd_set_node,
 						"Set target node to configure"},
-	{"get-composition",	"[<page_num>]",		cmd_get_composition,
+	{"composition-get",	"[<page_num>]",		cmd_get_composition,
 						"Get Composition Data"},
-	{"add-netkey",		"<net_idx>",			cmd_add_net_key,
+	{"netkey-add",		"<net_idx>",		cmd_add_net_key,
 						"Add network key"},
-	{"del-netkey",		"<net_idx>",			cmd_del_net_key,
+	{"netkey-del",		"<net_idx>",		cmd_del_net_key,
 						"Delete network key"},
-	{"add-appkey",		"<app_idx>",			cmd_add_app_key,
+	{"appkey-add",		"<app_idx>",		cmd_add_app_key,
 						"Add application key"},
-	{"del-appkey",		"<app_idx>",			cmd_del_app_key,
+	{"appkey-del",		"<app_idx>",		cmd_del_app_key,
 						"Delete application key"},
 	{"bind",		"<ele_idx> <app_idx> <mod_id> [cid]",
 				cmd_bind,	"Bind app key to a model"},
-	{"set-ttl",		"<ttl>",			cmd_set_ttl,
+	{"ttl-set",		"<ttl>",		cmd_set_ttl,
 						"Set default TTL"},
-	{"get-ttl",		NULL,			cmd_get_ttl,
+	{"ttl-get",		NULL,			cmd_get_ttl,
 						"Get default TTL"},
-	{"set-pub", "<ele_addr> <pub_addr> <app_idx> "
-						"<period (step|res)> <model>",
-				cmd_set_pub,	"Set publication"},
+	{"pub-set", "<ele_addr> <pub_addr> <app_idx> "
+			"<per (step|res)> <re-xmt (cnt|per)> <mod id> "
+			"[cid]",
+			cmd_set_pub,	"\n\t\t\t\t\t\t  Set publication"},
+	{"pub-get", "<ele_addr> <model>",               cmd_get_pub,
+						"Get publication"},
+	{"proxy-set",           "<proxy>",              cmd_set_proxy,
+						"Set proxy state"},
+	{"proxy-get",           NULL,                   cmd_get_proxy,
+						"Get proxy state"},
+	{"ident-set",           "<net_idx> <state>",    cmd_set_ident,
+						"Set node identity state"},
+	{"ident-get",           "<net_idx>",            cmd_get_ident,
+						"Get node identity state"},
+	{"relay-set",           "<relay> <rexmt count> <rexmt steps>",
+						cmd_set_relay,
+						"Set relay"},
+	{"relay-get",           NULL,                   cmd_get_relay,
+						"Get relay"},
+	{"hb-pub-set", "<pub_addr> <count> <period> <features> <net_idx>",
+				cmd_set_hb,     "Set heartbeati publish"},
+	{"sub-add", "<ele_addr> <sub_addr> <model id>",
+				cmd_sub_add,    "Subscription add"},
+	{"sub-get", "<ele_addr> <model id>",
+				cmd_sub_get,    "Subscription get"},
+	{"app-get", "<ele_addr> <model id>",
+				cmd_get_app,    "Get App Keys"},
 	{} },
 };
 
