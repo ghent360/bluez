@@ -32,6 +32,7 @@
 #include <string.h>
 
 #include "gdbus/gdbus.h"
+#include "src/shared/util.h"
 #include "src/shared/shell.h"
 #include "advertising.h"
 
@@ -107,6 +108,77 @@ static void register_setup(DBusMessageIter *iter, void *user_data)
 	dbus_message_iter_close_container(iter, &dict);
 }
 
+static void print_uuid(const char *uuid)
+{
+	const char *text;
+
+	text = bt_uuidstr_to_str(uuid);
+	if (text) {
+		char str[26];
+		unsigned int n;
+
+		str[sizeof(str) - 1] = '\0';
+
+		n = snprintf(str, sizeof(str), "%s", text);
+		if (n > sizeof(str) - 1) {
+			str[sizeof(str) - 2] = '.';
+			str[sizeof(str) - 3] = '.';
+			if (str[sizeof(str) - 4] == ' ')
+				str[sizeof(str) - 4] = '.';
+
+			n = sizeof(str) - 1;
+		}
+
+		bt_shell_printf("UUID: %s(%s)\n", str, uuid);
+	} else
+		bt_shell_printf("UUID: (%s)\n", uuid);
+}
+
+static void print_ad_uuids(void)
+{
+	char **uuid;
+
+	for (uuid = ad.uuids; uuid && *uuid; uuid++)
+		print_uuid(*uuid);
+}
+
+static void print_ad(void)
+{
+	print_ad_uuids();
+
+	if (ad.service.uuid) {
+		print_uuid(ad.service.uuid);
+		bt_shell_hexdump(ad.service.data.data, ad.service.data.len);
+	}
+
+	if (ad.manufacturer.data.len) {
+		bt_shell_printf("Manufacturer: %u\n", ad.manufacturer.id);
+		bt_shell_hexdump(ad.manufacturer.data.data,
+						ad.manufacturer.data.len);
+	}
+
+	bt_shell_printf("Tx Power: %s\n", ad.tx_power ? "on" : "off");
+
+	if (ad.local_name)
+		bt_shell_printf("LocalName: %s\n", ad.local_name);
+	else
+		bt_shell_printf("Name: %s\n", ad.name ? "on" : "off");
+
+	if (ad.local_appearance != UINT16_MAX)
+		bt_shell_printf("Appearance: %s (0x%04x)\n",
+					bt_appear_to_str(ad.local_appearance),
+					ad.local_appearance);
+	else
+		bt_shell_printf("Apperance: %s\n",
+					ad.appearance ? "on" : "off");
+
+	if (ad.duration)
+		bt_shell_printf("Duration: %u sec\n", ad.duration);
+
+	if (ad.timeout)
+		bt_shell_printf("Timeout: %u sec\n", ad.timeout);
+}
+
 static void register_reply(DBusMessage *message, void *user_data)
 {
 	DBusConnection *conn = user_data;
@@ -117,6 +189,7 @@ static void register_reply(DBusMessage *message, void *user_data)
 	if (dbus_set_error_from_message(&error, message) == FALSE) {
 		ad.registered = true;
 		bt_shell_printf("Advertising object registered\n");
+		print_ad();
 	} else {
 		bt_shell_printf("Failed to register advertisement: %s\n", error.name);
 		dbus_error_free(&error);
@@ -436,12 +509,14 @@ void ad_unregister(DBusConnection *conn, GDBusProxy *manager)
 
 void ad_advertise_uuids(DBusConnection *conn, int argc, char *argv[])
 {
+	if (argc < 2 || !strlen(argv[1])) {
+		print_ad_uuids();
+		return;
+	}
+
 	g_strfreev(ad.uuids);
 	ad.uuids = NULL;
 	ad.uuids_len = 0;
-
-	if (argc < 2 || !strlen(argv[1]))
-		return;
 
 	ad.uuids = g_strdupv(&argv[1]);
 	if (!ad.uuids) {
@@ -465,15 +540,16 @@ void ad_advertise_service(DBusConnection *conn, int argc, char *argv[])
 	unsigned int i;
 	struct ad_data *data;
 
-	ad_clear_service();
-
-	if (argc < 2)
+	if (argc < 2 || !strlen(argv[1])) {
+		print_uuid(ad.service.uuid);
+		bt_shell_hexdump(ad.service.data.data, ad.service.data.len);
 		return;
+	}
 
 	ad.service.uuid = g_strdup(argv[1]);
 	data = &ad.service.data;
 
-	for (i = 1; i < (unsigned int) argc; i++) {
+	for (i = 2; i < (unsigned int) argc; i++) {
 		long int val;
 		char *endptr = NULL;
 
@@ -509,10 +585,18 @@ void ad_advertise_manufacturer(DBusConnection *conn, int argc, char *argv[])
 	long int val;
 	struct ad_data *data;
 
-	ad_clear_manufacturer();
+	if (argc < 2 || !strlen(argv[1])) {
+		if (ad.manufacturer.data.len) {
+			bt_shell_printf("Manufacturer: %u\n",
+						ad.manufacturer.id);
+			bt_shell_hexdump(ad.manufacturer.data.data,
+						ad.manufacturer.data.len);
+		}
 
-	if (argc < 2)
 		return;
+	}
+
+	ad_clear_manufacturer();
 
 	val = strtol(argv[1], &endptr, 0);
 	if (!endptr || *endptr != '\0' || val > UINT16_MAX) {
@@ -545,12 +629,17 @@ void ad_advertise_manufacturer(DBusConnection *conn, int argc, char *argv[])
 							"ManufacturerData");
 }
 
-void ad_advertise_tx_power(DBusConnection *conn, bool value)
+void ad_advertise_tx_power(DBusConnection *conn, dbus_bool_t *value)
 {
-	if (ad.tx_power == value)
+	if (!value) {
+		bt_shell_printf("Tx Power: %s\n", ad.tx_power ? "on" : "off");
+		return;
+	}
+
+	if (ad.tx_power == *value)
 		return;
 
-	ad.tx_power = value;
+	ad.tx_power = *value;
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Includes");
 }
@@ -572,6 +661,15 @@ void ad_advertise_name(DBusConnection *conn, bool value)
 
 void ad_advertise_local_name(DBusConnection *conn, const char *name)
 {
+	if (!name) {
+		if (ad.local_name)
+			bt_shell_printf("LocalName: %s\n", ad.local_name);
+		else
+			bt_shell_printf("Name: %s\n", ad.name ? "on" : "off");
+
+		return;
+	}
+
 	if (ad.local_name && !strcmp(name, ad.local_name))
 		return;
 
@@ -594,32 +692,56 @@ void ad_advertise_appearance(DBusConnection *conn, bool value)
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Includes");
 }
 
-void ad_advertise_local_appearance(DBusConnection *conn, uint16_t value)
+void ad_advertise_local_appearance(DBusConnection *conn, long int *value)
 {
-	if (ad.local_appearance == value)
+	if (!value) {
+		if (ad.local_appearance != UINT16_MAX)
+			bt_shell_printf("Appearance: %s (0x%04x)\n",
+					bt_appear_to_str(ad.local_appearance),
+					ad.local_appearance);
+		else
+			bt_shell_printf("Apperance: %s\n",
+					ad.appearance ? "on" : "off");
+
+		return;
+	}
+
+	if (ad.local_appearance == *value)
 		return;
 
-	ad.local_appearance = value;
+	ad.local_appearance = *value;
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Appearance");
 }
 
-void ad_advertise_duration(DBusConnection *conn, uint16_t value)
+void ad_advertise_duration(DBusConnection *conn, long int *value)
 {
-	if (ad.duration == value)
+	if (!value) {
+		if (ad.duration)
+			bt_shell_printf("Duration: %u sec\n", ad.duration);
+		return;
+	}
+
+	if (ad.duration == *value)
 		return;
 
-	ad.duration = value;
+	ad.duration = *value;
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Duration");
 }
 
-void ad_advertise_timeout(DBusConnection *conn, uint16_t value)
+void ad_advertise_timeout(DBusConnection *conn, long int *value)
 {
-	if (ad.timeout == value)
+	if (!value) {
+		if (ad.timeout)
+			bt_shell_printf("Timeout: %u sec\n", ad.timeout);
+		return;
+	}
+
+	if (ad.timeout == *value)
 		return;
 
-	ad.timeout = value;
+	ad.timeout = *value;
 
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Timeout");
 }

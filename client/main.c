@@ -2191,33 +2191,43 @@ static char *ad_generator(const char *text, int state)
 	return argument_generator(text, state, ad_arguments);
 }
 
-static void cmd_set_advertise_uuids(int argc, char *argv[])
+static void cmd_advertise_uuids(int argc, char *argv[])
 {
 	ad_advertise_uuids(dbus_conn, argc, argv);
 }
 
-static void cmd_set_advertise_service(int argc, char *argv[])
+static void cmd_advertise_service(int argc, char *argv[])
 {
 	ad_advertise_service(dbus_conn, argc, argv);
 }
 
-static void cmd_set_advertise_manufacturer(int argc, char *argv[])
+static void cmd_advertise_manufacturer(int argc, char *argv[])
 {
 	ad_advertise_manufacturer(dbus_conn, argc, argv);
 }
 
-static void cmd_set_advertise_tx_power(int argc, char *argv[])
+static void cmd_advertise_tx_power(int argc, char *argv[])
 {
 	dbus_bool_t powered;
+
+	if (argc < 2) {
+		ad_advertise_tx_power(dbus_conn, NULL);
+		return;
+	}
 
 	if (!parse_argument(argc, argv, NULL, NULL, &powered, NULL))
 		return;
 
-	ad_advertise_tx_power(dbus_conn, powered);
+	ad_advertise_tx_power(dbus_conn, &powered);
 }
 
-static void cmd_set_advertise_name(int argc, char *argv[])
+static void cmd_advertise_name(int argc, char *argv[])
 {
+	if (argc < 2) {
+		ad_advertise_local_name(dbus_conn, NULL);
+		return;
+	}
+
 	if (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "yes") == 0) {
 		ad_advertise_name(dbus_conn, true);
 		return;
@@ -2231,10 +2241,15 @@ static void cmd_set_advertise_name(int argc, char *argv[])
 	ad_advertise_local_name(dbus_conn, argv[1]);
 }
 
-static void cmd_set_advertise_appearance(int argc, char *argv[])
+static void cmd_advertise_appearance(int argc, char *argv[])
 {
 	long int value;
 	char *endptr = NULL;
+
+	if (argc < 2) {
+		ad_advertise_local_appearance(dbus_conn, NULL);
+		return;
+	}
 
 	if (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "yes") == 0) {
 		ad_advertise_appearance(dbus_conn, true);
@@ -2252,13 +2267,18 @@ static void cmd_set_advertise_appearance(int argc, char *argv[])
 		return;
 	}
 
-	ad_advertise_local_appearance(dbus_conn, value);
+	ad_advertise_local_appearance(dbus_conn, &value);
 }
 
-static void cmd_set_advertise_duration(int argc, char *argv[])
+static void cmd_advertise_duration(int argc, char *argv[])
 {
 	long int value;
 	char *endptr = NULL;
+
+	if (argc < 2) {
+		ad_advertise_duration(dbus_conn, NULL);
+		return;
+	}
 
 	value = strtol(argv[1], &endptr, 0);
 	if (!endptr || *endptr != '\0' || value > UINT16_MAX) {
@@ -2266,13 +2286,18 @@ static void cmd_set_advertise_duration(int argc, char *argv[])
 		return;
 	}
 
-	ad_advertise_duration(dbus_conn, value);
+	ad_advertise_duration(dbus_conn, &value);
 }
 
-static void cmd_set_advertise_timeout(int argc, char *argv[])
+static void cmd_advertise_timeout(int argc, char *argv[])
 {
 	long int value;
 	char *endptr = NULL;
+
+	if (argc < 2) {
+		ad_advertise_timeout(dbus_conn, NULL);
+		return;
+	}
 
 	value = strtol(argv[1], &endptr, 0);
 	if (!endptr || *endptr != '\0' || value > UINT16_MAX) {
@@ -2280,31 +2305,31 @@ static void cmd_set_advertise_timeout(int argc, char *argv[])
 		return;
 	}
 
-	ad_advertise_timeout(dbus_conn, value);
+	ad_advertise_timeout(dbus_conn, &value);
 }
 
 static const struct bt_shell_menu advertise_menu = {
 	.name = "advertise",
 	.desc = "Advertise Options Submenu",
 	.entries = {
-	{ "set-uuids", "[uuid1 uuid2 ...]",
-			cmd_set_advertise_uuids, "Set advertise uuids" },
-	{ "set-service", "[uuid] [data=xx xx ...]", cmd_set_advertise_service,
+	{ "uuids", "[uuid1 uuid2 ...]", cmd_advertise_uuids,
+			"Set advertise uuids" },
+	{ "service", "[uuid] [data=xx xx ...]", cmd_advertise_service,
 			"Set advertise service data" },
-	{ "set-manufacturer", "[id] [data=xx xx ...]",
-			cmd_set_advertise_manufacturer,
+	{ "manufacturer", "[id] [data=xx xx ...]",
+			cmd_advertise_manufacturer,
 			"Set advertise manufacturer data" },
-	{ "set-tx-power", "<on/off>", cmd_set_advertise_tx_power,
+	{ "tx-power", "[on/off]", cmd_advertise_tx_power,
 			"Enable/disable TX power to be advertised",
 							mode_generator },
-	{ "set-name", "<on/off/name>", cmd_set_advertise_name,
+	{ "name", "[on/off/name]", cmd_advertise_name,
 			"Enable/disable local name to be advertised" },
-	{ "set-appearance", "<value>", cmd_set_advertise_appearance,
+	{ "appearance", "[value]", cmd_advertise_appearance,
 			"Set custom appearance to be advertised" },
-	{ "set-duration", "<seconds>", cmd_set_advertise_duration,
-			"Set advertise duration" },
-	{ "set-timeout", "<seconds>", cmd_set_advertise_timeout,
-			"Set advertise timeout" },
+	{ "duration", "[seconds]", cmd_advertise_duration,
+			"Set/Get advertise duration" },
+	{ "timeout", "[seconds]", cmd_advertise_timeout,
+			"Set/Get advertise timeout" },
 	{ } },
 };
 
