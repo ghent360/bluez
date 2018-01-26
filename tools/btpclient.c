@@ -54,6 +54,7 @@ struct btp_adapter {
 	uint8_t index;
 	uint32_t supported_settings;
 	uint32_t current_settings;
+	uint32_t default_settings;
 	struct l_queue *devices;
 };
 
@@ -457,6 +458,8 @@ static void btp_gap_reset(uint8_t index, const void *param, uint16_t length,
 			status = BTP_ERROR_FAIL;
 			goto failed;
 		}
+
+	adapter->current_settings = adapter->default_settings;
 
 	/* TODO for we assume all went well */
 	btp_send(btp, BTP_GAP_SERVICE, BTP_OP_GAP_RESET, index, 0, NULL);
@@ -1038,7 +1041,7 @@ static void btp_gap_start_advertising(uint8_t index, const void *param,
 		goto failed;
 	}
 
-	/* Adapter needs to be powered to be able to remove devices */
+	/* Adapter needs to be powered to be able to advertise */
 	if (!l_dbus_proxy_get_property(adapter->proxy, "Powered", "b", &prop) ||
 							!prop || ad.registered)
 		goto failed;
@@ -1156,19 +1159,15 @@ static void btp_gap_stop_advertising(uint8_t index, const void *param,
 	}
 
 	if (!l_dbus_proxy_get_property(adapter->proxy, "Powered", "b", &prop) ||
-							!prop || !ad.registered)
+				!prop || !adapter->ad_proxy || !ad.registered)
 		goto failed;
 
-	if (adapter->ad_proxy) {
-		if (!l_dbus_proxy_method_call(adapter->ad_proxy,
+	if (!l_dbus_proxy_method_call(adapter->ad_proxy,
 						"UnregisterAdvertisement",
 						unreg_advertising_setup,
 						stop_advertising_reply,
-						NULL, NULL)) {
-			status = BTP_ERROR_FAIL;
-			goto failed;
-		}
-	}
+						NULL, NULL))
+		goto failed;
 
 	return;
 
@@ -1855,6 +1854,8 @@ static void proxy_added(struct l_dbus_proxy *proxy, void *user_data)
 
 		extract_settings(proxy, &adapter->current_settings,
 						&adapter->supported_settings);
+
+		adapter->default_settings = adapter->current_settings;
 
 		l_queue_push_tail(adapters, adapter);
 		return;
