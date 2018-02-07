@@ -56,6 +56,11 @@
 
 static GMainLoop *main_loop;
 
+struct bt_shell_env {
+	char *name;
+	void *value;
+};
+
 static struct {
 	struct io *input;
 
@@ -66,6 +71,8 @@ static struct {
 	const struct bt_shell_menu *menu;
 	const struct bt_shell_menu *main;
 	struct queue *submenus;
+
+	struct queue *envs;
 } data;
 
 static void shell_print_menu(void);
@@ -191,6 +198,15 @@ static const struct bt_shell_menu_entry default_menu[] = {
 	{ }
 };
 
+static void shell_print_help(void)
+{
+	print_text(COLOR_HIGHLIGHT,
+		"\n"
+		"Use \"help\" for a list of available commands in a menu.\n"
+		"Use \"menu <submenu>\" if you want to enter any submenu.\n"
+		"Use \"back\" if you want to return to menu main.");
+}
+
 static void shell_print_menu(void)
 {
 	const struct bt_shell_menu_entry *entry;
@@ -278,7 +294,7 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	}
 
 	/* Check if there are enough arguments */
-	if ((unsigned) argc - 1 < w.we_wordc && !w.we_offs) {
+	if ((unsigned) argc - 1 < w.we_wordc) {
 		print_text(COLOR_HIGHLIGHT, "Missing %s argument",
 						w.we_wordv[argc - 1]);
 		goto fail;
@@ -341,8 +357,12 @@ static void shell_exec(int argc, char *argv[])
 		return;
 
 	if (menu_exec(default_menu, argc, argv) == -ENOENT) {
-		if (menu_exec(data.menu->entries, argc, argv) == -ENOENT)
-			print_text(COLOR_HIGHLIGHT, "Invalid command");
+		if (menu_exec(data.menu->entries, argc, argv) == -ENOENT) {
+			print_text(COLOR_HIGHLIGHT,
+					"Invalid command in menu %s: %s",
+					data.menu->name , argv[0]);
+			shell_print_help();
+		}
 	}
 }
 
@@ -379,45 +399,14 @@ void bt_shell_printf(const char *fmt, ...)
 	}
 }
 
+static void print_string(const char *str, void *user_data)
+{
+	bt_shell_printf("%s\n", str);
+}
+
 void bt_shell_hexdump(const unsigned char *buf, size_t len)
 {
-	static const char hexdigits[] = "0123456789abcdef";
-	char str[68];
-	size_t i;
-
-	if (!len)
-		return;
-
-	str[0] = ' ';
-
-	for (i = 0; i < len; i++) {
-		str[((i % 16) * 3) + 1] = ' ';
-		str[((i % 16) * 3) + 2] = hexdigits[buf[i] >> 4];
-		str[((i % 16) * 3) + 3] = hexdigits[buf[i] & 0xf];
-		str[(i % 16) + 51] = isprint(buf[i]) ? buf[i] : '.';
-
-		if ((i + 1) % 16 == 0) {
-			str[49] = ' ';
-			str[50] = ' ';
-			str[67] = '\0';
-			bt_shell_printf("%s\n", str);
-			str[0] = ' ';
-		}
-	}
-
-	if (i % 16 > 0) {
-		size_t j;
-		for (j = (i % 16); j < 16; j++) {
-			str[(j * 3) + 1] = ' ';
-			str[(j * 3) + 2] = ' ';
-			str[(j * 3) + 3] = ' ';
-			str[j + 51] = ' ';
-		}
-		str[49] = ' ';
-		str[50] = ' ';
-		str[67] = '\0';
-		bt_shell_printf("%s\n", str);
-	}
+	util_hexdump(' ', buf, len, print_string, NULL);
 }
 
 void bt_shell_prompt_input(const char *label, const char *msg,
@@ -542,8 +531,76 @@ static char *cmd_generator(const char *text, int state)
 	return find_cmd(text, data.menu->entries, &index);
 }
 
+static wordexp_t args;
+
+static char *arg_generator(const char *text, int state)
+{
+	static unsigned int index, len;
+	const char *arg;
+
+	if (!state) {
+		index = 0;
+		len = strlen(text);
+	}
+
+	while (index < args.we_wordc) {
+		arg = args.we_wordv[index];
+		index++;
+
+		if (!strncmp(arg, text, len))
+			return strdup(arg);
+	}
+
+	return NULL;
+}
+
+static char **args_completion(const struct bt_shell_menu_entry *entry, int argc,
+							const char *text)
+{
+	char **matches = NULL;
+	char *str;
+	int index;
+
+	index = text[0] == '\0' ? argc - 1 : argc - 2;
+	if (index < 0)
+		return NULL;
+
+	if (!entry->arg)
+		goto done;
+
+	str = strdup(entry->arg);
+
+	if (parse_args(str, &args, "<>[]", WRDE_NOCMD))
+		goto done;
+
+	/* Check if argument is valid */
+	if ((unsigned) index > args.we_wordc - 1)
+		goto done;
+
+	/* Check if there are multiple values */
+	if (!strrchr(entry->arg, '/'))
+		goto done;
+
+	/* Split values separated by / */
+	str = g_strdelimit(args.we_wordv[index], "/", ' ');
+
+	if (wordexp(str, &args, WRDE_NOCMD))
+		goto done;
+
+	rl_completion_display_matches_hook = NULL;
+	matches = rl_completion_matches(text, arg_generator);
+
+done:
+	if (!matches && text[0] == '\0')
+		bt_shell_printf("Usage: %s %s\n", entry->cmd,
+					entry->arg ? entry->arg : "");
+
+	wordfree(&args);
+	return matches;
+}
+
 static char **menu_completion(const struct bt_shell_menu_entry *entry,
-				const char *text, char *input_cmd)
+				const char *text, int argc, char *input_cmd)
 {
 	char **matches = NULL;
 
@@ -552,9 +609,7 @@ static char **menu_completion(const struct bt_shell_menu_entry *entry,
 			continue;
 
 		if (!entry->gen) {
-			if (text[0] == '\0')
-				bt_shell_printf("Usage: %s %s\n", entry->cmd,
-						entry->arg ? entry->arg : "");
+			matches = args_completion(entry, argc, text);
 			break;
 		}
 
@@ -579,9 +634,11 @@ static char **shell_completion(const char *text, int start, int end)
 		if (wordexp(rl_line_buffer, &w, WRDE_NOCMD))
 			return NULL;
 
-		matches = menu_completion(default_menu, text, w.we_wordv[0]);
+		matches = menu_completion(default_menu, text, w.we_wordc,
+							w.we_wordv[0]);
 		if (!matches)
 			matches = menu_completion(data.menu->entries, text,
+							w.we_wordc,
 							w.we_wordv[0]);
 
 		wordfree(&w);
@@ -759,6 +816,14 @@ static void rl_cleanup(void)
 	rl_callback_handler_remove();
 }
 
+static void env_destroy(void *data)
+{
+	struct bt_shell_env *env = data;
+
+	free(env->name);
+	free(env);
+}
+
 void bt_shell_run(void)
 {
 	struct io *signal;
@@ -774,6 +839,11 @@ void bt_shell_run(void)
 
 	g_main_loop_unref(main_loop);
 	main_loop = NULL;
+
+	if (data.envs) {
+		queue_destroy(data.envs, env_destroy);
+		data.envs = NULL;
+	}
 
 	rl_cleanup();
 }
@@ -848,4 +918,47 @@ bool bt_shell_detach(void)
 	data.input = NULL;
 
 	return true;
+}
+
+static bool match_env(const void *data, const void *user_data)
+{
+	const struct bt_shell_env *env = data;
+	const char *name = user_data;
+
+	return !strcmp(env->name, name);
+}
+
+void bt_shell_set_env(const char *name, void *value)
+{
+	struct bt_shell_env *env;
+
+	if (!data.envs) {
+		data.envs = queue_new();
+		goto done;
+	}
+
+	env = queue_remove_if(data.envs, match_env, (void *) name);
+	if (env)
+		env_destroy(env);
+
+done:
+	env = new0(struct bt_shell_env, 1);
+	env->name = strdup(name);
+	env->value = value;
+
+	queue_push_tail(data.envs, env);
+}
+
+void *bt_shell_get_env(const char *name)
+{
+	const struct bt_shell_env *env;
+
+	if (!data.envs)
+		return NULL;
+
+	env = queue_find(data.envs, match_env, name);
+	if (!env)
+		return NULL;
+
+	return env->value;
 }
