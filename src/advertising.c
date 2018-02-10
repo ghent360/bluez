@@ -622,8 +622,12 @@ static int refresh_adv(struct btd_adv_client *client, mgmt_request_func_t func)
 
 	DBG("Refreshing advertisement: %s", client->path);
 
-	if (client->type == AD_TYPE_PERIPHERAL)
-		flags = MGMT_ADV_FLAG_CONNECTABLE | MGMT_ADV_FLAG_DISCOV;
+	if (client->type == AD_TYPE_PERIPHERAL) {
+		flags = MGMT_ADV_FLAG_CONNECTABLE;
+
+		if (btd_adapter_get_discoverable(client->manager->adapter))
+			flags |= MGMT_ADV_FLAG_DISCOV;
+	}
 
 	flags |= client->flags;
 
@@ -1032,14 +1036,6 @@ static void read_adv_features_callback(uint8_t status, uint16_t length,
 	if (manager->max_ads == 0)
 		return;
 
-	if (!g_dbus_register_interface(btd_get_dbus_connection(),
-					adapter_get_path(manager->adapter),
-					LE_ADVERTISING_MGR_IFACE, methods,
-					NULL, properties, manager, NULL)) {
-		error("Failed to register " LE_ADVERTISING_MGR_IFACE);
-		return;
-	}
-
 	/* Reset existing instances */
 	if (feat->num_instances)
 		remove_advertising(manager, 0);
@@ -1061,19 +1057,29 @@ static struct btd_adv_manager *manager_create(struct btd_adapter *adapter)
 	}
 
 	manager->mgmt_index = btd_adapter_get_index(adapter);
+	manager->clients = queue_new();
+	manager->supported_flags = MGMT_ADV_FLAG_LOCAL_NAME;
+
+	if (!g_dbus_register_interface(btd_get_dbus_connection(),
+					adapter_get_path(manager->adapter),
+					LE_ADVERTISING_MGR_IFACE, methods,
+					NULL, properties, manager, NULL)) {
+		error("Failed to register " LE_ADVERTISING_MGR_IFACE);
+		goto fail;
+	}
 
 	if (!mgmt_send(manager->mgmt, MGMT_OP_READ_ADV_FEATURES,
 				manager->mgmt_index, 0, NULL,
 				read_adv_features_callback, manager, NULL)) {
 		error("Failed to read advertising features");
-		manager_destroy(manager);
-		return NULL;
+		goto fail;
 	}
 
-	manager->clients = queue_new();
-	manager->supported_flags = MGMT_ADV_FLAG_LOCAL_NAME;
-
 	return manager;
+
+fail:
+	manager_destroy(manager);
+	return NULL;
 }
 
 struct btd_adv_manager *btd_adv_manager_new(struct btd_adapter *adapter)
@@ -1103,4 +1109,10 @@ void btd_adv_manager_destroy(struct btd_adv_manager *manager)
 					LE_ADVERTISING_MGR_IFACE);
 
 	manager_destroy(manager);
+}
+
+void btd_adv_manager_refresh(struct btd_adv_manager *manager)
+{
+	queue_foreach(manager->clients, (queue_foreach_func_t)refresh_adv,
+									NULL);
 }

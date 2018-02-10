@@ -535,14 +535,11 @@ static void settings_changed(struct btd_adapter *adapter, uint32_t settings)
 			trigger_passive_scanning(adapter);
 	}
 
-	if (changed_mask & MGMT_SETTING_CONNECTABLE)
-		g_dbus_emit_property_changed(dbus_conn, adapter->path,
-					ADAPTER_INTERFACE, "Connectable");
-
 	if (changed_mask & MGMT_SETTING_DISCOVERABLE) {
 		g_dbus_emit_property_changed(dbus_conn, adapter->path,
 					ADAPTER_INTERFACE, "Discoverable");
 		store_adapter_info(adapter);
+		btd_adv_manager_refresh(adapter->adv_manager);
 	}
 
 	if (changed_mask & MGMT_SETTING_BONDABLE) {
@@ -4103,6 +4100,14 @@ bool btd_adapter_get_powered(struct btd_adapter *adapter)
 bool btd_adapter_get_connectable(struct btd_adapter *adapter)
 {
 	if (adapter->current_settings & MGMT_SETTING_CONNECTABLE)
+		return true;
+
+	return false;
+}
+
+bool btd_adapter_get_discoverable(struct btd_adapter *adapter)
+{
+	if (adapter->current_settings & MGMT_SETTING_DISCOVERABLE)
 		return true;
 
 	return false;
