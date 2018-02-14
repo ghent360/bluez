@@ -1862,6 +1862,14 @@ static void print_transferred(struct transfer_data *data, const char *str,
 	int seconds, minutes;
 
 	dbus_message_iter_get_basic(iter, &valu64);
+
+	/*
+	 * Use the file size to output the proper size/speed since obexd resets
+	 * the current transferred size to zero on completion of transfer.
+	 */
+	if (valu64 == 0)
+		valu64 = data->size;
+
 	speed = valu64 - data->transferred;
 	data->transferred = valu64;
 
@@ -1884,6 +1892,9 @@ static void transfer_property_changed(GDBusProxy *proxy, const char *name,
 {
 	struct transfer_data *data = user_data;
 	char *str;
+
+	if (iter == NULL)
+		return;
 
 	str = proxy_description(proxy, "Transfer", COLORED_CHG);
 
