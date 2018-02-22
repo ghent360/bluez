@@ -1405,10 +1405,12 @@ static void filter_clear_duplicate(void)
 	filter.duplicate = false;
 }
 
-static const struct filter_clear {
+struct clear_entry {
 	const char *name;
 	void (*clear) (void);
-} filter_clear[] = {
+};
+
+static const struct clear_entry filter_clear[] = {
 	{ "uuids", filter_clear_uuids },
 	{ "rssi", filter_clear_rssi },
 	{ "pathloss", filter_clear_pathloss },
@@ -1437,29 +1439,44 @@ static char *filter_clear_generator(const char *text, int state)
 	return NULL;
 }
 
-static void cmd_scan_filter_clear(int argc, char *argv[])
+static gboolean data_clear(const struct clear_entry *entry_table,
+							const char *name)
 {
-	const struct filter_clear *fc;
+	const struct clear_entry *entry;
 	bool all = false;
 
-	if (argc < 2 || !strlen(argv[1]))
+	if (!name || !strlen(name) || !strcmp("all", name))
 		all = true;
 
-	for (fc = filter_clear; fc && fc->name; fc++) {
-		if (all || !strcmp(fc->name, argv[1])) {
-			fc->clear();
-			filter.set = false;
+	for (entry = entry_table; entry && entry->name; entry++) {
+		if (all || !strcmp(entry->name, name)) {
+			entry->clear();
 			if (!all)
 				goto done;
 		}
 	}
 
 	if (!all) {
-		bt_shell_printf("Invalid argument %s\n", argv[1]);
-		return;
+		bt_shell_printf("Invalid argument %s\n", name);
+		return FALSE;
 	}
 
 done:
+	return TRUE;
+}
+
+static void cmd_scan_filter_clear(int argc, char *argv[])
+{
+	bool all = false;
+
+	if (argc < 2 || !strlen(argv[1]))
+		all = true;
+
+	if (!data_clear(filter_clear, all ? "all" : argv[1]))
+		return;
+
+	filter.set = false;
+
 	if (check_default_ctrl() == FALSE)
 		return;
 
@@ -2297,28 +2314,98 @@ static void cmd_advertise_timeout(int argc, char *argv[])
 	ad_advertise_timeout(dbus_conn, &value);
 }
 
+static void ad_clear_uuids(void)
+{
+	ad_disable_uuids(dbus_conn);
+}
+
+static void ad_clear_service(void)
+{
+	ad_disable_service(dbus_conn);
+}
+
+static void ad_clear_manufacturer(void)
+{
+	ad_disable_manufacturer(dbus_conn);
+}
+
+static void ad_clear_tx_power(void)
+{
+	dbus_bool_t powered = false;
+
+	ad_advertise_tx_power(dbus_conn, &powered);
+}
+
+static void ad_clear_name(void)
+{
+	ad_advertise_name(dbus_conn, false);
+}
+
+static void ad_clear_appearance(void)
+{
+	ad_advertise_appearance(dbus_conn, false);
+}
+
+static void ad_clear_duration(void)
+{
+	long int value = 0;
+
+	ad_advertise_duration(dbus_conn, &value);
+}
+
+static void ad_clear_timeout(void)
+{
+	long int value = 0;
+
+	ad_advertise_timeout(dbus_conn, &value);
+}
+
+static const struct clear_entry ad_clear[] = {
+	{ "uuids",		ad_clear_uuids },
+	{ "service",		ad_clear_service },
+	{ "manufacturer",	ad_clear_manufacturer },
+	{ "tx-power",		ad_clear_tx_power },
+	{ "name",		ad_clear_name },
+	{ "appearance",		ad_clear_appearance },
+	{ "duration",		ad_clear_duration },
+	{ "timeout",		ad_clear_timeout },
+	{}
+};
+
+static void cmd_ad_clear(int argc, char *argv[])
+{
+	bool all = false;
+
+	if (argc < 2 || !strlen(argv[1]))
+		all = true;
+
+	data_clear(ad_clear, all ? "all" : argv[1]);
+}
+
 static const struct bt_shell_menu advertise_menu = {
 	.name = "advertise",
 	.desc = "Advertise Options Submenu",
 	.entries = {
 	{ "uuids", "[uuid1 uuid2 ...]", cmd_advertise_uuids,
-			"Set advertise uuids" },
+			"Set/Get advertise uuids" },
 	{ "service", "[uuid] [data=xx xx ...]", cmd_advertise_service,
-			"Set advertise service data" },
+			"Set/Get advertise service data" },
 	{ "manufacturer", "[id] [data=xx xx ...]",
 			cmd_advertise_manufacturer,
-			"Set advertise manufacturer data" },
+			"Set/Get advertise manufacturer data" },
 	{ "tx-power", "[on/off]", cmd_advertise_tx_power,
-			"Enable/disable TX power to be advertised",
+			"Show/Enable/Disable TX power to be advertised",
 							NULL },
 	{ "name", "[on/off/name]", cmd_advertise_name,
-			"Enable/disable local name to be advertised" },
-	{ "appearance", "[value]", cmd_advertise_appearance,
-			"Set custom appearance to be advertised" },
+			"Configure local name to be advertised" },
+	{ "appearance", "[on/off/value]", cmd_advertise_appearance,
+			"Configure custom appearance to be advertised" },
 	{ "duration", "[seconds]", cmd_advertise_duration,
 			"Set/Get advertise duration" },
 	{ "timeout", "[seconds]", cmd_advertise_timeout,
 			"Set/Get advertise timeout" },
+	{ "clear", "[uuids/service/manufacturer/config-name...]", cmd_ad_clear,
+			"Clear advertise config" },
 	{ } },
 };
 
