@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <signal.h>
 #include <sys/signalfd.h>
@@ -37,8 +38,9 @@
 
 #include <readline/readline.h>
 #include <readline/history.h>
-#include <glib.h>
 
+#include "src/shared/mainloop.h"
+#include "src/shared/timeout.h"
 #include "src/shared/io.h"
 #include "src/shared/util.h"
 #include "src/shared/queue.h"
@@ -54,14 +56,17 @@
 		printf(COLOR_BLUE "%s %-*s " COLOR_OFF "%s\n", \
 			cmd, (int)(CMD_LENGTH - strlen(cmd)), "", desc)
 
-static GMainLoop *main_loop;
-
 struct bt_shell_env {
 	char *name;
 	void *value;
 };
 
 static struct {
+	bool init;
+	int argc;
+	char **argv;
+	bool mode;
+	int timeout;
 	struct io *input;
 
 	bool saved_prompt;
@@ -84,7 +89,7 @@ static void cmd_version(int argc, char *argv[])
 
 static void cmd_quit(int argc, char *argv[])
 {
-	g_main_loop_quit(main_loop);
+	mainloop_quit();
 }
 
 static void cmd_help(int argc, char *argv[])
@@ -245,18 +250,18 @@ static int parse_args(char *arg, wordexp_t *w, char *del, int flags)
 {
 	char *str;
 
-	str = g_strdelimit(arg, del, '"');
+	str = strdelimit(arg, del, '"');
 
 	if (wordexp(str, w, flags)) {
-		g_free(str);
+		free(str);
 		return -EINVAL;
 	}
 
 	/* If argument ends with ,,, set we_offs bypass strict checks */
-	if (w->we_wordc && g_str_has_suffix(w->we_wordv[w->we_wordc -1], "..."))
+	if (w->we_wordc && strsuffix(w->we_wordv[w->we_wordc -1], "..."))
 		w->we_offs = 1;
 
-	g_free(str);
+	free(str);
 
 	return 0;
 }
@@ -373,6 +378,9 @@ void bt_shell_printf(const char *fmt, ...)
 	char *saved_line;
 	int saved_point;
 
+	if (!data.input)
+		return;
+
 	save_input = !RL_ISSTATE(RL_STATE_DONE);
 
 	if (save_input) {
@@ -453,7 +461,7 @@ static void rl_handler(char *input)
 		rl_insert_text("quit");
 		rl_redisplay();
 		rl_crlf();
-		g_main_loop_quit(main_loop);
+		mainloop_quit();
 		return;
 	}
 
@@ -579,7 +587,7 @@ static char **args_completion(const struct bt_shell_menu_entry *entry, int argc,
 		goto done;
 
 	/* Split values separated by / */
-	str = g_strdelimit(args.we_wordv[index], "/", ' ');
+	str = strdelimit(args.we_wordv[index], "/", ' ');
 
 	if (wordexp(str, &args, WRDE_NOCMD))
 		goto done;
@@ -652,7 +660,7 @@ static char **shell_completion(const char *text, int start, int end)
 
 static bool io_hup(struct io *io, void *user_data)
 {
-	g_main_loop_quit(main_loop);
+	mainloop_quit();
 
 	return false;
 }
@@ -692,7 +700,7 @@ static bool signal_read(struct io *io, void *user_data)
 		if (!terminated) {
 			rl_replace_line("", 0);
 			rl_crlf();
-			g_main_loop_quit(main_loop);
+			mainloop_quit();
 		}
 
 		terminated = true;
@@ -744,6 +752,7 @@ static void rl_init(void)
 static const struct option main_options[] = {
 	{ "version",	no_argument, 0, 'v' },
 	{ "help",	no_argument, 0, 'h' },
+	{ "timeout",	required_argument, 0, 't' },
 };
 
 static void usage(int argc, char **argv, const struct bt_shell_opt *opt)
@@ -759,7 +768,8 @@ static void usage(int argc, char **argv, const struct bt_shell_opt *opt)
 	for (i = 0; opt && opt->options[i].name; i++)
 		printf("\t--%s \t%s\n", opt->options[i].name, opt->help[i]);
 
-	printf("\t--version \tDisplay version\n"
+	printf("\t--timeout \t\tTimeout in seconds for non-interactive mode\n"
+		"\t--version \tDisplay version\n"
 		"\t--help \t\tDisplay help\n");
 }
 
@@ -791,6 +801,9 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 			usage(argc, argv, opt);
 			exit(EXIT_SUCCESS);
 			return;
+		case 't':
+			data.timeout = atoi(optarg);
+			break;
 		default:
 			if (c != opt->options[index - offset].val) {
 				usage(argc, argv, opt);
@@ -802,9 +815,18 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 		}
 	}
 
-	main_loop = g_main_loop_new(NULL, FALSE);
+	data.argc = argc - optind;
+	data.argv = argv + optind;
+	data.mode = (data.argc > 0);
+
+	if (data.mode)
+		bt_shell_set_env("NON_INTERACTIVE", &data.mode);
+
+	mainloop_init();
 
 	rl_init();
+
+	data.init = true;
 }
 
 static void rl_cleanup(void)
@@ -827,15 +849,12 @@ void bt_shell_run(void)
 
 	signal = setup_signalfd();
 
-	g_main_loop_run(main_loop);
+	mainloop_run();
 
 	bt_shell_release_prompt("");
 	bt_shell_detach();
 
 	io_destroy(signal);
-
-	g_main_loop_unref(main_loop);
-	main_loop = NULL;
 
 	if (data.envs) {
 		queue_destroy(data.envs, env_destroy);
@@ -843,6 +862,8 @@ void bt_shell_run(void)
 	}
 
 	rl_cleanup();
+
+	data.init = false;
 }
 
 bool bt_shell_set_menu(const struct bt_shell_menu *menu)
@@ -873,7 +894,7 @@ bool bt_shell_add_submenu(const struct bt_shell_menu *menu)
 
 void bt_shell_set_prompt(const char *string)
 {
-	if (!main_loop)
+	if (!data.init || data.mode)
 		return;
 
 	rl_set_prompt(string);
@@ -886,6 +907,13 @@ static bool input_read(struct io *io, void *user_data)
 {
 	rl_callback_read_char();
 	return true;
+}
+
+static bool shell_quit(void *data)
+{
+	mainloop_quit();
+
+	return false;
 }
 
 bool bt_shell_attach(int fd)
@@ -902,6 +930,17 @@ bool bt_shell_attach(int fd)
 	io_set_disconnect_handler(io, io_hup, NULL, NULL);
 
 	data.input = io;
+
+	if (data.mode) {
+		shell_exec(data.argc, data.argv);
+
+		if (!data.timeout) {
+			bt_shell_detach();
+			mainloop_quit();
+		} else
+			timeout_add(data.timeout * 1000, shell_quit, NULL,
+								NULL);
+	}
 
 	return true;
 }
