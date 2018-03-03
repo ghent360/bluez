@@ -58,8 +58,8 @@ static int client_bind(uint16_t app_idx, int action)
 			return MESH_STATUS_INSUFF_RESOURCES;
 		} else {
 			onoff_app_idx = app_idx;
-			bt_shell_printf("On/Off client model: new binding %4.4x\n",
-								app_idx);
+			bt_shell_printf("On/Off client model: new binding"
+					" %4.4x\n", app_idx);
 		}
 	} else {
 		if (onoff_app_idx == app_idx)
@@ -101,8 +101,8 @@ static void print_remaining_time(uint8_t remaining_time)
 		break;
 	}
 
-	bt_shell_printf("\n\t\tRemaining time: %d hrs %d mins %d secs %d msecs\n",
-						hours, minutes, secs, msecs);
+	bt_shell_printf("\n\t\tRemaining time: %d hrs %d mins %d secs %d"
+			" msecs\n", hours, minutes, secs, msecs);
 
 }
 
@@ -134,7 +134,8 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 						src, data[0] ? "ON" : "OFF");
 
 		if (len == 3) {
-			bt_shell_printf(", target = %s", data[1] ? "ON" : "OFF");
+			bt_shell_printf(", target = %s",
+					data[1] ? "ON" : "OFF");
 			print_remaining_time(data[2]);
 		} else
 			bt_shell_printf("\n");
@@ -183,10 +184,12 @@ static void cmd_set_node(int argc, char *argv[])
 		bt_shell_printf("Bad unicast address %s: "
 				"expected format 4 digit hex\n", argv[1]);
 		target = UNASSIGNED_ADDRESS;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	} else {
 		bt_shell_printf("Controlling ON/OFF for node %4.4x\n", dst);
 		target = dst;
 		set_menu_prompt("on/off", argv[1]);
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 	}
 }
 
@@ -212,7 +215,7 @@ static void cmd_get_status(int argc, char *argv[])
 
 	if (IS_UNASSIGNED(target)) {
 		bt_shell_printf("Destination not set\n");
-		return;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
 	node = node_find_by_addr(target);
@@ -222,8 +225,12 @@ static void cmd_get_status(int argc, char *argv[])
 
 	n = mesh_opcode_set(OP_GENERIC_ONOFF_GET, msg);
 
-	if (!send_cmd(msg, n))
+	if (!send_cmd(msg, n)) {
 		bt_shell_printf("Failed to send \"GENERIC ON/OFF GET\"\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
 static void cmd_set(int argc, char *argv[])
@@ -234,7 +241,7 @@ static void cmd_set(int argc, char *argv[])
 
 	if (IS_UNASSIGNED(target)) {
 		bt_shell_printf("Destination not set\n");
-		return;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
 	node = node_find_by_addr(target);
@@ -245,16 +252,19 @@ static void cmd_set(int argc, char *argv[])
 	if ((read_input_parameters(argc, argv) != 1) &&
 					parms[0] != 0 && parms[0] != 1) {
 		bt_shell_printf("Bad arguments: Expecting \"0\" or \"1\"\n");
-		return;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
 	n = mesh_opcode_set(OP_GENERIC_ONOFF_SET, msg);
 	msg[n++] = parms[0];
 	msg[n++] = trans_id++;
 
-	if (!send_cmd(msg, n))
+	if (!send_cmd(msg, n)) {
 		bt_shell_printf("Failed to send \"GENERIC ON/OFF SET\"\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
 
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
 static const struct bt_shell_menu onoff_menu = {

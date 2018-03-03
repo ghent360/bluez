@@ -68,6 +68,9 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt);
 
 void bt_shell_run(void);
 
+void bt_shell_quit(int status);
+void bt_shell_noninteractive_quit(int status);
+
 bool bt_shell_set_menu(const struct bt_shell_menu *menu);
 
 bool bt_shell_add_submenu(const struct bt_shell_menu *menu);
@@ -79,6 +82,7 @@ void bt_shell_set_prompt(const char *string);
 void bt_shell_printf(const char *fmt,
 				...) __attribute__((format(printf, 1, 2)));
 void bt_shell_hexdump(const unsigned char *buf, size_t len);
+void bt_shell_usage(void);
 
 void bt_shell_prompt_input(const char *label, const char *msg,
 			bt_shell_prompt_input_func func, void *user_data);

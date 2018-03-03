@@ -76,6 +76,7 @@ static struct {
 	const struct bt_shell_menu *menu;
 	const struct bt_shell_menu *main;
 	struct queue *submenus;
+	const struct bt_shell_menu_entry *exec;
 
 	struct queue *envs;
 } data;
@@ -85,6 +86,8 @@ static void shell_print_menu(void);
 static void cmd_version(int argc, char *argv[])
 {
 	bt_shell_printf("Version %s\n", VERSION);
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
 static void cmd_quit(int argc, char *argv[])
@@ -95,6 +98,8 @@ static void cmd_quit(int argc, char *argv[])
 static void cmd_help(int argc, char *argv[])
 {
 	shell_print_menu();
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
 static const struct bt_shell_menu *find_menu(const char *name)
@@ -143,18 +148,20 @@ static void cmd_menu(int argc, char *argv[])
 
 	if (argc < 2 || !strlen(argv[1])) {
 		bt_shell_printf("Missing name argument\n");
-		return;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
 	menu = find_menu(argv[1]);
 	if (!menu) {
 		bt_shell_printf("Unable find menu with name: %s\n", argv[1]);
-		return;
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
 	bt_shell_set_menu(menu);
 
 	shell_print_menu();
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
 static bool cmd_menu_exists(const struct bt_shell_menu *menu)
@@ -290,11 +297,22 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 	}
 
 	len = man - entry->arg;
-	man = strndup(entry->arg, len + 1);
+	if (entry->arg[0] == '<')
+		man = strndup(entry->arg, len + 1);
+	else {
+		/* Find where mandatory arguments start */
+		opt = strrchr(entry->arg, '<');
+		/* Skip if mandatory arguments are not in the right format */
+		if (!opt || opt > man) {
+			opt = strdup(entry->arg);
+			goto optional;
+		}
+		man = strndup(opt, man - opt + 1);
+	}
 
 	if (parse_args(man, &w, "<>", flags) < 0) {
 		print_text(COLOR_HIGHLIGHT,
-				"Unable to parse mandatory command arguments");
+			"Unable to parse mandatory command arguments: %s", man );
 		return -EINVAL;
 	}
 
@@ -311,7 +329,7 @@ static int cmd_exec(const struct bt_shell_menu_entry *entry,
 optional:
 	if (parse_args(opt, &w, "[]", flags) < 0) {
 		print_text(COLOR_HIGHLIGHT,
-				"Unable to parse optional command arguments");
+			"Unable to parse optional command arguments: %s", opt);
 		return -EINVAL;
 	}
 
@@ -325,8 +343,12 @@ optional:
 	wordfree(&w);
 
 exec:
+	data.exec = entry;
+
 	if (entry->func)
 		entry->func(argc, argv);
+
+	data.exec = NULL;
 
 	return 0;
 
@@ -356,19 +378,56 @@ static int menu_exec(const struct bt_shell_menu_entry *entry,
 	return -ENOENT;
 }
 
-static void shell_exec(int argc, char *argv[])
+static int submenu_exec(int argc, char *argv[])
 {
-	if (!data.menu || !argv[0])
-		return;
+	char *name;
+	int len, tlen;
+	const struct bt_shell_menu *submenu;
 
-	if (menu_exec(default_menu, argc, argv) == -ENOENT) {
-		if (menu_exec(data.menu->entries, argc, argv) == -ENOENT) {
-			print_text(COLOR_HIGHLIGHT,
+	if (data.menu != data.main)
+		return -ENOENT;
+
+	name = strchr(argv[0], '.');
+	if (!name)
+		return -ENOENT;
+
+	tlen = strlen(argv[0]);
+	len = name - argv[0];
+	name[0] = '\0';
+
+	submenu = find_menu(argv[0]);
+	if (!submenu)
+		return -ENOENT;
+
+	/* Replace submenu.command with command */
+	memmove(argv[0], argv[0] + len + 1, tlen - len - 1);
+	memset(argv[0] + tlen - len - 1, 0, len + 1);
+
+	return menu_exec(submenu->entries, argc, argv);
+}
+
+static int shell_exec(int argc, char *argv[])
+{
+	int err;
+
+	if (!data.menu || !argv[0])
+		return -EINVAL;
+
+	err  = menu_exec(default_menu, argc, argv);
+	if (err == -ENOENT) {
+		err  = menu_exec(data.menu->entries, argc, argv);
+		if (err == -ENOENT) {
+			err = submenu_exec(argc, argv);
+			if (err == -ENOENT) {
+				print_text(COLOR_HIGHLIGHT,
 					"Invalid command in menu %s: %s",
 					data.menu->name , argv[0]);
-			shell_print_help();
+				shell_print_help();
+			}
 		}
 	}
+
+	return err;
 }
 
 void bt_shell_printf(const char *fmt, ...)
@@ -380,6 +439,13 @@ void bt_shell_printf(const char *fmt, ...)
 
 	if (!data.input)
 		return;
+
+	if (data.mode) {
+		va_start(args, fmt);
+		vprintf(fmt, args);
+		va_end(args);
+		return;
+	}
 
 	save_input = !RL_ISSTATE(RL_STATE_DONE);
 
@@ -414,9 +480,21 @@ void bt_shell_hexdump(const unsigned char *buf, size_t len)
 	util_hexdump(' ', buf, len, print_string, NULL);
 }
 
+void bt_shell_usage()
+{
+	if (!data.exec)
+		return;
+
+	bt_shell_printf("Usage: %s %s\n", data.exec->cmd,
+					data.exec->arg ? data.exec->arg : "");
+}
+
 void bt_shell_prompt_input(const char *label, const char *msg,
 			bt_shell_prompt_input_func func, void *user_data)
 {
+	if (!data.init || data.mode)
+		return;
+
 	/* Normal use should not prompt for user input to the value a second
 	 * time before it releases the prompt, but we take a safe action. */
 	if (data.saved_prompt)
@@ -680,7 +758,7 @@ static bool signal_read(struct io *io, void *user_data)
 
 	switch (si.ssi_signo) {
 	case SIGINT:
-		if (data.input) {
+		if (data.input && !data.mode) {
 			rl_replace_line("", 0);
 			rl_crlf();
 			rl_on_new_line();
@@ -698,8 +776,10 @@ static bool signal_read(struct io *io, void *user_data)
 		/* fall through */
 	case SIGTERM:
 		if (!terminated) {
-			rl_replace_line("", 0);
-			rl_crlf();
+			if (!data.mode) {
+				rl_replace_line("", 0);
+				rl_crlf();
+			}
 			mainloop_quit();
 		}
 
@@ -742,6 +822,9 @@ static struct io *setup_signalfd(void)
 
 static void rl_init(void)
 {
+	if (data.mode)
+		return;
+
 	setlinebuf(stdout);
 	rl_attempted_completion_function = shell_completion;
 
@@ -768,14 +851,14 @@ static void usage(int argc, char **argv, const struct bt_shell_opt *opt)
 	for (i = 0; opt && opt->options[i].name; i++)
 		printf("\t--%s \t%s\n", opt->options[i].name, opt->help[i]);
 
-	printf("\t--timeout \t\tTimeout in seconds for non-interactive mode\n"
+	printf("\t--timeout \tTimeout in seconds for non-interactive mode\n"
 		"\t--version \tDisplay version\n"
 		"\t--help \t\tDisplay help\n");
 }
 
 void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 {
-	int c, index = 0;
+	int c, index = -1;
 	struct option options[256];
 	char optstr[256];
 	size_t offset;
@@ -787,9 +870,9 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 	if (opt) {
 		memcpy(options + offset, opt->options,
 				sizeof(struct option) * opt->optno);
-		snprintf(optstr, sizeof(optstr), "+hv%s", opt->optstr);
+		snprintf(optstr, sizeof(optstr), "+hvt:%s", opt->optstr);
 	} else
-		snprintf(optstr, sizeof(optstr), "+hv");
+		snprintf(optstr, sizeof(optstr), "+hvt:");
 
 	while ((c = getopt_long(argc, argv, optstr, options, &index)) != -1) {
 		switch (c) {
@@ -805,6 +888,13 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 			data.timeout = atoi(optarg);
 			break;
 		default:
+			if (index < 0) {
+				for (index = 0; options[index].val; index++) {
+					if (c == options[index].val)
+						break;
+				}
+			}
+
 			if (c != opt->options[index - offset].val) {
 				usage(argc, argv, opt);
 				exit(EXIT_SUCCESS);
@@ -817,6 +907,7 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 
 	data.argc = argc - optind;
 	data.argv = argv + optind;
+	optind = 0;
 	data.mode = (data.argc > 0);
 
 	if (data.mode)
@@ -831,6 +922,9 @@ void bt_shell_init(int argc, char **argv, const struct bt_shell_opt *opt)
 
 static void rl_cleanup(void)
 {
+	if (data.mode)
+		return;
+
 	rl_message("");
 	rl_callback_handler_remove();
 }
@@ -864,6 +958,22 @@ void bt_shell_run(void)
 	rl_cleanup();
 
 	data.init = false;
+}
+
+void bt_shell_quit(int status)
+{
+	if (status == EXIT_SUCCESS)
+		mainloop_exit_success();
+	else
+		mainloop_exit_failure();
+}
+
+void bt_shell_noninteractive_quit(int status)
+{
+	if (!data.mode || data.timeout)
+		return;
+
+	bt_shell_quit(status);
 }
 
 bool bt_shell_set_menu(const struct bt_shell_menu *menu)
@@ -926,18 +1036,20 @@ bool bt_shell_attach(int fd)
 
 	io = io_new(fd);
 
-	io_set_read_handler(io, input_read, NULL, NULL);
+	if (!data.mode)
+		io_set_read_handler(io, input_read, NULL, NULL);
+
 	io_set_disconnect_handler(io, io_hup, NULL, NULL);
 
 	data.input = io;
 
 	if (data.mode) {
-		shell_exec(data.argc, data.argv);
+		if (shell_exec(data.argc, data.argv) < 0) {
+			bt_shell_noninteractive_quit(EXIT_FAILURE);
+			return true;
+		}
 
-		if (!data.timeout) {
-			bt_shell_detach();
-			mainloop_quit();
-		} else
+		if (data.timeout)
 			timeout_add(data.timeout * 1000, shell_quit, NULL,
 								NULL);
 	}

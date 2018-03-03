@@ -47,17 +47,22 @@ void mainloop_init(void)
 
 void mainloop_quit(void)
 {
+	if (!main_loop)
+		return;
+
 	g_main_loop_quit(main_loop);
 }
 
 void mainloop_exit_success(void)
 {
 	exit_status = EXIT_SUCCESS;
+	mainloop_quit();
 }
 
 void mainloop_exit_failure(void)
 {
 	exit_status = EXIT_FAILURE;
+	mainloop_quit();
 }
 
 int mainloop_run(void)
