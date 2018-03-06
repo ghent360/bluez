@@ -44,6 +44,8 @@
 #define AD_TYPE_FLAGS				0x01
 #define AD_TYPE_INCOMPLETE_UUID16_SERVICE_LIST	0x02
 #define AD_TYPE_SHORT_NAME			0x08
+#define AD_TYPE_TX_POWER			0x0a
+#define AD_TYPE_SOLICIT_UUID16_SERVICE_LIST	0x14
 #define AD_TYPE_SERVICE_DATA_UUID16		0x16
 #define AD_TYPE_APPEARANCE			0x19
 #define AD_TYPE_MANUFACTURER_DATA		0xff
@@ -64,6 +66,8 @@ struct btp_adapter {
 
 struct btp_device {
 	struct l_dbus_proxy *proxy;
+	uint8_t address_type;
+	bdaddr_t address;
 };
 
 static struct l_queue *adapters;
@@ -97,6 +101,7 @@ static struct ad {
 	struct l_queue *uuids;
 	struct l_queue *services;
 	struct l_queue *manufacturers;
+	struct l_queue *solicits;
 	bool tx_power;
 	bool name;
 	bool appearance;
@@ -442,6 +447,7 @@ static void ad_cleanup(void)
 	l_queue_destroy(ad.uuids, l_free);
 	l_queue_destroy(ad.services, ad_cleanup_service);
 	l_queue_destroy(ad.manufacturers, l_free);
+	l_queue_destroy(ad.solicits, l_free);
 
 	memset(&ad, 0, sizeof(ad));
 }
@@ -755,6 +761,7 @@ static void ad_init(void)
 	ad.uuids = l_queue_new();
 	ad.services = l_queue_new();
 	ad.manufacturers = l_queue_new();
+	ad.solicits = l_queue_new();
 
 	ad.local_appearance = UINT16_MAX;
 }
@@ -875,6 +882,27 @@ static bool ad_manufacturerdata_getter(struct l_dbus *dbus,
 	return true;
 }
 
+static bool ad_solicituuids_getter(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_builder *builder,
+					void *user_data)
+{
+	const struct l_queue_entry *entry;
+
+	if (l_queue_isempty(ad.solicits))
+		return false;
+
+	l_dbus_message_builder_enter_array(builder, "s");
+
+	for (entry = l_queue_get_entries(ad.solicits); entry;
+							entry = entry->next)
+		l_dbus_message_builder_append_basic(builder, 's', entry->data);
+
+	l_dbus_message_builder_leave_array(builder);
+
+	return true;
+}
+
 static bool ad_includes_getter(struct l_dbus *dbus,
 					struct l_dbus_message *message,
 					struct l_dbus_message_builder *builder,
@@ -888,19 +916,19 @@ static bool ad_includes_getter(struct l_dbus *dbus,
 	if (ad.tx_power) {
 		const char *str = "tx-power";
 
-		l_dbus_message_builder_append_basic(builder, 's', &str);
+		l_dbus_message_builder_append_basic(builder, 's', str);
 	}
 
 	if (ad.name) {
 		const char *str = "local-name";
 
-		l_dbus_message_builder_append_basic(builder, 's', &str);
+		l_dbus_message_builder_append_basic(builder, 's', str);
 	}
 
 	if (ad.appearance) {
 		const char *str = "appearance";
 
-		l_dbus_message_builder_append_basic(builder, 's', &str);
+		l_dbus_message_builder_append_basic(builder, 's', str);
 	}
 
 	l_dbus_message_builder_leave_array(builder);
@@ -974,6 +1002,8 @@ static void setup_ad_interface(struct l_dbus_interface *interface)
 	l_dbus_interface_property(interface, "ManufacturerData", 0,
 					"a{qv}", ad_manufacturerdata_getter,
 					NULL);
+	l_dbus_interface_property(interface, "SolicitUUIDs", 0, "as",
+						ad_solicituuids_getter, NULL);
 	l_dbus_interface_property(interface, "Includes", 0, "as",
 						ad_includes_getter, NULL);
 	l_dbus_interface_property(interface, "LocalName", 0, "s",
@@ -1048,6 +1078,12 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 			ad.local_name[ad_len] = '\0';
 
 			break;
+		case AD_TYPE_TX_POWER:
+			ad.tx_power = true;
+
+			/* XXX Value is ommited cause, stack fills it */
+
+			break;
 		case AD_TYPE_SERVICE_DATA_UUID16:
 		{
 			struct service_data *sd;
@@ -1079,6 +1115,14 @@ static void create_advertising_data(uint8_t adv_data_len, const uint8_t *data)
 			memcpy(md->data.data, ad_data + 2, md->data.len);
 
 			l_queue_push_tail(ad.manufacturers, md);
+
+			break;
+		}
+		case AD_TYPE_SOLICIT_UUID16_SERVICE_LIST:
+		{
+			char *uuid = dupuuid2str(ad_data, 16);
+
+			l_queue_push_tail(ad.solicits, uuid);
 
 			break;
 		}
@@ -1506,12 +1550,81 @@ static void connect_reply(struct l_dbus_proxy *proxy,
 									NULL);
 }
 
+struct connect_device_data {
+	bdaddr_t addr;
+	uint8_t addr_type;
+};
+
+static void connect_device_destroy(void *connect_device_data)
+{
+	l_free(connect_device_data);
+}
+
+static void connect_device_reply(struct l_dbus_proxy *proxy,
+						struct l_dbus_message *result,
+						void *user_data)
+{
+	struct btp_adapter *adapter = find_adapter_by_proxy(proxy);
+
+	if (!adapter) {
+		btp_send_error(btp, BTP_GAP_SERVICE, BTP_INDEX_NON_CONTROLLER,
+								BTP_ERROR_FAIL);
+		return;
+	}
+
+	if (l_dbus_message_is_error(result)) {
+		const char *name, *desc;
+
+		l_dbus_message_get_error(result, &name, &desc);
+		l_error("Failed to connect device (%s), %s", name, desc);
+
+		return;
+	}
+}
+
+static void connect_device_setup(struct l_dbus_message *message,
+								void *user_data)
+{
+	struct connect_device_data *cdd = user_data;
+	struct l_dbus_message_builder *builder;
+	char str_addr[18];
+
+	ba2str(&cdd->addr, str_addr);
+
+	builder = l_dbus_message_builder_new(message);
+
+	l_dbus_message_builder_enter_array(builder, "{sv}");
+
+	l_dbus_message_builder_enter_dict(builder, "sv");
+	l_dbus_message_builder_append_basic(builder, 's', "Address");
+	l_dbus_message_builder_enter_variant(builder, "s");
+	l_dbus_message_builder_append_basic(builder, 's', str_addr);
+	l_dbus_message_builder_leave_variant(builder);
+	l_dbus_message_builder_leave_dict(builder);
+
+	l_dbus_message_builder_enter_dict(builder, "sv");
+	l_dbus_message_builder_append_basic(builder, 's', "AddressType");
+	l_dbus_message_builder_enter_variant(builder, "s");
+	if (cdd->addr_type == BTP_GAP_ADDR_RANDOM)
+		l_dbus_message_builder_append_basic(builder, 's', "random");
+	else
+		l_dbus_message_builder_append_basic(builder, 's', "public");
+	l_dbus_message_builder_leave_variant(builder);
+	l_dbus_message_builder_leave_dict(builder);
+
+	l_dbus_message_builder_leave_array(builder);
+
+	l_dbus_message_builder_finalize(builder);
+	l_dbus_message_builder_destroy(builder);
+}
+
 static void btp_gap_connect(uint8_t index, const void *param, uint16_t length,
 								void *user_data)
 {
 	struct btp_adapter *adapter = find_adapter_by_index(index);
 	const struct btp_gap_connect_cp *cp = param;
 	struct btp_device *device;
+	struct connect_device_data *cdd;
 	bool prop;
 	uint8_t status = BTP_ERROR_FAIL;
 
@@ -1528,8 +1641,21 @@ static void btp_gap_connect(uint8_t index, const void *param, uint16_t length,
 	device = find_device_by_address(adapter, &cp->address,
 							cp->address_type);
 
-	if (!device)
-		goto failed;
+	if (!device) {
+		cdd = l_new(struct connect_device_data, 1);
+		memcpy(&cdd->addr, &cp->address, sizeof(cdd->addr));
+		cdd->addr_type = cp->address_type;
+
+		l_dbus_proxy_method_call(adapter->proxy, "ConnectDevice",
+							connect_device_setup,
+							connect_device_reply,
+							cdd,
+							connect_device_destroy);
+
+		btp_send(btp, BTP_GAP_SERVICE, BTP_OP_GAP_CONNECT,
+						adapter->index, 0, NULL);
+		return;
+	}
 
 	l_dbus_proxy_method_call(device->proxy, "Connect", NULL, connect_reply,
 					L_UINT_TO_PTR(adapter->index), NULL);
@@ -1700,18 +1826,6 @@ static struct l_dbus_message *ag_request_confirmation_call(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
 {
-	struct l_dbus_message *reply;
-
-	reply = l_dbus_message_new_method_return(message);
-	l_dbus_message_set_arguments(reply, "");
-
-	return reply;
-}
-
-static struct l_dbus_message *ag_request_authorization_call(struct l_dbus *dbus,
-						struct l_dbus_message *message,
-						void *user_data)
-{
 	struct btp_gap_passkey_confirm_ev ev;
 	struct btp_device *device;
 	struct btp_adapter *adapter;
@@ -1748,6 +1862,18 @@ static struct l_dbus_message *ag_request_authorization_call(struct l_dbus *dbus,
 					adapter->index, sizeof(ev), &ev);
 
 	return NULL;
+}
+
+static struct l_dbus_message *ag_request_authorization_call(struct l_dbus *dbus,
+						struct l_dbus_message *message,
+						void *user_data)
+{
+	struct l_dbus_message *reply;
+
+	reply = l_dbus_message_new_method_return(message);
+	l_dbus_message_set_arguments(reply, "");
+
+	return reply;
 }
 
 static struct l_dbus_message *ag_authorize_service_call(struct l_dbus *dbus,
@@ -2389,24 +2515,30 @@ failed:
 
 static void btp_gap_device_found_ev(struct l_dbus_proxy *proxy)
 {
+	struct btp_device *device = find_device_by_proxy(proxy);
+	struct btp_adapter *adapter = find_adapter_by_device(device);
 	struct btp_device_found_ev ev;
-	const char *str;
+	struct btp_gap_device_connected_ev ev_conn;
+	const char *str, *addr_str;
 	int16_t rssi;
+	uint8_t address_type;
+	bool connected;
 
-	if (!l_dbus_proxy_get_property(proxy, "Address", "s", &str) ||
-						str2ba(str, &ev.address) < 0)
+	if (!l_dbus_proxy_get_property(proxy, "Address", "s", &addr_str) ||
+					str2ba(addr_str, &ev.address) < 0)
 		return;
 
 	if (!l_dbus_proxy_get_property(proxy, "AddressType", "s", &str))
 		return;
 
-	ev.address_type = strcmp(str, "public") ? BTP_GAP_ADDR_RANDOM :
+	address_type = strcmp(str, "public") ? BTP_GAP_ADDR_RANDOM :
 							BTP_GAP_ADDR_PUBLIC;
+	ev.address_type = address_type;
 
 	if (!l_dbus_proxy_get_property(proxy, "RSSI", "n", &rssi))
-		return;
-
-	ev.rssi = rssi;
+		ev.rssi = 0x81;
+	else
+		ev.rssi = rssi;
 
 	/* TODO Temporary set all flags */
 	ev.flags = (BTP_EV_GAP_DEVICE_FOUND_FLAG_RSSI |
@@ -2416,9 +2548,17 @@ static void btp_gap_device_found_ev(struct l_dbus_proxy *proxy)
 	/* TODO Add eir to device found event */
 	ev.eir_len = 0;
 
-	btp_send(btp, BTP_GAP_SERVICE, BTP_EV_GAP_DEVICE_FOUND,
-						BTP_INDEX_NON_CONTROLLER,
+	btp_send(btp, BTP_GAP_SERVICE, BTP_EV_GAP_DEVICE_FOUND, adapter->index,
 						sizeof(ev) + ev.eir_len, &ev);
+
+	if (l_dbus_proxy_get_property(proxy, "Connected", "b", &connected) &&
+								connected) {
+		ev_conn.address_type = address_type;
+		str2ba(addr_str, &ev_conn.address);
+
+		btp_send(btp, BTP_GAP_SERVICE, BTP_EV_GAP_DEVICE_CONNECTED,
+				adapter->index, sizeof(ev_conn), &ev_conn);
+	}
 }
 
 static void btp_gap_device_connection_ev(struct l_dbus_proxy *proxy,
@@ -2462,6 +2602,34 @@ static void btp_gap_device_connection_ev(struct l_dbus_proxy *proxy,
 		btp_send(btp, BTP_GAP_SERVICE, BTP_EV_GAP_DEVICE_DISCONNECTED,
 					adapter->index, sizeof(ev), &ev);
 	}
+}
+
+static void btp_identity_resolved_ev(struct l_dbus_proxy *proxy)
+{
+	struct btp_device *dev = find_device_by_proxy(proxy);
+	struct btp_adapter *adapter = find_adapter_by_device(dev);
+	struct btp_gap_identity_resolved_ev ev;
+	char *str_addr, *str_addr_type;
+	uint8_t identity_address_type;
+
+	if (!l_dbus_proxy_get_property(proxy, "Address", "s", &str_addr))
+		return;
+
+	if (!l_dbus_proxy_get_property(proxy, "AddressType", "s",
+								&str_addr_type))
+		return;
+
+	identity_address_type = strcmp(str_addr_type, "public") ?
+				BTP_GAP_ADDR_RANDOM : BTP_GAP_ADDR_PUBLIC;
+
+	str2ba(str_addr, &ev.identity_address);
+	ev.identity_address_type = identity_address_type;
+
+	memcpy(&ev.address, &dev->address, sizeof(ev.address));
+	ev.address_type = dev->address_type;
+
+	btp_send(btp, BTP_GAP_SERVICE, BTP_EV_GAP_IDENTITY_RESOLVED,
+					adapter->index, sizeof(ev), &ev);
 }
 
 static void register_gap_service(void)
@@ -2753,7 +2921,7 @@ static void proxy_added(struct l_dbus_proxy *proxy, void *user_data)
 	if (!strcmp(interface, "org.bluez.Device1")) {
 		struct btp_adapter *adapter;
 		struct btp_device *device;
-		char *str;
+		char *str, *str_addr, *str_addr_type;
 
 		if (!l_dbus_proxy_get_property(proxy, "Adapter", "o", &str))
 			return;
@@ -2768,6 +2936,20 @@ static void proxy_added(struct l_dbus_proxy *proxy, void *user_data)
 		l_queue_push_tail(adapter->devices, device);
 
 		btp_gap_device_found_ev(proxy);
+
+		if (!l_dbus_proxy_get_property(proxy, "Address", "s",
+								&str_addr))
+			return;
+
+		if (!l_dbus_proxy_get_property(proxy, "AddressType", "s",
+								&str_addr_type))
+			return;
+
+		device->address_type = strcmp(str_addr_type, "public") ?
+							BTP_GAP_ADDR_RANDOM :
+							BTP_GAP_ADDR_PUBLIC;
+		if (!str2ba(str_addr, &device->address))
+			return;
 
 		return;
 	}
@@ -2900,6 +3082,11 @@ static void property_changed(struct l_dbus_proxy *proxy, const char *name,
 				return;
 
 			btp_gap_device_connection_ev(proxy, prop);
+		} else if (!strcmp(name, "AddressType")) {
+			/* Addres property change came first along with address
+			 * type.
+			 */
+			btp_identity_resolved_ev(proxy);
 		}
 	}
 }
@@ -2915,6 +3102,12 @@ static void client_disconnected(struct l_dbus *dbus, void *user_data)
 	l_main_quit();
 }
 
+static void btp_disconnect_handler(struct btp *btp, void *user_data)
+{
+	l_info("btp disconnected");
+	l_main_quit();
+}
+
 static void client_ready(struct l_dbus_client *client, void *user_data)
 {
 	l_info("D-Bus client ready, connecting BTP");
@@ -2925,6 +3118,8 @@ static void client_ready(struct l_dbus_client *client, void *user_data)
 		l_main_quit();
 		return;
 	}
+
+	btp_set_disconnect_handler(btp, btp_disconnect_handler, NULL, NULL);
 
 	register_core_service();
 
