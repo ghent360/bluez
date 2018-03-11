@@ -75,6 +75,7 @@ bool btd_adapter_get_pairable(struct btd_adapter *adapter);
 bool btd_adapter_get_powered(struct btd_adapter *adapter);
 bool btd_adapter_get_connectable(struct btd_adapter *adapter);
 bool btd_adapter_get_discoverable(struct btd_adapter *adapter);
+bool btd_adapter_get_bredr(struct btd_adapter *adapter);
 
 struct btd_gatt_database *btd_adapter_get_database(struct btd_adapter *adapter);
 
@@ -94,6 +95,7 @@ struct btd_device *btd_adapter_find_device(struct btd_adapter *adapter,
 const char *adapter_get_path(struct btd_adapter *adapter);
 const bdaddr_t *btd_adapter_get_address(struct btd_adapter *adapter);
 uint8_t btd_adapter_get_address_type(struct btd_adapter *adapter);
+const char *btd_adapter_get_storage_dir(struct btd_adapter *adapter);
 int adapter_set_name(struct btd_adapter *adapter, const char *name);
 
 int adapter_service_add(struct btd_adapter *adapter, sdp_record_t *rec);

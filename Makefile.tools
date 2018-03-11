@@ -34,6 +34,8 @@ mesh_meshctl_LDADD = gdbus/libgdbus-internal.la src/libshared-glib.la \
 				@GLIB_LIBS@ @DBUS_LIBS@ -ljson-c -lreadline -lncurses
 endif
 
+EXTRA_DIST += mesh/local_node.json mesh/prov_db.json
+
 if MONITOR
 bin_PROGRAMS += monitor/btmon
 
