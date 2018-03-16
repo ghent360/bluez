@@ -933,14 +933,16 @@ static void discover_secondary_cb(bool success, uint8_t att_ecode,
 	discovery_req_clear(client);
 
 	if (!success) {
-		util_debug(client->debug_callback, client->debug_data,
-					"Secondary service discovery failed."
-					" ATT ECODE: 0x%02x", att_ecode);
 		switch (att_ecode) {
 		case BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND:
 		case BT_ATT_ERROR_UNSUPPORTED_GROUP_TYPE:
+			success = true;
+			att_ecode = 0;
 			goto next;
 		default:
+			util_debug(client->debug_callback, client->debug_data,
+					"Secondary service discovery failed."
+					" ATT ECODE: 0x%02x", att_ecode);
 			goto done;
 		}
 	}
@@ -986,7 +988,7 @@ static void discover_secondary_cb(bool success, uint8_t att_ecode,
 	}
 
 next:
-	if (queue_isempty(op->pending_svcs))
+	if (queue_isempty(op->pending_svcs) || !op->svc_first)
 		goto done;
 
 	client->discovery_req = bt_gatt_discover_included_services(client->att,
@@ -1023,9 +1025,6 @@ static void discover_primary_cb(bool success, uint8_t att_ecode,
 	discovery_req_clear(client);
 
 	if (!success) {
-		util_debug(client->debug_callback, client->debug_data,
-					"Primary service discovery failed."
-					" ATT ECODE: 0x%02x", att_ecode);
 		/* Reset error in case of not found */
 		switch (att_ecode) {
 		case BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND:
@@ -1033,6 +1032,9 @@ static void discover_primary_cb(bool success, uint8_t att_ecode,
 			att_ecode = 0;
 			goto secondary;
 		default:
+			util_debug(client->debug_callback, client->debug_data,
+					"Primary service discovery failed."
+					" ATT ECODE: 0x%02x", att_ecode);
 			goto done;
 		}
 	}
