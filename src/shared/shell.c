@@ -643,8 +643,19 @@ static char *cmd_generator(const char *text, int state)
 	}
 
 	cmd = find_cmd(text + strlen(menu->name) + 1, menu->entries, &index);
-	if (cmd)
-		asprintf(&cmd, "%s.%s", menu->name, cmd);
+	if (cmd) {
+		int err;
+		char *tmp;
+
+		err = asprintf(&tmp, "%s.%s", menu->name, cmd);
+
+		free(cmd);
+
+		if (err < 0)
+			return NULL;
+
+		cmd = tmp;
+	}
 
 	return cmd;
 }

@@ -75,6 +75,8 @@ struct chrc {
 	uint16_t mtu;
 	struct io *write_io;
 	struct io *notify_io;
+	bool authorization_req;
+	bool authorized;
 };
 
 struct service {
@@ -91,6 +93,7 @@ static GList *characteristics;
 static GList *descriptors;
 static GList *managers;
 static GList *uuids;
+static DBusMessage *pending_message = NULL;
 
 struct pipe_io {
 	GDBusProxy *proxy;
@@ -1412,6 +1415,39 @@ static const GDBusPropertyTable chrc_properties[] = {
 	{ }
 };
 
+static int parse_offset(DBusMessageIter *iter, uint16_t *offset)
+{
+	DBusMessageIter dict;
+
+	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY)
+		return -EINVAL;
+
+	dbus_message_iter_recurse(iter, &dict);
+
+	while (dbus_message_iter_get_arg_type(&dict) == DBUS_TYPE_DICT_ENTRY) {
+		const char *key;
+		DBusMessageIter value, entry;
+		int var;
+
+		dbus_message_iter_recurse(&dict, &entry);
+		dbus_message_iter_get_basic(&entry, &key);
+
+		dbus_message_iter_next(&entry);
+		dbus_message_iter_recurse(&entry, &value);
+
+		var = dbus_message_iter_get_arg_type(&value);
+		if (strcasecmp(key, "offset") == 0) {
+			if (var != DBUS_TYPE_UINT16)
+				return -EINVAL;
+			dbus_message_iter_get_basic(&value, offset);
+		}
+
+		dbus_message_iter_next(&dict);
+	}
+
+	return 0;
+}
+
 static DBusMessage *read_value(DBusMessage *msg, uint8_t *value,
 						uint16_t value_len)
 {
@@ -1429,12 +1465,86 @@ static DBusMessage *read_value(DBusMessage *msg, uint8_t *value,
 	return reply;
 }
 
+struct authorize_attribute_data {
+	DBusConnection *conn;
+	void *attribute;
+	uint16_t offset;
+};
+
+static void authorize_read_response(const char *input, void *user_data)
+{
+	struct authorize_attribute_data *aad = user_data;
+	struct chrc *chrc = aad->attribute;
+	DBusMessage *reply;
+	char *err;
+
+	if (!strcmp(input, "no")) {
+		err = "org.bluez.Error.NotAuthorized";
+
+		goto error;
+	}
+
+	if (aad->offset > chrc->value_len) {
+		err = "org.bluez.Error.InvalidOffset";
+
+		goto error;
+	}
+
+	reply = read_value(pending_message, &chrc->value[aad->offset],
+						chrc->value_len - aad->offset);
+
+	chrc->authorized = true;
+
+	g_dbus_send_message(aad->conn, reply);
+
+	g_free(aad);
+
+	return;
+
+error:
+	g_dbus_send_error(aad->conn, pending_message, err, NULL);
+	g_free(aad);
+}
+
 static DBusMessage *chrc_read_value(DBusConnection *conn, DBusMessage *msg,
 							void *user_data)
 {
 	struct chrc *chrc = user_data;
+	DBusMessageIter iter;
+	uint16_t offset = 0;
+	char *str;
 
-	return read_value(msg, chrc->value, chrc->value_len);
+	dbus_message_iter_init(msg, &iter);
+
+	parse_offset(&iter, &offset);
+
+	if (chrc->authorization_req && offset == 0)
+		chrc->authorized = false;
+
+	if (chrc->authorization_req && !chrc->authorized) {
+		struct authorize_attribute_data *aad;
+
+		aad = g_new0(struct authorize_attribute_data, 1);
+		aad->conn = conn;
+		aad->attribute = chrc;
+		aad->offset = offset;
+
+		str = g_strdup_printf("Authorize attribute(%s) read (yes/no):",
+								chrc->path);
+
+		bt_shell_prompt_input("gatt", str, authorize_read_response,
+									aad);
+
+		pending_message = dbus_message_ref(msg);
+
+		return NULL;
+	}
+
+	if (offset > chrc->value_len)
+		return g_dbus_create_error(msg, "org.bluez.Error.InvalidOffset",
+									NULL);
+
+	return read_value(msg, &chrc->value[offset], chrc->value_len - offset);
 }
 
 static int parse_value_arg(DBusMessageIter *iter, uint8_t **value, int *len)
@@ -1450,13 +1560,73 @@ static int parse_value_arg(DBusMessageIter *iter, uint8_t **value, int *len)
 	return 0;
 }
 
+static void authorize_write_response(const char *input, void *user_data)
+{
+	struct authorize_attribute_data *aad = user_data;
+	struct chrc *chrc = aad->attribute;
+	DBusMessageIter iter;
+	DBusMessage *reply;
+	char *err;
+
+	dbus_message_iter_init(pending_message, &iter);
+
+	if (!strcmp(input, "no")) {
+		err = "org.bluez.Error.NotAuthorized";
+
+		goto error;
+	}
+
+	chrc->authorized = true;
+
+	if (parse_value_arg(&iter, &chrc->value, &chrc->value_len)) {
+		err = "org.bluez.Error.InvalidArguments";
+
+		goto error;
+	}
+
+	bt_shell_printf("[" COLORED_CHG "] Attribute %s written" , chrc->path);
+
+	g_dbus_emit_property_changed(aad->conn, chrc->path, CHRC_INTERFACE,
+								"Value");
+
+	reply = g_dbus_create_reply(pending_message, DBUS_TYPE_INVALID);
+	g_dbus_send_message(aad->conn, reply);
+
+	g_free(aad);
+
+	return;
+
+error:
+	g_dbus_send_error(aad->conn, pending_message, err, NULL);
+	g_free(aad);
+}
+
 static DBusMessage *chrc_write_value(DBusConnection *conn, DBusMessage *msg,
 							void *user_data)
 {
 	struct chrc *chrc = user_data;
 	DBusMessageIter iter;
+	char *str;
 
 	dbus_message_iter_init(msg, &iter);
+
+	if (chrc->authorization_req && !chrc->authorized) {
+		struct authorize_attribute_data *aad;
+
+		aad = g_new0(struct authorize_attribute_data, 1);
+		aad->conn = conn;
+		aad->attribute = chrc;
+
+		str = g_strdup_printf("Authorize attribute(%s) write (yes/no):",
+								chrc->path);
+
+		bt_shell_prompt_input("gatt", str, authorize_write_response,
+									aad);
+
+		pending_message = dbus_message_ref(msg);
+
+		return NULL;
+	}
 
 	if (parse_value_arg(&iter, &chrc->value, &chrc->value_len))
 		return g_dbus_create_error(msg,
@@ -1720,6 +1890,7 @@ void gatt_register_chrc(DBusConnection *conn, GDBusProxy *proxy,
 	chrc->uuid = g_strdup(argv[1]);
 	chrc->path = g_strdup_printf("%s/chrc%p", service->path, chrc);
 	chrc->flags = g_strsplit(argv[2], ",", -1);
+	chrc->authorization_req = argc > 3 ? true : false;
 
 	if (g_dbus_register_interface(conn, chrc->path, CHRC_INTERFACE,
 					chrc_methods, NULL, chrc_properties,
@@ -1785,8 +1956,18 @@ static DBusMessage *desc_read_value(DBusConnection *conn, DBusMessage *msg,
 							void *user_data)
 {
 	struct desc *desc = user_data;
+	DBusMessageIter iter;
+	uint16_t offset = 0;
 
-	return read_value(msg, desc->value, desc->value_len);
+	dbus_message_iter_init(msg, &iter);
+
+	parse_offset(&iter, &offset);
+
+	if (offset > desc->value_len)
+		return g_dbus_create_error(msg, "org.bluez.Error.InvalidOffset",
+									NULL);
+
+	return read_value(msg, &desc->value[offset], desc->value_len - offset);
 }
 
 static DBusMessage *desc_write_value(DBusConnection *conn, DBusMessage *msg,
