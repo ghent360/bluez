@@ -243,6 +243,7 @@ struct btd_device {
 
 	struct csrk_info *local_csrk;
 	struct csrk_info *remote_csrk;
+	uint8_t ltk_enc_size;
 
 	sdp_list_t	*tmp_records;
 
@@ -479,7 +480,7 @@ static void store_device_info(struct btd_device *device)
 		return;
 
 	if (device_address_is_private(device)) {
-		warn("Can't store info for private addressed device %s",
+		DBG("Can't store info for private addressed device %s",
 								device->path);
 		return;
 	}
@@ -496,7 +497,7 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
 	gsize length = 0;
 
 	if (device_address_is_private(dev)) {
-		warn("Can't store name for private addressed device %s",
+		DBG("Can't store name for private addressed device %s",
 								dev->path);
 		return;
 	}
@@ -1460,6 +1461,12 @@ bool device_is_disconnecting(struct btd_device *device)
 	return device->disconn_timer > 0;
 }
 
+void device_set_ltk_enc_size(struct btd_device *device, uint8_t enc_size)
+{
+	device->ltk_enc_size = enc_size;
+	bt_att_set_enc_key_size(device->att, device->ltk_enc_size);
+}
+
 static void device_set_auto_connect(struct btd_device *device, gboolean enable)
 {
 	char addr[18];
@@ -2005,7 +2012,7 @@ static void store_services(struct btd_device *device)
 	gsize length = 0;
 
 	if (device_address_is_private(device)) {
-		warn("Can't store services for private addressed device %s",
+		DBG("Can't store services for private addressed device %s",
 								device->path);
 		return;
 	}
@@ -2193,7 +2200,7 @@ static void store_gatt_db(struct btd_device *device)
 	struct gatt_saver saver;
 
 	if (device_address_is_private(device)) {
-		warn("Can't store GATT db for private addressed device %s",
+		DBG("Can't store GATT db for private addressed device %s",
 								device->path);
 		return;
 	}
@@ -2333,11 +2340,12 @@ static void device_svc_resolved(struct btd_device *dev, uint8_t browse_type,
 		dev->pending_paired = false;
 	}
 
-	if (!dev->temporary)
+	if (!dev->temporary) {
 		store_device_info(dev);
 
-	if (bdaddr_type != BDADDR_BREDR && err == 0)
-		store_services(dev);
+		if (bdaddr_type != BDADDR_BREDR && err == 0)
+			store_services(dev);
+	}
 
 	if (req)
 		browse_request_complete(req, browse_type, bdaddr_type, err);
@@ -4837,10 +4845,14 @@ static void gatt_server_init(struct btd_device *device,
 
 	gatt_server_cleanup(device);
 
-	device->server = bt_gatt_server_new(db, device->att, device->att_mtu);
-	if (!device->server)
+	device->server = bt_gatt_server_new(db, device->att, device->att_mtu,
+						main_opts.min_enc_key_size);
+	if (!device->server) {
 		error("Failed to initialize bt_gatt_server");
+		return;
+	}
 
+	bt_att_set_enc_key_size(device->att, device->ltk_enc_size);
 	bt_gatt_server_set_debug(device->server, gatt_debug, NULL, NULL);
 
 	btd_gatt_database_att_connected(database, device->att);
@@ -5278,6 +5290,12 @@ void btd_device_set_temporary(struct btd_device *device, bool temporary)
 		adapter_whitelist_add(device->adapter, device);
 
 	store_device_info(device);
+
+	/* attributes were not stored when resolved if device was temporary */
+	if (device->bdaddr_type != BDADDR_BREDR &&
+			device->le_state.svc_resolved &&
+			g_slist_length(device->primaries) != 0)
+		store_services(device);
 }
 
 void btd_device_set_trusted(struct btd_device *device, gboolean trusted)

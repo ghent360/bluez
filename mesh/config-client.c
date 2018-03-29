@@ -342,6 +342,17 @@ static bool client_msg_recvd(uint16_t src, uint8_t *data,
 		bt_shell_printf("Min Hops\t%2.2x\n", data[7]);
 		bt_shell_printf("Max Hops\t%2.2x\n", data[8]);
 		break;
+
+	/* Per Mesh Profile 4.3.2.54 */
+	case OP_NODE_RESET_STATUS:
+		bt_shell_printf("Node %4.4x reset status %s\n",
+				src, mesh_status_str(data[0]));
+
+		net_release_address(node_get_primary(node),
+				(node_get_num_elements(node)));
+		/* TODO: Remove node info from database */
+		node_free(node);
+		break;
 	}
 
 	return true;
@@ -1042,7 +1053,7 @@ static void cmd_hb_pub_set(int argc, char *argv[])
 	n = mesh_opcode_set(OP_CONFIG_HEARTBEAT_PUB_SET, msg);
 
 	parm_cnt = read_input_parameters(argc, argv);
-	if (parm_cnt != 5) {
+	if (parm_cnt != 6) {
 		bt_shell_printf("Bad arguments: %s\n", argv[1]);
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
@@ -1056,12 +1067,12 @@ static void cmd_hb_pub_set(int argc, char *argv[])
 	/* Period Log */
 	msg[n++] = parms[2];
 	/* Heartbeat TTL */
-	msg[n++] = DEFAULT_TTL;
+	msg[n++] = parms[3];
 	/* Features */
-	put_le16(parms[3], msg + n);
+	put_le16(parms[4], msg + n);
 	n += 2;
 	/* NetKey Index */
-	put_le16(parms[4], msg + n);
+	put_le16(parms[5], msg + n);
 	n += 2;
 
 	if (!config_send(msg, n)) {
@@ -1124,6 +1135,11 @@ static void cmd_ttl_get(int argc, char *argv[])
 	cmd_default(OP_CONFIG_DEFAULT_TTL_GET);
 }
 
+static void cmd_node_reset(int argc, char *argv[])
+{
+	cmd_default(OP_NODE_RESET);
+}
+
 static const struct bt_shell_menu cfg_menu = {
 	.name = "config",
 	.desc = "Configuration Model Submenu",
@@ -1167,8 +1183,8 @@ static const struct bt_shell_menu cfg_menu = {
 						"Set relay"},
 	{"relay-get",           NULL,                   cmd_relay_get,
 						"Get relay"},
-	{"hb-pub-set", "<pub_addr> <count> <period> <features> <net_idx>",
-				cmd_hb_pub_set,     "Set heartbeat publish"},
+	{"hb-pub-set", "<pub_addr> <count> <period> <ttl> <features> <net_idx>",
+				cmd_hb_pub_set,	"Set heartbeat publish"},
 	{"hb-pub-get",           NULL,                   cmd_hb_pub_get,
 						"Get heartbeat publish"},
 	{"hb-sub-set", "<src_addr> <dst_addr> <period>",
@@ -1179,6 +1195,8 @@ static const struct bt_shell_menu cfg_menu = {
 				cmd_sub_add,    "Add subscription"},
 	{"sub-get", "<ele_addr> <model id>",
 				cmd_sub_get,    "Get subscription"},
+	{"node-reset",		NULL,                    cmd_node_reset,
+				"Reset a node and remove it from network"},
 	{} },
 };
 
