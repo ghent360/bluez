@@ -198,6 +198,17 @@ static bool cmd_back_exists(const struct bt_shell_menu *menu)
 	return true;
 }
 
+static void cmd_export(int argc, char *argv[])
+{
+	const struct queue_entry *entry;
+
+	for (entry = queue_get_entries(data.envs); entry; entry = entry->next) {
+		struct bt_shell_env *env = entry->data;
+
+		print_text(COLOR_HIGHLIGHT, "%s=%p", env->name, env->value);
+	}
+}
+
 static const struct bt_shell_menu_entry default_menu[] = {
 	{ "back",         NULL,       cmd_back, "Return to main menu", NULL,
 							NULL, cmd_back_exists },
@@ -209,6 +220,8 @@ static const struct bt_shell_menu_entry default_menu[] = {
 	{ "exit",         NULL,       cmd_quit, "Quit program" },
 	{ "help",         NULL,       cmd_help,
 					"Display help about this program" },
+	{ "export",       NULL,       cmd_export,
+						"Print evironment variables" },
 	{ }
 };
 
@@ -1145,6 +1158,8 @@ void bt_shell_set_env(const char *name, void *value)
 	struct bt_shell_env *env;
 
 	if (!data.envs) {
+		if (!value)
+			return;
 		data.envs = queue_new();
 		goto done;
 	}
@@ -1152,6 +1167,10 @@ void bt_shell_set_env(const char *name, void *value)
 	env = queue_remove_if(data.envs, match_env, (void *) name);
 	if (env)
 		env_destroy(env);
+
+	/* Don't create an env if value is not set */
+	if (!value)
+		return;
 
 done:
 	env = new0(struct bt_shell_env, 1);

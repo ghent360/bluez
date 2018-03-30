@@ -540,7 +540,8 @@ static void settings_changed(struct btd_adapter *adapter, uint32_t settings)
 		g_dbus_emit_property_changed(dbus_conn, adapter->path,
 					ADAPTER_INTERFACE, "Discoverable");
 		store_adapter_info(adapter);
-		btd_adv_manager_refresh(adapter->adv_manager);
+		if (adapter->supported_settings & MGMT_SETTING_LE)
+			btd_adv_manager_refresh(adapter->adv_manager);
 	}
 
 	if (changed_mask & MGMT_SETTING_BONDABLE) {
@@ -8016,6 +8017,9 @@ load:
 	btd_profile_foreach(probe_profile, adapter);
 	clear_blocked(adapter);
 	load_devices(adapter);
+
+	/* restore Service Changed CCC value for bonded devices */
+	btd_gatt_database_restore_svc_chng_ccc(adapter->database);
 
 	/* retrieve the active connections: address the scenario where
 	 * the are active connections before the daemon've started */
