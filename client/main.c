@@ -1908,7 +1908,7 @@ static void cmd_read(int argc, char *argv[])
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	gatt_read_attribute(default_attr);
+	gatt_read_attribute(default_attr, argc, argv);
 }
 
 static void cmd_write(int argc, char *argv[])
@@ -1918,7 +1918,7 @@ static void cmd_write(int argc, char *argv[])
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	gatt_write_attribute(default_attr, argv[1]);
+	gatt_write_attribute(default_attr, argc, argv);
 }
 
 static void cmd_acquire_write(int argc, char *argv[])
@@ -2415,8 +2415,8 @@ static const struct bt_shell_menu gatt_menu = {
 				"Select attribute", attribute_generator },
 	{ "attribute-info", "[attribute/UUID]",  cmd_attribute_info,
 				"Select attribute", attribute_generator },
-	{ "read",         NULL,       cmd_read, "Read attribute value" },
-	{ "write",        "<data=xx xx ...>", cmd_write,
+	{ "read", "[offset]", cmd_read, "Read attribute value" },
+	{ "write", "<data=xx xx ...> [offset]", cmd_write,
 						"Write attribute value" },
 	{ "acquire-write", NULL, cmd_acquire_write,
 					"Acquire Write file descriptor" },
