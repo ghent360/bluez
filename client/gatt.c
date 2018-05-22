@@ -54,12 +54,15 @@
 #define COLORED_CHG	COLOR_YELLOW "CHG" COLOR_OFF
 #define COLORED_DEL	COLOR_RED "DEL" COLOR_OFF
 
+#define MAX_ATTR_VAL_LEN	512
+
 struct desc {
 	struct chrc *chrc;
 	char *path;
 	char *uuid;
 	char **flags;
 	int value_len;
+	unsigned int max_val_len;
 	uint8_t *value;
 };
 
@@ -71,6 +74,7 @@ struct chrc {
 	bool notifying;
 	GList *descs;
 	int value_len;
+	unsigned int max_val_len;
 	uint8_t *value;
 	uint16_t mtu;
 	struct io *write_io;
@@ -85,6 +89,7 @@ struct service {
 	char *uuid;
 	bool primary;
 	GList *chrcs;
+	GList *inc;
 };
 
 static GList *local_services;
@@ -119,6 +124,29 @@ static void print_service(struct service *service, const char *description)
 					service->path, service->uuid);
 	else
 		bt_shell_printf("%s%s%s%s Service\n\t%s\n\t%s\n\t%s\n",
+					description ? "[" : "",
+					description ? : "",
+					description ? "] " : "",
+					service->primary ? "Primary" :
+					"Secondary",
+					service->path, service->uuid, text);
+}
+
+static void print_inc_service(struct service *service, const char *description)
+{
+	const char *text;
+
+	text = bt_uuidstr_to_str(service->uuid);
+	if (!text)
+		bt_shell_printf("%s%s%s%s Included Service\n\t%s\n\t%s\n",
+					description ? "[" : "",
+					description ? : "",
+					description ? "] " : "",
+					service->primary ? "Primary" :
+					"Secondary",
+					service->path, service->uuid);
+	else
+		bt_shell_printf("%s%s%s%s Included Service\n\t%s\n\t%s\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
@@ -612,7 +640,7 @@ static void write_attribute(GDBusProxy *proxy, char *val_str, uint16_t offset)
 {
 	struct iovec iov;
 	struct write_attribute_data wd;
-	uint8_t value[512];
+	uint8_t value[MAX_ATTR_VAL_LEN];
 	char *entry;
 	unsigned int i;
 
@@ -689,7 +717,7 @@ void gatt_write_attribute(GDBusProxy *proxy, int argc, char *argv[])
 static bool pipe_read(struct io *io, void *user_data)
 {
 	struct chrc *chrc = user_data;
-	uint8_t buf[512];
+	uint8_t buf[MAX_ATTR_VAL_LEN];
 	int fd = io_get_fd(io);
 	ssize_t bytes_read;
 
@@ -1179,11 +1207,19 @@ static void chrc_unregister(void *data)
 						CHRC_INTERFACE);
 }
 
+static void inc_unregister(void *data)
+{
+	char *path = data;
+
+	g_free(path);
+}
+
 static void service_free(void *data)
 {
 	struct service *service = data;
 
 	g_list_free_full(service->chrcs, chrc_unregister);
+	g_list_free_full(service->inc, inc_unregister);
 	g_free(service->path);
 	g_free(service->uuid);
 	g_free(service);
@@ -1212,9 +1248,54 @@ static gboolean service_get_primary(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
+
+static gboolean service_get_includes(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	DBusMessageIter array;
+	struct service *service = data;
+	char *inc  = NULL;
+	GList *l;
+
+	if (service->inc) {
+		for (l =  service->inc ; l; l = g_list_next(l)) {
+
+			inc = l->data;
+			dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
+				DBUS_TYPE_OBJECT_PATH_AS_STRING, &array);
+
+			dbus_message_iter_append_basic(&array,
+				DBUS_TYPE_OBJECT_PATH, &inc);
+
+		}
+
+		dbus_message_iter_close_container(iter, &array);
+
+		return TRUE;
+	}
+
+	return FALSE;
+
+}
+
+static gboolean service_exist_includes(const GDBusPropertyTable *property,
+							void *data)
+{
+	struct service *service = data;
+
+	if (service->inc)
+		return TRUE;
+	else
+		return FALSE;
+
+}
+
+
 static const GDBusPropertyTable service_properties[] = {
 	{ "UUID", "s", service_get_uuid },
 	{ "Primary", "b", service_get_primary },
+	{ "Includes", "ao", service_get_includes,
+		NULL,	service_exist_includes },
 	{ }
 };
 
@@ -1260,8 +1341,8 @@ void gatt_register_service(DBusConnection *conn, GDBusProxy *proxy,
 
 	local_services = g_list_append(local_services, service);
 
-	bt_shell_prompt_input(service->path, "Primary (yes/no):", service_set_primary,
-			service);
+	bt_shell_prompt_input(service->path, "Primary (yes/no):",
+		 service_set_primary, service);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
@@ -1302,6 +1383,78 @@ void gatt_unregister_service(DBusConnection *conn, GDBusProxy *proxy,
 
 	g_dbus_unregister_interface(service->conn, service->path,
 						SERVICE_INTERFACE);
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static char *inc_find(struct service  *serv, char *path)
+{
+	GList *lc;
+
+	for (lc = serv->inc; lc; lc =  g_list_next(lc)) {
+		char *incp = lc->data;
+		/* match object path */
+		if (!strcmp(incp, path))
+			return incp;
+	}
+
+	return NULL;
+}
+
+void gatt_register_include(DBusConnection *conn, GDBusProxy *proxy,
+					int argc, char *argv[])
+{
+	struct service *service, *inc_service;
+	char *inc_path;
+
+	if (!local_services) {
+		bt_shell_printf("No service registered\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	service = g_list_last(local_services)->data;
+
+
+	inc_service = service_find(argv[1]);
+	if (!inc_service) {
+		bt_shell_printf("Failed to find  service object\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	inc_path = g_strdup(service->path);
+
+	inc_service->inc = g_list_append(inc_service->inc, inc_path);
+
+	print_service(inc_service, COLORED_NEW);
+	print_inc_service(service, COLORED_NEW);
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+void gatt_unregister_include(DBusConnection *conn, GDBusProxy *proxy,
+						int argc, char *argv[])
+{
+	struct service *ser_inc, *service;
+	char *path = NULL;
+
+	service = service_find(argv[1]);
+	if (!service) {
+		bt_shell_printf("Failed to unregister include service"
+							" object\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	ser_inc = service_find(argv[2]);
+	if (!ser_inc) {
+		bt_shell_printf("Failed to find include service object\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	path = inc_find(service, ser_inc->path);
+	if (path) {
+		service->inc = g_list_remove(service->inc, path);
+		inc_unregister(path);
+	}
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
@@ -1598,6 +1751,7 @@ static DBusMessage *chrc_read_value(DBusConnection *conn, DBusMessage *msg,
 
 		bt_shell_prompt_input("gatt", str, authorize_read_response,
 									aad);
+		g_free(str);
 
 		pending_message = dbus_message_ref(msg);
 
@@ -1611,7 +1765,8 @@ static DBusMessage *chrc_read_value(DBusConnection *conn, DBusMessage *msg,
 	return read_value(msg, &chrc->value[offset], chrc->value_len - offset);
 }
 
-static int parse_value_arg(DBusMessageIter *iter, uint8_t **value, int *len)
+static int parse_value_arg(DBusMessageIter *iter, uint8_t **value, int *len,
+								int max_len)
 {
 	DBusMessageIter array;
 	uint16_t offset = 0;
@@ -1627,6 +1782,9 @@ static int parse_value_arg(DBusMessageIter *iter, uint8_t **value, int *len)
 	dbus_message_iter_next(iter);
 	if (parse_options(iter, &offset, NULL, NULL, NULL))
 		return -EINVAL;
+
+	if ((offset + read_len) > max_len)
+		return -EOVERFLOW;
 
 	if ((offset + read_len) > *len) {
 		*len = offset + read_len;
@@ -1645,6 +1803,7 @@ static void authorize_write_response(const char *input, void *user_data)
 	DBusMessageIter iter;
 	DBusMessage *reply;
 	char *err;
+	int errsv;
 
 	dbus_message_iter_init(pending_message, &iter);
 
@@ -1656,8 +1815,14 @@ static void authorize_write_response(const char *input, void *user_data)
 
 	chrc->authorized = true;
 
-	if (parse_value_arg(&iter, &chrc->value, &chrc->value_len)) {
+	errsv = parse_value_arg(&iter, &chrc->value, &chrc->value_len,
+							chrc->max_val_len);
+	if (errsv == -EINVAL) {
 		err = "org.bluez.Error.InvalidArguments";
+
+		goto error;
+	} else if (errsv == -EOVERFLOW) {
+		err = "org.bluez.Error.InvalidValueLength";
 
 		goto error;
 	}
@@ -1685,6 +1850,7 @@ static DBusMessage *chrc_write_value(DBusConnection *conn, DBusMessage *msg,
 	struct chrc *chrc = user_data;
 	DBusMessageIter iter;
 	char *str;
+	int errsv;
 
 	dbus_message_iter_init(msg, &iter);
 
@@ -1700,16 +1866,22 @@ static DBusMessage *chrc_write_value(DBusConnection *conn, DBusMessage *msg,
 
 		bt_shell_prompt_input("gatt", str, authorize_write_response,
 									aad);
+		g_free(str);
 
 		pending_message = dbus_message_ref(msg);
 
 		return NULL;
 	}
 
-	if (parse_value_arg(&iter, &chrc->value, &chrc->value_len))
+	errsv = parse_value_arg(&iter, &chrc->value, &chrc->value_len,
+							chrc->max_val_len);
+	if (errsv == -EINVAL) {
 		return g_dbus_create_error(msg,
-					"org.bluez.Error.InvalidArguments",
-					NULL);
+				"org.bluez.Error.InvalidArguments", NULL);
+	} else if (errsv == -EOVERFLOW) {
+		return g_dbus_create_error(msg,
+				"org.bluez.Error.InvalidValueLength", NULL);
+	}
 
 	bt_shell_printf("[" COLORED_CHG "] Attribute %s written" , chrc->path);
 
@@ -1883,7 +2055,7 @@ static const GDBusMethodTable chrc_methods[] = {
 
 static uint8_t *str2bytearray(char *arg, int *val_len)
 {
-	uint8_t value[512];
+	uint8_t value[MAX_ATTR_VAL_LEN];
 	char *entry;
 	unsigned int i;
 
@@ -1920,6 +2092,13 @@ static void chrc_set_value(const char *input, void *user_data)
 	g_free(chrc->value);
 
 	chrc->value = str2bytearray((char *) input, &chrc->value_len);
+
+	if (!chrc->value) {
+		print_chrc(chrc, COLORED_DEL);
+		chrc_unregister(chrc);
+	}
+
+	chrc->max_val_len = chrc->value_len;
 }
 
 void gatt_register_chrc(DBusConnection *conn, GDBusProxy *proxy,
@@ -2037,7 +2216,8 @@ static DBusMessage *desc_write_value(DBusConnection *conn, DBusMessage *msg,
 
 	dbus_message_iter_init(msg, &iter);
 
-	if (parse_value_arg(&iter, &desc->value, &desc->value_len))
+	if (parse_value_arg(&iter, &desc->value, &desc->value_len,
+							desc->max_val_len))
 		return g_dbus_create_error(msg,
 					"org.bluez.Error.InvalidArguments",
 					NULL);
@@ -2141,6 +2321,13 @@ static void desc_set_value(const char *input, void *user_data)
 	g_free(desc->value);
 
 	desc->value = str2bytearray((char *) input, &desc->value_len);
+
+	if (!desc->value) {
+		print_desc(desc, COLORED_DEL);
+		desc_unregister(desc);
+	}
+
+	desc->max_val_len = desc->value_len;
 }
 
 void gatt_register_desc(DBusConnection *conn, GDBusProxy *proxy,
