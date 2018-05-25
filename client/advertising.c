@@ -66,11 +66,13 @@ static struct ad {
 	uint16_t local_appearance;
 	uint16_t duration;
 	uint16_t timeout;
+	uint16_t discoverable_to;
 	char **uuids;
 	size_t uuids_len;
 	struct service_data service;
 	struct manufacturer_data manufacturer;
 	struct data data;
+	bool discoverable;
 	bool tx_power;
 	bool name;
 	bool appearance;
@@ -163,6 +165,11 @@ static void print_ad(void)
 						ad.manufacturer.data.len);
 	}
 
+	if (ad.data.data.len) {
+		bt_shell_printf("Data Type: 0x%02x\n", ad.data.type);
+		bt_shell_hexdump(ad.data.data.data, ad.data.data.len);
+	}
+
 	bt_shell_printf("Tx Power: %s\n", ad.tx_power ? "on" : "off");
 
 	if (ad.local_name)
@@ -177,6 +184,8 @@ static void print_ad(void)
 	else
 		bt_shell_printf("Apperance: %s\n",
 					ad.appearance ? "on" : "off");
+
+	bt_shell_printf("Discoverable: %s\n", ad.discoverable ? "on": "off");
 
 	if (ad.duration)
 		bt_shell_printf("Duration: %u sec\n", ad.duration);
@@ -401,6 +410,36 @@ static gboolean get_data(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
+static gboolean discoverable_exists(const GDBusPropertyTable *property,
+							void *data)
+{
+	return ad.discoverable;
+}
+
+static gboolean get_discoverable(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *user_data)
+{
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BOOLEAN,
+							&ad.discoverable);
+
+	return TRUE;
+}
+
+static gboolean discoverable_timeout_exits(const GDBusPropertyTable *property,
+							void *data)
+{
+	return ad.discoverable_to;
+}
+
+static gboolean get_discoverable_timeout(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *user_data)
+{
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16,
+							&ad.discoverable_to);
+
+	return TRUE;
+}
+
 static const GDBusPropertyTable ad_props[] = {
 	{ "Type", "s", get_type },
 	{ "ServiceUUIDs", "as", get_uuids, NULL, uuids_exists },
@@ -408,6 +447,9 @@ static const GDBusPropertyTable ad_props[] = {
 	{ "ManufacturerData", "a{qv}", get_manufacturer_data, NULL,
 						manufacturer_data_exists },
 	{ "Data", "a{yv}", get_data, NULL, data_exists },
+	{ "Discoverable", "b", get_discoverable, NULL, discoverable_exists },
+	{ "DiscoverableTimeout", "q", get_discoverable_timeout, NULL,
+						discoverable_timeout_exits },
 	{ "Includes", "as", get_includes, NULL, includes_exists },
 	{ "LocalName", "s", get_local_name, NULL, local_name_exits },
 	{ "Appearance", "q", get_appearance, NULL, appearance_exits },
@@ -704,6 +746,44 @@ void ad_disable_data(DBusConnection *conn)
 
 	ad_clear_data();
 	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Data");
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+void ad_advertise_discoverable(DBusConnection *conn, dbus_bool_t *value)
+{
+	if (!value) {
+		bt_shell_printf("Discoverable: %s\n",
+				ad.discoverable ? "on" : "off");
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
+
+	if (ad.discoverable == *value)
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+
+	ad.discoverable = *value;
+
+	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE, "Discoverable");
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+void ad_advertise_discoverable_timeout(DBusConnection *conn, long int *value)
+{
+	if (!value) {
+		if (ad.discoverable_to)
+			bt_shell_printf("Timeout: %u sec\n",
+					ad.discoverable_to);
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
+
+	if (ad.discoverable_to == *value)
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+
+	ad.discoverable_to = *value;
+
+	g_dbus_emit_property_changed(conn, AD_PATH, AD_IFACE,
+					"DiscoverableTimeout");
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
