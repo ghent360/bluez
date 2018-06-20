@@ -101,6 +101,7 @@ struct mgmt_rp_read_index_list {
 #define MGMT_SETTING_PRIVACY		0x00002000
 #define MGMT_SETTING_CONFIGURATION	0x00004000
 #define MGMT_SETTING_STATIC_ADDRESS	0x00008000
+#define MGMT_SETTING_PHY_CONFIGURATION 0x00010000
 
 #define MGMT_OP_READ_INFO		0x0004
 struct mgmt_rp_read_info {
@@ -505,6 +506,9 @@ struct mgmt_rp_add_advertising {
 #define MGMT_ADV_FLAG_TX_POWER		(1 << 4)
 #define MGMT_ADV_FLAG_APPEARANCE	(1 << 5)
 #define MGMT_ADV_FLAG_LOCAL_NAME	(1 << 6)
+#define MGMT_ADV_FLAG_SEC_1M		(1 << 7)
+#define MGMT_ADV_FLAG_SEC_2M		(1 << 8)
+#define MGMT_ADV_FLAG_SEC_CODED		(1 << 9)
 
 #define MGMT_OP_REMOVE_ADVERTISING	0x003F
 struct mgmt_cp_remove_advertising {
@@ -545,6 +549,30 @@ struct mgmt_rp_read_ext_info {
 struct mgmt_cp_set_appearance {
 	uint16_t appearance;
 } __packed;
+
+#define MGMT_OP_GET_PHY_CONFIGURATION	0x0044
+struct mgmt_rp_get_phy_confguration {
+	uint16_t	supported_phys;
+	uint16_t	selected_phys;
+} __packed;
+
+#define MGMT_PHY_LE_1M_TX		0x0001
+#define MGMT_PHY_LE_1M_RX		0x0002
+#define MGMT_PHY_LE_2M_TX		0x0004
+#define MGMT_PHY_LE_2M_RX		0x0008
+#define MGMT_PHY_LE_CODED_TX		0x0010
+#define MGMT_PHY_LE_CODED_RX		0x0020
+
+#define MGMT_PHY_LE_TX_MASK (MGMT_PHY_LE_1M_TX | MGMT_PHY_LE_2M_TX | \
+			     MGMT_PHY_LE_CODED_TX)
+#define MGMT_PHY_LE_RX_MASK (MGMT_PHY_LE_1M_RX | MGMT_PHY_LE_2M_RX | \
+			     MGMT_PHY_LE_CODED_RX)
+
+#define MGMT_OP_SET_PHY_CONFIGURATION	0x0045
+struct mgmt_cp_set_phy_confguration {
+	uint16_t	default_phys;
+} __packed;
+
 
 #define MGMT_EV_CMD_COMPLETE		0x0001
 struct mgmt_ev_cmd_complete {
@@ -764,6 +792,11 @@ struct mgmt_ev_ext_info_changed {
 	uint8_t  eir[0];
 } __packed;
 
+#define MGMT_EV_PHY_CONFIGURATION_CHANGED	0x0026
+struct mgmt_ev_phy_configuration_changed {
+	uint16_t	selected_phys;
+} __packed;
+
 static const char *mgmt_op[] = {
 	"<0x0000>",
 	"Read Version",
@@ -833,6 +866,8 @@ static const char *mgmt_op[] = {
 	"Start Limited Discovery",
 	"Read Extended Controller Information",
 	"Set Appearance",
+	"Get PHY Configuration",
+	"Set PHY Configuration",
 };
 
 static const char *mgmt_ev[] = {
@@ -874,6 +909,7 @@ static const char *mgmt_ev[] = {
 	"Advertising Added",
 	"Advertising Removed",
 	"Extended Controller Information Changed",
+	"PHY Configuration Changed",
 };
 
 static const char *mgmt_status[] = {
