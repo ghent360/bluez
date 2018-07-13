@@ -54,8 +54,9 @@ struct main_opts {
 
 	bt_mode_t	mode;
 	bt_gatt_cache_t gatt_cache;
+	uint16_t	gatt_mtu;
 
-	uint8_t		min_enc_key_size;
+	uint8_t		key_size;
 };
 
 extern struct main_opts main_opts;

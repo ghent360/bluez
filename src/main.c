@@ -50,6 +50,7 @@
 #include "log.h"
 #include "backtrace.h"
 
+#include "shared/att-types.h"
 #include "lib/uuid.h"
 #include "hcid.h"
 #include "sdpd.h"
@@ -103,7 +104,8 @@ static const char *policy_options[] = {
 
 static const char *gatt_options[] = {
 	"Cache",
-	"MinEncKeySize",
+	"KeySize",
+	"ExchangeMTU",
 	NULL
 };
 
@@ -401,23 +403,34 @@ static void parse_config(GKeyFile *config)
 
 	str = g_key_file_get_string(config, "GATT", "Cache", &err);
 	if (err) {
+		DBG("%s", err->message);
 		g_clear_error(&err);
-		main_opts.gatt_cache = BT_GATT_CACHE_ALWAYS;
 	} else {
 		main_opts.gatt_cache = parse_gatt_cache(str);
 		g_free(str);
 	}
 
-	val = g_key_file_get_integer(config, "GATT",
-						"MinEncKeySize", &err);
+	val = g_key_file_get_integer(config, "GATT", "KeySize", &err);
 	if (err) {
 		DBG("%s", err->message);
 		g_clear_error(&err);
 	} else {
-		DBG("MinEncKeySize=%d", val);
+		DBG("KeySize=%d", val);
 
 		if (val >=7 && val <= 16)
-			main_opts.min_enc_key_size = val;
+			main_opts.key_size = val;
+	}
+
+	val = g_key_file_get_integer(config, "GATT", "ExchangeMTU", &err);
+	if (err) {
+		DBG("%s", err->message);
+		g_clear_error(&err);
+	} else {
+		/* Ensure the mtu is within a valid range. */
+		val = MIN(val, BT_ATT_MAX_LE_MTU);
+		val = MAX(val, BT_ATT_DEFAULT_LE_MTU);
+		DBG("ExchangeMTU=%d", val);
+		main_opts.gatt_mtu = val;
 	}
 }
 
@@ -442,6 +455,9 @@ static void init_defaults(void)
 	main_opts.did_vendor = 0x1d6b;		/* Linux Foundation */
 	main_opts.did_product = 0x0246;		/* BlueZ */
 	main_opts.did_version = (major << 8 | minor);
+
+	main_opts.gatt_cache = BT_GATT_CACHE_ALWAYS;
+	main_opts.gatt_mtu = BT_ATT_MAX_LE_MTU;
 }
 
 static void log_handler(const gchar *log_domain, GLogLevelFlags log_level,

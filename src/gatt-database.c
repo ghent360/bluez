@@ -40,6 +40,7 @@
 #include "src/shared/gatt-server.h"
 #include "log.h"
 #include "error.h"
+#include "hcid.h"
 #include "adapter.h"
 #include "device.h"
 #include "gatt-database.h"
@@ -1932,7 +1933,9 @@ static void append_options(DBusMessageIter *iter, void *user_data)
 {
 	struct pending_op *op = user_data;
 	const char *path = device_get_path(op->device);
+	struct bt_gatt_server *server;
 	const char *link;
+	uint16_t mtu;
 
 	switch (op->link_type) {
 	case BT_ATT_LINK_BREDR:
@@ -1955,6 +1958,11 @@ static void append_options(DBusMessageIter *iter, void *user_data)
 	if (op->prep_authorize)
 		dict_append_entry(iter, "prepare-authorize", DBUS_TYPE_BOOLEAN,
 							&op->prep_authorize);
+
+	server = btd_device_get_gatt_server(op->device);
+	mtu = bt_gatt_server_get_mtu(server);
+
+	dict_append_entry(iter, "mtu", DBUS_TYPE_UINT16, &mtu);
 }
 
 static void read_setup_cb(DBusMessageIter *iter, void *user_data)
@@ -2234,8 +2242,6 @@ static void acquire_write_setup(DBusMessageIter *iter, void *user_data)
 {
 	struct pending_op *op = user_data;
 	DBusMessageIter dict;
-	struct bt_gatt_server *server;
-	uint16_t mtu;
 
 	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
 					DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
@@ -2245,12 +2251,6 @@ static void acquire_write_setup(DBusMessageIter *iter, void *user_data)
 					&dict);
 
 	append_options(&dict, op);
-
-	server = btd_device_get_gatt_server(op->device);
-
-	mtu = bt_gatt_server_get_mtu(server);
-
-	dict_append_entry(&dict, "MTU", DBUS_TYPE_UINT16, &mtu);
 
 	dbus_message_iter_close_container(iter, &dict);
 }
@@ -2320,8 +2320,6 @@ static void acquire_notify_setup(DBusMessageIter *iter, void *user_data)
 {
 	DBusMessageIter dict;
 	struct pending_op *op = user_data;
-	struct bt_gatt_server *server;
-	uint16_t mtu;
 
 	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
 					DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
@@ -2331,12 +2329,6 @@ static void acquire_notify_setup(DBusMessageIter *iter, void *user_data)
 					&dict);
 
 	append_options(&dict, op);
-
-	server = btd_device_get_gatt_server(op->device);
-
-	mtu = bt_gatt_server_get_mtu(server);
-
-	dict_append_entry(&dict, "MTU", DBUS_TYPE_UINT16, &mtu);
 
 	dbus_message_iter_close_container(iter, &dict);
 }
@@ -3283,6 +3275,7 @@ struct btd_gatt_database *btd_gatt_database_new(struct btd_adapter *adapter)
 					BT_IO_OPT_SOURCE_BDADDR, addr,
 					BT_IO_OPT_PSM, ATT_PSM,
 					BT_IO_OPT_SEC_LEVEL, BT_IO_SEC_LOW,
+					BT_IO_OPT_MTU, main_opts.gatt_mtu,
 					BT_IO_OPT_INVALID);
 	if (database->l2cap_io == NULL) {
 		error("Failed to start listening: %s", gerr->message);
