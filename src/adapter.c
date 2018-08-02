@@ -157,6 +157,7 @@ struct discovery_filter {
 	int16_t rssi;
 	GSList *uuids;
 	bool duplicate;
+	bool discoverable;
 };
 
 struct watch_client {
@@ -219,6 +220,7 @@ struct btd_adapter {
 	uint8_t discovery_type;		/* current active discovery type */
 	uint8_t discovery_enable;	/* discovery enabled/disabled */
 	bool discovery_suspended;	/* discovery has been suspended */
+	bool discovery_discoverable;	/* discoverable while discovering */
 	GSList *discovery_list;		/* list of discovery clients */
 	GSList *set_filter_list;	/* list of clients that specified
 					 * filter, but don't scan yet
@@ -1842,7 +1844,21 @@ static void discovery_free(void *user_data)
 	g_free(client);
 }
 
-static void discovery_remove(struct watch_client *client)
+static bool set_discovery_discoverable(struct btd_adapter *adapter, bool enable)
+{
+	if (adapter->discovery_discoverable == enable)
+		return true;
+
+	/* Reset discoverable filter if already set */
+	if (enable && (adapter->current_settings & MGMT_OP_SET_DISCOVERABLE))
+		return true;
+
+	adapter->discovery_discoverable = enable;
+
+	return set_discoverable(adapter, enable, 0);
+}
+
+static void discovery_remove(struct watch_client *client, bool exit)
 {
 	struct btd_adapter *adapter = client->adapter;
 
@@ -1854,7 +1870,11 @@ static void discovery_remove(struct watch_client *client)
 	adapter->discovery_list = g_slist_remove(adapter->discovery_list,
 								client);
 
-	discovery_free(client);
+	if (!exit && client->discovery_filter)
+		adapter->set_filter_list = g_slist_prepend(
+					adapter->set_filter_list, client);
+	else
+		discovery_free(client);
 
 	/*
 	 * If there are other client discoveries in progress, then leave
@@ -1883,8 +1903,11 @@ static void stop_discovery_complete(uint8_t status, uint16_t length,
 		goto done;
 	}
 
-	if (client->msg)
+	if (client->msg) {
 		g_dbus_send_reply(dbus_conn, client->msg, DBUS_TYPE_INVALID);
+		dbus_message_unref(client->msg);
+		client->msg = NULL;
+	}
 
 	adapter->discovery_type = 0x00;
 	adapter->discovery_enable = 0x00;
@@ -1897,7 +1920,7 @@ static void stop_discovery_complete(uint8_t status, uint16_t length,
 	trigger_passive_scanning(adapter);
 
 done:
-	discovery_remove(client);
+	discovery_remove(client, false);
 }
 
 static int compare_sender(gconstpointer a, gconstpointer b)
@@ -2090,6 +2113,8 @@ static bool filters_equal(struct mgmt_cp_start_service_discovery *a,
 static int update_discovery_filter(struct btd_adapter *adapter)
 {
 	struct mgmt_cp_start_service_discovery *sd_cp;
+	GSList *l;
+
 
 	DBG("");
 
@@ -2098,6 +2123,18 @@ static int update_discovery_filter(struct btd_adapter *adapter)
 				"discovery_filter_to_mgmt_cp returned error");
 		return -ENOMEM;
 	}
+
+	for (l = adapter->discovery_list; l; l = g_slist_next(l)) {
+		struct watch_client *client = l->data;
+
+		if (!client->discovery_filter)
+			continue;
+
+		if (client->discovery_filter->discoverable)
+			break;
+	}
+
+	set_discovery_discoverable(adapter, l ? true : false);
 
 	/*
 	 * If filters are equal, then don't update scan, except for when
@@ -2118,24 +2155,27 @@ static int update_discovery_filter(struct btd_adapter *adapter)
 	return -EINPROGRESS;
 }
 
-static int discovery_stop(struct watch_client *client)
+static int discovery_stop(struct watch_client *client, bool exit)
 {
 	struct btd_adapter *adapter = client->adapter;
 	struct mgmt_cp_stop_discovery cp;
 
 	/* Check if there are more client discovering */
 	if (g_slist_next(adapter->discovery_list)) {
-		discovery_remove(client);
+		discovery_remove(client, exit);
 		update_discovery_filter(adapter);
 		return 0;
 	}
+
+	if (adapter->discovery_discoverable)
+		set_discovery_discoverable(adapter, false);
 
 	/*
 	 * In the idle phase of a discovery, there is no need to stop it
 	 * and so it is enough to send out the signal and just return.
 	 */
 	if (adapter->discovery_enable == 0x00) {
-		discovery_remove(client);
+		discovery_remove(client, exit);
 		adapter->discovering = false;
 		g_dbus_emit_property_changed(dbus_conn, adapter->path,
 					ADAPTER_INTERFACE, "Discovering");
@@ -2160,7 +2200,7 @@ static void discovery_disconnect(DBusConnection *conn, void *user_data)
 
 	DBG("owner %s", client->owner);
 
-	discovery_stop(client);
+	discovery_stop(client, true);
 }
 
 /*
@@ -2224,6 +2264,7 @@ static DBusMessage *start_discovery(DBusConnection *conn,
 					     adapter->set_filter_list, client);
 		adapter->discovery_list = g_slist_prepend(
 					      adapter->discovery_list, client);
+
 		goto done;
 	}
 
@@ -2348,6 +2389,17 @@ static bool parse_duplicate_data(DBusMessageIter *value,
 	return true;
 }
 
+static bool parse_discoverable(DBusMessageIter *value,
+					struct discovery_filter *filter)
+{
+	if (dbus_message_iter_get_arg_type(value) != DBUS_TYPE_BOOLEAN)
+		return false;
+
+	dbus_message_iter_get_basic(value, &filter->discoverable);
+
+	return true;
+}
+
 struct filter_parser {
 	const char *name;
 	bool (*func)(DBusMessageIter *iter, struct discovery_filter *filter);
@@ -2357,6 +2409,7 @@ struct filter_parser {
 	{ "Pathloss", parse_pathloss },
 	{ "Transport", parse_transport },
 	{ "DuplicateData", parse_duplicate_data },
+	{ "Discoverable", parse_discoverable },
 	{ }
 };
 
@@ -2396,6 +2449,7 @@ static bool parse_discovery_filter_dict(struct btd_adapter *adapter,
 	(*filter)->rssi = DISTANCE_VAL_INVALID;
 	(*filter)->type = get_scan_type(adapter);
 	(*filter)->duplicate = false;
+	(*filter)->discoverable = false;
 
 	dbus_message_iter_init(msg, &iter);
 	if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY ||
@@ -2441,8 +2495,10 @@ static bool parse_discovery_filter_dict(struct btd_adapter *adapter,
 		goto invalid_args;
 
 	DBG("filtered discovery params: transport: %d rssi: %d pathloss: %d "
-		" duplicate data: %s ", (*filter)->type, (*filter)->rssi,
-		(*filter)->pathloss, (*filter)->duplicate ? "true" : "false");
+		" duplicate data: %s discoverable %s", (*filter)->type,
+		(*filter)->rssi, (*filter)->pathloss,
+		(*filter)->duplicate ? "true" : "false",
+		(*filter)->discoverable ? "true" : "false");
 
 	return true;
 
@@ -2534,7 +2590,7 @@ static DBusMessage *stop_discovery(DBusConnection *conn,
 	if (client->msg)
 		return btd_error_busy(msg);
 
-	err = discovery_stop(client);
+	err = discovery_stop(client, false);
 	switch (err) {
 	case 0:
 		return dbus_message_new_method_return(msg);
@@ -2879,6 +2935,9 @@ static void property_set_discoverable(const GDBusPropertyTable *property,
 								"Not Powered");
 		return;
 	}
+
+	/* Reset discovery_discoverable as Discoverable takes precedence */
+	adapter->discovery_discoverable = false;
 
 	property_set_mode(adapter, MGMT_SETTING_DISCOVERABLE, iter, id);
 }

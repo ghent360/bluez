@@ -1139,6 +1139,24 @@ static void cmd_default_agent(int argc, char *argv[])
 	agent_default(dbus_conn, agent_manager);
 }
 
+#define	DISTANCE_VAL_INVALID	0x7FFF
+
+static struct set_discovery_filter_args {
+	char *transport;
+	dbus_uint16_t rssi;
+	dbus_int16_t pathloss;
+	char **uuids;
+	size_t uuids_len;
+	dbus_bool_t duplicate;
+	dbus_bool_t discoverable;
+	bool set;
+	bool active;
+} filter = {
+	.rssi = DISTANCE_VAL_INVALID,
+	.pathloss = DISTANCE_VAL_INVALID,
+	.set = true,
+};
+
 static void start_discovery_reply(DBusMessage *message, void *user_data)
 {
 	dbus_bool_t enable = GPOINTER_TO_UINT(user_data);
@@ -1154,24 +1172,23 @@ static void start_discovery_reply(DBusMessage *message, void *user_data)
 	}
 
 	bt_shell_printf("Discovery %s\n", enable ? "started" : "stopped");
+
+	filter.active = enable;
 	/* Leave the discovery running even on noninteractive mode */
 }
 
-#define	DISTANCE_VAL_INVALID	0x7FFF
+static void clear_discovery_filter(DBusMessageIter *iter, void *user_data)
+{
+	DBusMessageIter dict;
 
-static struct set_discovery_filter_args {
-	char *transport;
-	dbus_uint16_t rssi;
-	dbus_int16_t pathloss;
-	char **uuids;
-	size_t uuids_len;
-	dbus_bool_t duplicate;
-	bool set;
-} filter = {
-	.rssi = DISTANCE_VAL_INVALID,
-	.pathloss = DISTANCE_VAL_INVALID,
-	.set = true,
-};
+	dbus_message_iter_open_container(iter, DBUS_TYPE_ARRAY,
+				DBUS_DICT_ENTRY_BEGIN_CHAR_AS_STRING
+				DBUS_TYPE_STRING_AS_STRING
+				DBUS_TYPE_VARIANT_AS_STRING
+				DBUS_DICT_ENTRY_END_CHAR_AS_STRING, &dict);
+
+	dbus_message_iter_close_container(iter, &dict);
+}
 
 static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
 {
@@ -1205,6 +1222,11 @@ static void set_discovery_filter_setup(DBusMessageIter *iter, void *user_data)
 						DBUS_TYPE_BOOLEAN,
 						&args->duplicate);
 
+	if (args->discoverable)
+		g_dbus_dict_append_entry(&dict, "Discoverable",
+						DBUS_TYPE_BOOLEAN,
+						&args->discoverable);
+
 	dbus_message_iter_close_container(iter, &dict);
 }
 
@@ -1227,14 +1249,18 @@ static void set_discovery_filter_reply(DBusMessage *message, void *user_data)
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void set_discovery_filter(void)
+static void set_discovery_filter(bool cleared)
 {
+	GDBusSetupFunction func;
+
 	if (check_default_ctrl() == FALSE || filter.set)
 		return;
 
+	func = cleared ? clear_discovery_filter : set_discovery_filter_setup;
+
 	if (g_dbus_proxy_method_call(default_ctrl->proxy, "SetDiscoveryFilter",
-		set_discovery_filter_setup, set_discovery_filter_reply,
-		&filter, NULL) == FALSE) {
+					func, set_discovery_filter_reply,
+					&filter, NULL) == FALSE) {
 		bt_shell_printf("Failed to set discovery filter\n");
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
@@ -1254,7 +1280,7 @@ static void cmd_scan(int argc, char *argv[])
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
 	if (enable == TRUE) {
-		set_discovery_filter();
+		set_discovery_filter(false);
 		method = "StartDiscovery";
 	} else
 		method = "StopDiscovery";
@@ -1296,6 +1322,9 @@ static void cmd_scan_filter_uuids(int argc, char *argv[])
 
 commit:
 	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
 }
 
 static void cmd_scan_filter_rssi(int argc, char *argv[])
@@ -1310,6 +1339,9 @@ static void cmd_scan_filter_rssi(int argc, char *argv[])
 	filter.rssi = atoi(argv[1]);
 
 	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
 }
 
 static void cmd_scan_filter_pathloss(int argc, char *argv[])
@@ -1325,6 +1357,9 @@ static void cmd_scan_filter_pathloss(int argc, char *argv[])
 	filter.pathloss = atoi(argv[1]);
 
 	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
 }
 
 static void cmd_scan_filter_transport(int argc, char *argv[])
@@ -1340,6 +1375,9 @@ static void cmd_scan_filter_transport(int argc, char *argv[])
 	filter.transport = g_strdup(argv[1]);
 
 	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
 }
 
 static void cmd_scan_filter_duplicate_data(int argc, char *argv[])
@@ -1360,6 +1398,32 @@ static void cmd_scan_filter_duplicate_data(int argc, char *argv[])
 	}
 
 	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
+}
+
+static void cmd_scan_filter_discoverable(int argc, char *argv[])
+{
+	if (argc < 2 || !strlen(argv[1])) {
+		bt_shell_printf("Discoverable: %s\n",
+				filter.discoverable ? "on" : "off");
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
+
+	if (!strcmp(argv[1], "on"))
+		filter.discoverable = true;
+	else if (!strcmp(argv[1], "off"))
+		filter.discoverable = false;
+	else {
+		bt_shell_printf("Invalid option: %s\n", argv[1]);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	filter.set = false;
+
+	if (filter.active)
+		set_discovery_filter(false);
 }
 
 static void filter_clear_uuids(void)
@@ -1390,6 +1454,11 @@ static void filter_clear_duplicate(void)
 	filter.duplicate = false;
 }
 
+static void filter_clear_discoverable(void)
+{
+	filter.discoverable = false;
+}
+
 struct clear_entry {
 	const char *name;
 	void (*clear) (void);
@@ -1401,6 +1470,7 @@ static const struct clear_entry filter_clear[] = {
 	{ "pathloss", filter_clear_pathloss },
 	{ "transport", filter_clear_transport },
 	{ "duplicate-data", filter_clear_duplicate },
+	{ "discoverable", filter_clear_discoverable },
 	{}
 };
 
@@ -1465,7 +1535,7 @@ static void cmd_scan_filter_clear(int argc, char *argv[])
 	if (check_default_ctrl() == FALSE)
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
-	set_discovery_filter();
+	set_discovery_filter(all);
 }
 
 static struct GDBusProxy *find_device(int argc, char *argv[])
@@ -2510,7 +2580,11 @@ static const struct bt_shell_menu scan_menu = {
 	{ "duplicate-data", "[on/off]", cmd_scan_filter_duplicate_data,
 				"Set/Get duplicate data filter",
 				NULL },
-	{ "clear", "[uuids/rssi/pathloss/transport/duplicate-data]",
+	{ "discoverable", "[on/off]", cmd_scan_filter_discoverable,
+				"Set/Get discoverable filter",
+				NULL },
+	{ "clear",
+		"[uuids/rssi/pathloss/transport/duplicate-data/discoverable]",
 				cmd_scan_filter_clear,
 				"Clears discovery filter.",
 				filter_clear_generator },
