@@ -310,7 +310,7 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 			ts_pos += n;
 			ts_len += n;
 		}
-	} else if (index != HCI_DEV_NONE &&
+	} else if (index != HCI_DEV_NONE && index < MAX_INDEX &&
 				index_list[index].frame != last_frame) {
 		if (use_color()) {
 			n = sprintf(ts_str + ts_pos, "%s", COLOR_FRAME_LABEL);
@@ -3861,6 +3861,11 @@ void packet_monitor(struct timeval *tv, struct ucred *cred,
 		index_current = index;
 	}
 
+	if (index != HCI_DEV_NONE && index > MAX_INDEX) {
+		print_field("Invalid index (%d)", index);
+		return;
+	}
+
 	if (tv && time_offset == ((time_t) -1))
 		time_offset = tv->tv_sec;
 
@@ -4724,6 +4729,10 @@ static void set_event_filter_cmd(const void *data, uint8_t size)
 		break;
 
 	case 0x01:
+		if (size < 2) {
+			print_text(COLOR_ERROR, "  invalid parameter size");
+			break;
+		}
 		filter = *((const uint8_t *) (data + 1));
 
 		switch (filter) {
@@ -4763,11 +4772,21 @@ static void set_event_filter_cmd(const void *data, uint8_t size)
 			break;
 		}
 
+		if (size < 2) {
+                        print_text(COLOR_ERROR, "  invalid parameter size");
+                        break;
+                }
+
 		print_field("Filter: %s (0x%2.2x)", str, filter);
 		packet_hexdump(data + 2, size - 2);
 		break;
 
 	default:
+		if (size < 2) {
+                        print_text(COLOR_ERROR, "  invalid parameter size");
+                        break;
+                }
+
 		filter = *((const uint8_t *) (data + 1));
 
 		print_field("Filter: Reserved (0x%2.2x)", filter);
@@ -5815,6 +5834,11 @@ static void read_local_codecs_rsp(const void *data, uint8_t size)
 {
 	const struct bt_hci_rsp_read_local_codecs *rsp = data;
 	uint8_t i, num_vnd_codecs;
+
+	if (rsp->num_codecs + 3 > size) {
+		print_field("Invalid number of codecs.");
+		return;
+	}
 
 	print_status(rsp->status);
 	print_field("Number of supported codecs: %d", rsp->num_codecs);
@@ -9981,13 +10005,17 @@ void packet_hci_command(struct timeval *tv, struct ucred *cred, uint16_t index,
 	char extra_str[25], vendor_str[150];
 	int i;
 
+	if (index > MAX_INDEX) {
+		print_field("Invalid index (%d).", index);
+		return;
+	}
+
 	index_list[index].frame++;
 
-	if (size < HCI_COMMAND_HDR_SIZE) {
+	if (size < HCI_COMMAND_HDR_SIZE || size > BTSNOOP_MAX_PACKET_SIZE) {
 		sprintf(extra_str, "(len %d)", size);
 		print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
 			"Malformed HCI Command packet", NULL, extra_str);
-		packet_hexdump(data, size);
 		return;
 	}
 
@@ -10084,6 +10112,12 @@ void packet_hci_event(struct timeval *tv, struct ucred *cred, uint16_t index,
 	char extra_str[25];
 	int i;
 
+	if (index > MAX_INDEX) {
+		print_field("Invalid index (%d).", index);
+		return;
+	}
+
+
 	index_list[index].frame++;
 
 	if (size < HCI_EVENT_HDR_SIZE) {
@@ -10158,6 +10192,11 @@ void packet_hci_acldata(struct timeval *tv, struct ucred *cred, uint16_t index,
 	uint8_t flags = acl_flags(handle);
 	char handle_str[16], extra_str[32];
 
+	if (index > MAX_INDEX) {
+		print_field("Invalid index (%d).", index);
+		return;
+	}
+
 	index_list[index].frame++;
 
 	if (size < HCI_ACL_HDR_SIZE) {
@@ -10201,6 +10240,11 @@ void packet_hci_scodata(struct timeval *tv, struct ucred *cred, uint16_t index,
 	uint16_t handle = le16_to_cpu(hdr->handle);
 	uint8_t flags = acl_flags(handle);
 	char handle_str[16], extra_str[32];
+
+	if (index > MAX_INDEX) {
+		print_field("Invalid index (%d).", index);
+		return;
+	}
 
 	index_list[index].frame++;
 
@@ -10272,6 +10316,12 @@ void packet_ctrl_open(struct timeval *tv, struct ucred *cred, uint16_t index,
 		revision = get_le16(data + 1);
 		flags = get_le32(data + 3);
 		ident_len = get_u8(data + 7);
+
+		if ((8 + ident_len) > size) {
+			print_packet(tv, cred, '*', index, NULL, COLOR_ERROR,
+                                "Malformed Control Open packet", NULL, NULL);
+			return;
+		}
 
 		data += 8;
 		size -= 8;

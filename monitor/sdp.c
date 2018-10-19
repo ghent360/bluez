@@ -43,12 +43,13 @@
 #include "sdp.h"
 
 #define MAX_TID 16
+#define MAX_CONT_SIZE 17
 
 struct tid_data {
 	bool inuse;
 	uint16_t tid;
 	uint16_t channel;
-	uint8_t cont[17];
+	uint8_t cont[MAX_CONT_SIZE];
 };
 
 static struct tid_data tid_list[MAX_TID];
@@ -308,6 +309,11 @@ static void decode_data_elements(uint32_t position, uint8_t indent,
 		break;
 	}
 
+	if (elemlen > size) {
+		print_text(COLOR_ERROR, "invalid data element size");
+		return;
+	}
+
 	data += elemlen;
 	size -= elemlen;
 
@@ -410,6 +416,10 @@ static void print_continuation(const uint8_t *data, uint16_t size)
 static void store_continuation(struct tid_data *tid,
 					const uint8_t *data, uint16_t size)
 {
+	if (size > MAX_CONT_SIZE) {
+		print_text(COLOR_ERROR, "invalid continuation size");
+		return;
+	}
 	memcpy(tid->cont, data, size);
 	print_continuation(data, size);
 }
@@ -575,6 +585,10 @@ static void service_rsp(const struct l2cap_frame *frame, struct tid_data *tid)
 	}
 
 	count = get_be16(frame->data + 2);
+	if (count * 4 > frame->size) {
+		print_text(COLOR_ERROR, "invalid record count");
+                return;
+	}
 
 	print_field("Total record count: %d", get_be16(frame->data));
 	print_field("Current record count: %d", count);
@@ -649,6 +663,11 @@ static void search_attr_req(const struct l2cap_frame *frame,
 	attr_bytes = get_bytes(frame->data + search_bytes + 2,
 				frame->size - search_bytes - 2);
 	print_field("Attribute list: [len %d]", attr_bytes);
+
+	if (search_bytes + attr_bytes > frame->size) {
+		print_text(COLOR_ERROR, "invalid attribute list length");
+		return;
+	}
 
 	decode_data_elements(0, 2, frame->data + search_bytes + 2,
 						attr_bytes, NULL);
