@@ -19,7 +19,7 @@ CLEANFILES =
 
 EXTRA_DIST =
 
-libexecdir = @libexecdir@/bluetooth
+pkglibexecdir = @libexecdir@/bluetooth
 
 libexec_PROGRAMS =
 
@@ -119,6 +119,7 @@ shared_sources = src/shared/io.h src/shared/timeout.h \
 			src/shared/gatt-server.h src/shared/gatt-server.c \
 			src/shared/gatt-db.h src/shared/gatt-db.c \
 			src/shared/gap.h src/shared/gap.c \
+			src/shared/log.h src/shared/log.c \
 			src/shared/tty.h
 
 if READLINE
@@ -489,7 +490,7 @@ MAINTAINERCLEANFILES = Makefile.in \
 	ltmain.sh depcomp compile missing install-sh mkinstalldirs test-driver
 
 SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
-		$(SED) -e 's,@libexecdir\@,$(libexecdir),g' \
+		$(SED) -e 's,@pkglibexecdir\@,$(pkglibexecdir),g' \
 		< $< > $@
 
 %.service: %.service.in Makefile
