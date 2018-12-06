@@ -51,6 +51,7 @@
 #include "backtrace.h"
 
 #include "shared/att-types.h"
+#include "shared/mainloop.h"
 #include "lib/uuid.h"
 #include "hcid.h"
 #include "sdpd.h"
@@ -59,7 +60,6 @@
 #include "dbus-common.h"
 #include "agent.h"
 #include "profile.h"
-#include "systemd.h"
 
 #define BLUEZ_NAME "org.bluez"
 
@@ -486,11 +486,9 @@ static void log_handler(const gchar *log_domain, GLogLevelFlags log_level,
 	btd_backtrace(0xffff);
 }
 
-static GMainLoop *event_loop;
-
 void btd_exit(void)
 {
-	g_main_loop_quit(event_loop);
+	mainloop_quit();
 }
 
 static gboolean quit_eventloop(gpointer user_data)
@@ -499,24 +497,11 @@ static gboolean quit_eventloop(gpointer user_data)
 	return FALSE;
 }
 
-static gboolean signal_handler(GIOChannel *channel, GIOCondition cond,
-							gpointer user_data)
+static void signal_callback(int signum, void *user_data)
 {
 	static bool terminated = false;
-	struct signalfd_siginfo si;
-	ssize_t result;
-	int fd;
 
-	if (cond & (G_IO_NVAL | G_IO_ERR | G_IO_HUP))
-		return FALSE;
-
-	fd = g_io_channel_unix_get_fd(channel);
-
-	result = read(fd, &si, sizeof(si));
-	if (result != sizeof(si))
-		return FALSE;
-
-	switch (si.ssi_signo) {
+	switch (signum) {
 	case SIGINT:
 	case SIGTERM:
 		if (!terminated) {
@@ -524,7 +509,7 @@ static gboolean signal_handler(GIOChannel *channel, GIOCondition cond,
 			g_timeout_add_seconds(SHUTDOWN_GRACE_SECONDS,
 							quit_eventloop, NULL);
 
-			sd_notify(0, "STATUS=Powering down");
+			mainloop_sd_notify("STATUS=Powering down");
 			adapter_shutdown();
 		}
 
@@ -534,46 +519,6 @@ static gboolean signal_handler(GIOChannel *channel, GIOCondition cond,
 		__btd_toggle_debug();
 		break;
 	}
-
-	return TRUE;
-}
-
-static guint setup_signalfd(void)
-{
-	GIOChannel *channel;
-	guint source;
-	sigset_t mask;
-	int fd;
-
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-	sigaddset(&mask, SIGUSR2);
-
-	if (sigprocmask(SIG_BLOCK, &mask, NULL) < 0) {
-		perror("Failed to set signal mask");
-		return 0;
-	}
-
-	fd = signalfd(-1, &mask, 0);
-	if (fd < 0) {
-		perror("Failed to create signal descriptor");
-		return 0;
-	}
-
-	channel = g_io_channel_unix_new(fd);
-
-	g_io_channel_set_close_on_unref(channel, TRUE);
-	g_io_channel_set_encoding(channel, NULL, NULL);
-	g_io_channel_set_buffered(channel, FALSE);
-
-	source = g_io_add_watch(channel,
-				G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL,
-				signal_handler, NULL);
-
-	g_io_channel_unref(channel);
-
-	return source;
 }
 
 static char *option_debug = NULL;
@@ -616,7 +561,7 @@ static void disconnect_dbus(void)
 static void disconnected_dbus(DBusConnection *conn, void *data)
 {
 	info("Disconnected from D-Bus. Exiting.");
-	g_main_loop_quit(event_loop);
+	mainloop_quit();
 }
 
 static int connect_dbus(void)
@@ -642,13 +587,6 @@ static int connect_dbus(void)
 	g_dbus_attach_object_manager(conn);
 
 	return 0;
-}
-
-static gboolean watchdog_callback(gpointer user_data)
-{
-	sd_notify(0, "WATCHDOG=1");
-
-	return TRUE;
 }
 
 static gboolean parse_debug(const char *key, const char *value,
@@ -691,8 +629,6 @@ int main(int argc, char *argv[])
 	uint16_t sdp_mtu = 0;
 	uint32_t sdp_flags = 0;
 	int gdbus_flags = 0;
-	guint signal, watchdog;
-	const char *watchdog_usec;
 
 	init_defaults();
 
@@ -719,9 +655,7 @@ int main(int argc, char *argv[])
 
 	btd_backtrace_init();
 
-	event_loop = g_main_loop_new(NULL, FALSE);
-
-	signal = setup_signalfd();
+	mainloop_init();
 
 	__btd_log_init(option_debug, option_detach);
 
@@ -729,7 +663,7 @@ int main(int argc, char *argv[])
 							G_LOG_FLAG_RECURSION,
 							log_handler, NULL);
 
-	sd_notify(0, "STATUS=Starting up");
+	mainloop_sd_notify("STATUS=Starting up");
 
 	if (option_configfile)
 		main_conf_file_path = option_configfile;
@@ -788,28 +722,12 @@ int main(int argc, char *argv[])
 
 	DBG("Entering main loop");
 
-	sd_notify(0, "STATUS=Running");
-	sd_notify(0, "READY=1");
+	mainloop_sd_notify("STATUS=Running");
+	mainloop_sd_notify("READY=1");
 
-	watchdog_usec = getenv("WATCHDOG_USEC");
-	if (watchdog_usec) {
-		unsigned int seconds;
+	mainloop_run_with_signal(signal_callback, NULL);
 
-		seconds = atoi(watchdog_usec) / (1000 * 1000);
-		info("Watchdog timeout is %d seconds", seconds);
-
-		watchdog = g_timeout_add_seconds_full(G_PRIORITY_HIGH,
-							seconds / 2,
-							watchdog_callback,
-							NULL, NULL);
-	} else
-		watchdog = 0;
-
-	g_main_loop_run(event_loop);
-
-	sd_notify(0, "STATUS=Quitting");
-
-	g_source_remove(signal);
+	mainloop_sd_notify("STATUS=Quitting");
 
 	plugin_cleanup();
 
@@ -824,17 +742,12 @@ int main(int argc, char *argv[])
 	if (main_opts.mode != BT_MODE_LE)
 		stop_sdp_server();
 
-	g_main_loop_unref(event_loop);
-
 	if (main_conf)
 		g_key_file_free(main_conf);
 
 	disconnect_dbus();
 
 	info("Exit");
-
-	if (watchdog > 0)
-		g_source_remove(watchdog);
 
 	__btd_log_cleanup();
 

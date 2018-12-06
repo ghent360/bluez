@@ -190,12 +190,16 @@ endif
 src_libshared_glib_la_SOURCES = $(shared_sources) \
 				src/shared/io-glib.c \
 				src/shared/timeout-glib.c \
-				src/shared/mainloop-glib.c
+				src/shared/mainloop-glib.c \
+				src/shared/mainloop-notify.h \
+				src/shared/mainloop-notify.c
 
 src_libshared_mainloop_la_SOURCES = $(shared_sources) \
 				src/shared/io-mainloop.c \
 				src/shared/timeout-mainloop.c \
-				src/shared/mainloop.h src/shared/mainloop.c
+				src/shared/mainloop.h src/shared/mainloop.c \
+				src/shared/mainloop-notify.h \
+				src/shared/mainloop-notify.c
 
 if LIBSHARED_ELL
 noinst_LTLIBRARIES += src/libshared-ell.la
@@ -241,7 +245,6 @@ src_bluetoothd_SOURCES = $(builtin_sources) \
 			src/bluetooth.ver \
 			src/main.c src/log.h src/log.c \
 			src/backtrace.h src/backtrace.c \
-			src/systemd.h src/systemd.c \
 			src/rfkill.c src/hcid.h src/sdpd.h \
 			src/sdpd-server.c src/sdpd-request.c \
 			src/sdpd-service.c src/sdpd-database.c \
