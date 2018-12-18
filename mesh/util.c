@@ -26,9 +26,35 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <unistd.h>
+#include <termios.h>
 #include <time.h>
+#include <sys/ioctl.h>
+#include <sys/time.h>
+
+#include <ell/ell.h>
 
 #include "mesh/util.h"
+
+void print_packet(const char *label, const void *data, uint16_t size)
+{
+	struct timeval pkt_time;
+
+	gettimeofday(&pkt_time, NULL);
+
+	if (size > 0) {
+		char *str;
+
+		str = l_util_hexstring(data, size);
+		l_debug("%05d.%03d %s: %s",
+				(uint32_t) pkt_time.tv_sec % 100000,
+				(uint32_t) pkt_time.tv_usec/1000, label, str);
+		l_free(str);
+	} else
+		l_debug("%05d.%03d %s: empty",
+				(uint32_t) pkt_time.tv_sec % 100000,
+				(uint32_t) pkt_time.tv_usec/1000, label);
+}
 
 uint32_t get_timestamp_secs(void)
 {

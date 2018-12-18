@@ -18,8 +18,18 @@
  *
  */
 
-uint32_t get_timestamp_secs(void);
-bool str2hex(const char *str, uint16_t in_len, uint8_t *out,
-							uint16_t out_len);
-size_t hex2str(uint8_t *in, size_t in_len, char *out, size_t out_len);
-void print_packet(const char *label, const void *data, uint16_t size);
+/*
+ * Important: Changes in this table must be reflected in the
+ * the entries of error_table[] in dbus.c
+ */
+typedef enum {
+	MESH_ERROR_NONE,
+	MESH_ERROR_FAILED,
+	MESH_ERROR_NOT_AUTHORIZED,
+	MESH_ERROR_NOT_FOUND,
+	MESH_ERROR_INVALID_ARGS,
+	MESH_ERROR_BUSY,
+	MESH_ERROR_ALREADY_EXISTS,
+	MESH_ERROR_DOES_NOT_EXIST,
+	MESH_ERROR_CANCELED,
+} mesh_error_t;

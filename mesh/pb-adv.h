@@ -17,12 +17,7 @@
  *
  */
 
-#define COLOR_OFF	"\x1B[0m"
-#define COLOR_RED	"\x1B[0;91m"
-#define COLOR_GREEN	"\x1B[0;92m"
-#define COLOR_YELLOW	"\x1B[0;93m"
-#define COLOR_BLUE	"\x1B[0;94m"
-
-unsigned int num_columns(void);
-
-void print_packet(const char *label, const void *data, uint16_t size);
+bool pb_adv_reg(mesh_prov_open_func_t open_cb, mesh_prov_close_func_t close_cb,
+		mesh_prov_receive_func_t rx_cb, mesh_prov_ack_func_t ack_cb,
+		uint8_t uuid[16], void *user_data);
+void pb_adv_unreg(void *user_data);
