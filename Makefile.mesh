@@ -26,7 +26,7 @@ libexec_PROGRAMS += mesh/meshd
 
 mesh_meshd_SOURCES = $(mesh_sources) mesh/main.c
 mesh_meshd_LDADD = src/libshared-ell.la $(ell_ldadd) -ljson-c
-mesh_meshd_DEPENDENCIES = $(ell_dependencies)
+mesh_meshd_DEPENDENCIES = $(ell_dependencies) src/libshared-ell.la
 
 mesh_btmesh_LDADD = src/libshared-mainloop.la $(ell_ldadd) -lreadline -ljson-c
 mesh_btmesh_DEPENDENCIES = $(ell_dependencies)
