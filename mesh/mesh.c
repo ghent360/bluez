@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -23,28 +22,24 @@
 #endif
 
 #define _GNU_SOURCE
-#include <time.h>
 #include <ell/ell.h>
+#include <json-c/json.h>
 
 #include "lib/bluetooth.h"
 #include "lib/mgmt.h"
 
 #include "src/shared/mgmt.h"
 
-#include "mesh/mesh-defs.h"
 #include "mesh/mesh-io.h"
 #include "mesh/node.h"
 #include "mesh/net.h"
 #include "mesh/storage.h"
-#include "mesh/prov.h"
 #include "mesh/provision.h"
 #include "mesh/model.h"
 #include "mesh/dbus.h"
 #include "mesh/error.h"
 #include "mesh/mesh.h"
 #include "mesh/agent.h"
-
-#define MESH_COMP_MAX_LEN 378
 
 /*
  * The default values for mesh configuration. Can be
@@ -363,7 +358,7 @@ void mesh_cleanup(void)
 		l_dbus_send(dbus_get_bus(), reply);
 
 		if (join_pending->disc_watch)
-			dbus_disconnect_watch_remove(dbus_get_bus(),
+			l_dbus_remove_watch(dbus_get_bus(),
 						join_pending->disc_watch);
 
 		if (join_pending->node)
@@ -415,7 +410,7 @@ static void free_pending_join_call(bool failed)
 		return;
 
 	if (join_pending->disc_watch)
-		dbus_disconnect_watch_remove(dbus_get_bus(),
+		l_dbus_remove_watch(dbus_get_bus(),
 						join_pending->disc_watch);
 
 	mesh_agent_remove(join_pending->agent);
@@ -583,7 +578,7 @@ static struct l_dbus_message *join_network_call(struct l_dbus *dbus,
 
 	join_pending = l_new(struct join_data, 1);
 
-	n = dbus_get_byte_array(&iter_uuid, join_pending->uuid,16);
+	l_dbus_message_iter_get_fixed_array(&iter_uuid, join_pending->uuid, &n);
 
 	if (n != 16) {
 		l_free(join_pending);
@@ -595,8 +590,8 @@ static struct l_dbus_message *join_network_call(struct l_dbus *dbus,
 	sender = l_dbus_message_get_sender(msg);
 
 	join_pending->sender = l_strdup(sender);
-	join_pending->disc_watch = dbus_disconnect_watch_add(dbus, sender,
-							prov_disc_cb, NULL);
+	join_pending->disc_watch = l_dbus_add_disconnect_watch(dbus, sender,
+						prov_disc_cb, NULL, NULL);
 	join_pending->msg = l_dbus_message_ref(msg);
 	join_pending->app_path = app_path;
 

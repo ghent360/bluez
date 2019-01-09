@@ -15,14 +15,13 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 /*
  * Important: Changes in this table must be reflected in the
  * the entries of error_table[] in dbus.c
  */
-typedef enum {
+enum mesh_error {
 	MESH_ERROR_NONE,
 	MESH_ERROR_FAILED,
 	MESH_ERROR_NOT_AUTHORIZED,
@@ -32,4 +31,4 @@ typedef enum {
 	MESH_ERROR_ALREADY_EXISTS,
 	MESH_ERROR_DOES_NOT_EXIST,
 	MESH_ERROR_CANCELED,
-} mesh_error_t;
+};

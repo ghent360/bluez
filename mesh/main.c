@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -34,6 +33,7 @@
 #include <ell/ell.h>
 
 #include <dbus/dbus.h>
+#include <json-c/json.h>
 
 #include "lib/bluetooth.h"
 #include "lib/mgmt.h"

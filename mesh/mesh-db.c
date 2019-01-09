@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -29,6 +28,7 @@
 #include <string.h>
 
 #include <ell/ell.h>
+#include <json-c/json.h>
 
 #include "mesh/mesh-defs.h"
 #include "mesh/util.h"

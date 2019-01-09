@@ -128,11 +128,6 @@ static void acceptor_free(void)
 	if (prov->trans_tx) {
 		if (prov->transport == PB_ADV)
 			pb_adv_unreg(prov->trans_data);
-#if defined(GATT_ENABLED)
-		/* TODO: Cleanup GATT bearer if exists */
-		else if (prov->transport == PB_GATT)
-			pb_gatt_unreg(prov->trans_data);
-#endif
 	}
 
 	l_free(prov);
@@ -179,20 +174,7 @@ static void acp_prov_open(void *user_data, prov_trans_tx_t trans_tx,
 					prov->transport != transport)
 		return;
 
-	if (transport == PB_ADV) {
-#if defined(GATT_ENABLED)
-		/* TODO: Disable PB-GATT */
-#endif
-	}
-
-#if defined(GATT_ENABLED)
-	else if (transport == PB_GATT) {
-		/* TODO: Disable PB-ADV */
-		pb_adv_unreg(prov);
-	}
-#endif
-
-	else
+	if (transport != PB_ADV)
 		return;
 
 	prov->trans_tx = trans_tx;
@@ -263,7 +245,7 @@ static uint32_t digit_mod(uint8_t power)
 	return ret;
 }
 
-static void number_cb(void *user_data, mesh_error_t err, uint32_t number)
+static void number_cb(void *user_data, int err, uint32_t number)
 {
 	struct mesh_prov_acceptor *rx_prov = user_data;
 	uint8_t out[2];
@@ -286,8 +268,7 @@ static void number_cb(void *user_data, mesh_error_t err, uint32_t number)
 	prov->trans_tx(prov->trans_data, out, 1);
 }
 
-static void static_cb(void *user_data, mesh_error_t err,
-						uint8_t *key, uint32_t len)
+static void static_cb(void *user_data, int err, uint8_t *key, uint32_t len)
 {
 	struct mesh_prov_acceptor *rx_prov = user_data;
 	uint8_t out[2];
@@ -308,8 +289,7 @@ static void static_cb(void *user_data, mesh_error_t err,
 	prov->material |= MAT_RAND_AUTH;
 }
 
-static void priv_key_cb(void *user_data, mesh_error_t err,
-						uint8_t *key, uint32_t len)
+static void priv_key_cb(void *user_data, int err, uint8_t *key, uint32_t len)
 {
 	struct mesh_prov_acceptor *rx_prov = user_data;
 	uint8_t out[2];
@@ -646,13 +626,6 @@ bool acceptor_start(uint8_t num_ele, uint8_t uuid[16],
 	 * remote mesh network.
 	 */
 
-#if defined(GATT_ENABLED)
-	/* If we support PB-GATT, that means we need to set up a GATT
-	 * service, and need the existence of bluetoothd, with it's
-	 * own LE capable controller. That is a battle for another day.
-	 * We will *always* support PB-ADV.
-	 */
-#endif
 	if (prov)
 		return false;
 

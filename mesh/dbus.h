@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #define BLUEZ_MESH_PATH "/org/bluez/mesh"
@@ -23,12 +22,6 @@
 
 bool dbus_init(struct l_dbus *dbus);
 struct l_dbus *dbus_get_bus(void);
-uint32_t dbus_disconnect_watch_add(struct l_dbus *dbus, const char *name,
-					l_dbus_watch_func_t callback,
-					void *user_data);
-bool dbus_disconnect_watch_remove(struct l_dbus *dbus, uint32_t id);
-uint32_t dbus_get_byte_array(struct l_dbus_message_iter *array, uint8_t *buf,
-							uint32_t max_len);
 bool dbus_append_byte_array(struct l_dbus_message_builder *builder,
 						const uint8_t *data, int len);
 void dbus_append_dict_entry_basic(struct l_dbus_message_builder *builder,

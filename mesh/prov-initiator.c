@@ -256,7 +256,7 @@ static void calc_local_material(const uint8_t *random)
 	print_packet("RandomDevice", prov->rand_auth_workspace, 16);
 }
 
-static void number_cb(void *user_data, mesh_error_t err, uint32_t number)
+static void number_cb(void *user_data, int err, uint32_t number)
 {
 	struct mesh_prov_initiator *rx_prov = user_data;
 	uint8_t out[2];
@@ -277,8 +277,7 @@ static void number_cb(void *user_data, mesh_error_t err, uint32_t number)
 	prov->material |= MAT_RAND_AUTH;
 }
 
-static void static_cb(void *user_data, mesh_error_t err,
-						uint8_t *key, uint32_t len)
+static void static_cb(void *user_data, int err, uint8_t *key, uint32_t len)
 {
 	struct mesh_prov_initiator *rx_prov = user_data;
 	uint8_t out[2];
@@ -298,8 +297,7 @@ static void static_cb(void *user_data, mesh_error_t err,
 	prov->material |= MAT_RAND_AUTH;
 }
 
-static void pub_key_cb(void *user_data, mesh_error_t err,
-						uint8_t *key, uint32_t len)
+static void pub_key_cb(void *user_data, int err, uint8_t *key, uint32_t len)
 {
 	struct mesh_prov_initiator *rx_prov = user_data;
 	uint8_t out[2];
@@ -616,13 +614,6 @@ bool initiator_start(enum trans_type transport,
 	 * remote unprovisioned device network.
 	 */
 
-#if defined(GATT_ENABLED)
-	/* If we support PB-GATT, that means we need to set up a GATT
-	 * service, and need the existence of bluetoothd, with it's
-	 * own LE capable controller. That is a battle for another day.
-	 * We will *always* support PB-ADV.
-	 */
-#endif
 	if (prov)
 		return false;
 

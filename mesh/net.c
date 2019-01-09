@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <sys/time.h>
 #include <ell/ell.h>
+#include <json-c/json.h>
 
 #include "mesh/mesh-defs.h"
 #include "mesh/util.h"
@@ -2814,6 +2815,7 @@ static void lpn_process_beacon(void *user_data, const void *data,
 
 	/* print_packet("lpn: Secure Net Beacon RXed", data, size); */
 	rxed_key_refresh = (buf[0] & 0x01) == 0x01;
+	iv_update = (buf[0] & 0x02) == 0x02;
 	iv_index = l_get_be32(buf + 1);
 
 	/* Inhibit recognizing iv_update true-->false if we have outbound

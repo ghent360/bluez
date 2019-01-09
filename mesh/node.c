@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -25,6 +24,7 @@
 #include <stdio.h>
 #include <sys/time.h>
 #include <ell/ell.h>
+#include <json-c/json.h>
 
 #include "mesh/mesh-defs.h"
 
@@ -380,7 +380,7 @@ void node_cleanup(void *data)
 	}
 
 	if (node->disc_watch)
-		dbus_disconnect_watch_remove(dbus_get_bus(), node->disc_watch);
+		l_dbus_remove_watch(dbus_get_bus(), node->disc_watch);
 
 	free_node_resources(node);
 }
@@ -1079,8 +1079,8 @@ static void get_managed_objects_attach_cb(struct l_dbus_message *msg,
 	if (node->path) {
 		struct l_dbus *bus = dbus_get_bus();
 
-		node->disc_watch = dbus_disconnect_watch_add(bus, node->owner,
-							app_disc_cb, node);
+		node->disc_watch = l_dbus_add_disconnect_watch(bus, node->owner,
+						app_disc_cb, node, NULL);
 		req->cb(MESH_ERROR_NONE, node->path, token);
 
 		return;
@@ -1536,7 +1536,7 @@ static struct l_dbus_message *send_call(struct l_dbus *dbus,
 
 	src = node_get_primary(node) + ele->idx;
 
-	len = dbus_get_byte_array(&iter_data, data, L_ARRAY_SIZE(data));
+	l_dbus_message_iter_get_fixed_array(&iter_data, data, &len);
 	if (!len)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 						"Mesh message is empty");
@@ -1583,7 +1583,7 @@ static struct l_dbus_message *publish_call(struct l_dbus *dbus,
 
 	src = node_get_primary(node) + ele->idx;
 
-	len = dbus_get_byte_array(&iter_data, data, L_ARRAY_SIZE(data));
+	l_dbus_message_iter_get_fixed_array(&iter_data, data, &len);
 	if (!len)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 						"Mesh message is empty");
@@ -1634,7 +1634,7 @@ static struct l_dbus_message *vendor_publish_call(struct l_dbus *dbus,
 
 	src = node_get_primary(node) + ele->idx;
 
-	len = dbus_get_byte_array(&iter_data, data, L_ARRAY_SIZE(data));
+	l_dbus_message_iter_get_fixed_array(&iter_data, data, &len);
 	if (!len)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 						"Mesh message is empty");

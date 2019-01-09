@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -24,10 +23,8 @@
 
 #include <time.h>
 #include <ell/ell.h>
-
-#include "lib/bluetooth.h"
+#include <json-c/json.h>
 #include "lib/mgmt.h"
-
 #include "src/shared/mgmt.h"
 
 #include "mesh/mesh-defs.h"
@@ -41,7 +38,7 @@
 #include "mesh/error.h"
 #include "mesh/dbus.h"
 
-struct l_dbus *dbus;
+static struct l_dbus *dbus;
 
 struct error_entry {
 	const char *dbus_err;
@@ -49,10 +46,10 @@ struct error_entry {
 };
 
 /*
- * Important: The entries in this table are ordered to enum
- * values in mesh_error_t (error.h)
+ * Important: The entries in this table follow the order of
+ * enumerated values in mesh_error (file error.h)
  */
-static struct error_entry error_table[] =
+static struct error_entry const error_table[] =
 {
 	{ NULL, NULL },
 	{ ERROR_INTERFACE ".Failed", "Operation failed" },
@@ -87,36 +84,6 @@ struct l_dbus_message *dbus_error(struct l_dbus_message *msg, int err,
 struct l_dbus *dbus_get_bus(void)
 {
 	return dbus;
-}
-
-uint32_t dbus_get_byte_array(struct l_dbus_message_iter *array, uint8_t *buf,
-							uint32_t max_len)
-{
-	uint32_t i;
-
-	for (i = 0; i < max_len; i++) {
-		if (!l_dbus_message_iter_next_entry(array, buf + i))
-			break;
-	}
-
-	return i;
-}
-
-uint32_t dbus_disconnect_watch_add(struct l_dbus *dbus, const char *name,
-					l_dbus_watch_func_t callback,
-					void *user_data)
-{
-	return l_dbus_add_signal_watch(dbus, "org.freedesktop.DBus",
-				"/org/freedesktop/DBus",
-				L_DBUS_INTERFACE_DBUS, "NameOwnerChanged",
-				L_DBUS_MATCH_ARGUMENT(0), name,
-				L_DBUS_MATCH_NONE,
-				callback, user_data);
-}
-
-bool dbus_disconnect_watch_remove(struct l_dbus *dbus, uint32_t id)
-{
-	return l_dbus_remove_signal_watch(dbus, id);
 }
 
 bool dbus_init(struct l_dbus *bus)

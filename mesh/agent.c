@@ -15,7 +15,6 @@
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
  *  Lesser General Public License for more details.
  *
- *
  */
 
 #ifdef HAVE_CONFIG_H
@@ -163,7 +162,7 @@ static void parse_oob_info(struct mesh_agent_prov_caps *caps,
 static void agent_free(void *agent_data)
 {
 	struct mesh_agent *agent = agent_data;
-	mesh_error_t err;
+	int err;
 	mesh_agent_cb_t simple_cb;
 	mesh_agent_key_cb_t key_cb;
 	mesh_agent_number_cb_t number_cb;
@@ -284,7 +283,7 @@ static struct agent_request *create_request(agent_request_type_t type,
 	return req;
 }
 
-static mesh_error_t get_reply_error(struct l_dbus_message *reply)
+static int get_reply_error(struct l_dbus_message *reply)
 {
 	const char *name, *desc;
 
@@ -303,7 +302,7 @@ static void simple_reply(struct l_dbus_message *reply, void *user_data)
 	struct mesh_agent *agent = user_data;
 	struct agent_request *req;
 	mesh_agent_cb_t cb;
-	mesh_error_t err;
+	int err;
 
 	if (!l_queue_find(agents, simple_match, agent) || !agent->req)
 		return;
@@ -329,7 +328,7 @@ static void numeric_reply(struct l_dbus_message *reply, void *user_data)
 	struct agent_request *req;
 	mesh_agent_number_cb_t cb;
 	uint32_t count;
-	mesh_error_t err;
+	int err;
 
 	if (!l_queue_find(agents, simple_match, agent) || !agent->req)
 		return;
@@ -366,7 +365,7 @@ static void key_reply(struct l_dbus_message *reply, void *user_data)
 	struct l_dbus_message_iter iter_array;
 	uint32_t n = 0, expected_len = 0;
 	uint8_t buf[64];
-	mesh_error_t err;
+	int err;
 
 	if (!l_queue_find(agents, simple_match, agent) || !agent->req)
 		return;
@@ -415,7 +414,7 @@ done:
 	agent->req = NULL;
 }
 
-static mesh_error_t output_request(struct mesh_agent *agent, const char *action,
+static int output_request(struct mesh_agent *agent, const char *action,
 					agent_request_type_t type, uint32_t cnt,
 					void *cb, void *user_data)
 {
@@ -451,7 +450,7 @@ static mesh_error_t output_request(struct mesh_agent *agent, const char *action,
 	return MESH_ERROR_NONE;
 }
 
-static mesh_error_t prompt_input(struct mesh_agent *agent, const char *action,
+static int prompt_input(struct mesh_agent *agent, const char *action,
 					agent_request_type_t type, bool numeric,
 					void *cb, void *user_data)
 {
@@ -493,7 +492,7 @@ static mesh_error_t prompt_input(struct mesh_agent *agent, const char *action,
 	return MESH_ERROR_NONE;
 }
 
-static mesh_error_t request_key(struct mesh_agent *agent,
+static int request_key(struct mesh_agent *agent,
 					agent_request_type_t type,
 					void *cb, void *user_data)
 {
@@ -526,9 +525,8 @@ static mesh_error_t request_key(struct mesh_agent *agent,
 	return MESH_ERROR_NONE;
 }
 
-mesh_error_t mesh_agent_display_string(struct mesh_agent *agent,
-					const char *str, mesh_agent_cb_t cb,
-					void *user_data)
+int mesh_agent_display_string(struct mesh_agent *agent, const char *str,
+				mesh_agent_cb_t cb, void *user_data)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 	struct l_dbus_message *msg;
@@ -563,7 +561,7 @@ mesh_error_t mesh_agent_display_string(struct mesh_agent *agent,
 
 }
 
-mesh_error_t mesh_agent_display_number(struct mesh_agent *agent, bool initiator,
+int mesh_agent_display_number(struct mesh_agent *agent, bool initiator,
 					uint8_t action, uint32_t count,
 					mesh_agent_cb_t cb, void *user_data)
 {
@@ -583,7 +581,7 @@ mesh_error_t mesh_agent_display_number(struct mesh_agent *agent, bool initiator,
 	return output_request(agent, str_type, type, count, cb, user_data);
 }
 
-mesh_error_t mesh_agent_prompt_number(struct mesh_agent *agent, bool initiator,
+int mesh_agent_prompt_number(struct mesh_agent *agent, bool initiator,
 						uint8_t action,
 						mesh_agent_number_cb_t cb,
 						void *user_data)
@@ -604,21 +602,21 @@ mesh_error_t mesh_agent_prompt_number(struct mesh_agent *agent, bool initiator,
 	return prompt_input(agent, str_type, type, true, cb, user_data);
 }
 
-mesh_error_t mesh_agent_prompt_alpha(struct mesh_agent *agent,
-				mesh_agent_key_cb_t cb, void *user_data)
+int mesh_agent_prompt_alpha(struct mesh_agent *agent, mesh_agent_key_cb_t cb,
+								void *user_data)
 {
 	return prompt_input(agent, "in-alpha", MESH_AGENT_REQUEST_IN_ALPHA,
 							false, cb, user_data);
 }
 
-mesh_error_t mesh_agent_request_static(struct mesh_agent *agent,
-				mesh_agent_key_cb_t cb, void *user_data)
+int mesh_agent_request_static(struct mesh_agent *agent, mesh_agent_key_cb_t cb,
+								void *user_data)
 {
 	return prompt_input(agent, "static-oob", MESH_AGENT_REQUEST_STATIC_OOB,
 							false, cb, user_data);
 }
 
-mesh_error_t mesh_agent_request_private_key(struct mesh_agent *agent,
+int mesh_agent_request_private_key(struct mesh_agent *agent,
 				mesh_agent_key_cb_t cb, void *user_data)
 {
 	return request_key(agent, MESH_AGENT_REQUEST_PRIVATE_KEY, cb,
@@ -626,7 +624,7 @@ mesh_error_t mesh_agent_request_private_key(struct mesh_agent *agent,
 
 }
 
-mesh_error_t mesh_agent_request_public_key(struct mesh_agent *agent,
+int mesh_agent_request_public_key(struct mesh_agent *agent,
 				mesh_agent_key_cb_t cb, void *user_data)
 {
 	return request_key(agent, MESH_AGENT_REQUEST_PUBLIC_KEY, cb,
