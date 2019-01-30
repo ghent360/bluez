@@ -2346,6 +2346,9 @@ void packet_print_version(const char *label, uint8_t version,
 	case 0x09:
 		str = "Bluetooth 5.0";
 		break;
+	case 0x0a:
+		str = "Bluetooth 5.1";
+		break;
 	default:
 		str = "Reserved";
 		break;
@@ -2586,23 +2589,34 @@ static const struct bitfield_data features_page2[] = {
 };
 
 static const struct bitfield_data features_le[] = {
-	{  0, "LE Encryption"				},
-	{  1, "Connection Parameter Request Procedure"	},
-	{  2, "Extended Reject Indication"		},
-	{  3, "Slave-initiated Features Exchange"	},
-	{  4, "LE Ping"					},
-	{  5, "LE Data Packet Length Extension"		},
-	{  6, "LL Privacy"				},
-	{  7, "Extended Scanner Filter Policies"	},
-	{  8, "LE 2M PHY"				},
-	{  9, "Stable Modulation Index - Transmitter"	},
-	{ 10, "Stable Modulation Index - Receiver"	},
-	{ 11, "LE Coded PHY"				},
-	{ 12, "LE Extended Advertising"			},
-	{ 13, "LE Periodic Advertising"			},
-	{ 14, "Channel Selection Algorithm #2"		},
-	{ 15, "LE Power Class 1"			},
-	{ 16, "Minimum Number of Used Channels Procedure"},
+	{  0, "LE Encryption"					},
+	{  1, "Connection Parameter Request Procedure"		},
+	{  2, "Extended Reject Indication"			},
+	{  3, "Slave-initiated Features Exchange"		},
+	{  4, "LE Ping"						},
+	{  5, "LE Data Packet Length Extension"			},
+	{  6, "LL Privacy"					},
+	{  7, "Extended Scanner Filter Policies"		},
+	{  8, "LE 2M PHY"					},
+	{  9, "Stable Modulation Index - Transmitter"		},
+	{ 10, "Stable Modulation Index - Receiver"		},
+	{ 11, "LE Coded PHY"					},
+	{ 12, "LE Extended Advertising"				},
+	{ 13, "LE Periodic Advertising"				},
+	{ 14, "Channel Selection Algorithm #2"			},
+	{ 15, "LE Power Class 1"				},
+	{ 16, "Minimum Number of Used Channels Procedure"	},
+	{ 17, "Connection CTE Request"				},
+	{ 18, "Connection CTE Response"				},
+	{ 19, "Connectionless CTE Transmitter"			},
+	{ 20, "Connectionless CTE Receiver"			},
+	{ 21, "Antenna Switching During CTE Transmission (AoD)"	},
+	{ 22, "Antenna Switching During CTE Reception (AoA)"	},
+	{ 23, "Receiving Constant Tone Extensions"		},
+	{ 24, "Periodic Advertising Sync Transfer - Sender"	},
+	{ 25, "Periodic Advertising Sync Transfer - Recipient"	},
+	{ 26, "Sleep Clock Accuracy Updates"			},
+	{ 27, "Remote Public Key Validation"			},
 	{ }
 };
 
