@@ -62,6 +62,7 @@
 struct desc {
 	struct chrc *chrc;
 	char *path;
+	uint16_t handle;
 	char *uuid;
 	char **flags;
 	int value_len;
@@ -72,6 +73,7 @@ struct desc {
 struct chrc {
 	struct service *service;
 	char *path;
+	uint16_t handle;
 	char *uuid;
 	char **flags;
 	bool notifying;
@@ -88,6 +90,7 @@ struct chrc {
 struct service {
 	DBusConnection *conn;
 	char *path;
+	uint16_t handle;
 	char *uuid;
 	bool primary;
 	GList *chrcs;
@@ -117,21 +120,25 @@ static void print_service(struct service *service, const char *description)
 
 	text = bt_uuidstr_to_str(service->uuid);
 	if (!text)
-		bt_shell_printf("%s%s%s%s Service\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%s%s Service (Handle 0x%04x)\n\t%s\n\t"
+					"%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
 					service->primary ? "Primary" :
 					"Secondary",
-					service->path, service->uuid);
+					service->handle, service->path,
+					service->uuid);
 	else
-		bt_shell_printf("%s%s%s%s Service\n\t%s\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%s%s Service (Handle 0x%04x)\n\t%s\n\t%s"
+					"\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
 					service->primary ? "Primary" :
 					"Secondary",
-					service->path, service->uuid, text);
+					service->handle, service->path,
+					service->uuid, text);
 }
 
 static void print_inc_service(struct service *service, const char *description)
@@ -140,21 +147,25 @@ static void print_inc_service(struct service *service, const char *description)
 
 	text = bt_uuidstr_to_str(service->uuid);
 	if (!text)
-		bt_shell_printf("%s%s%s%s Included Service\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%s%s Included Service (Handle 0x%04x)\n\t"
+					"%s\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
 					service->primary ? "Primary" :
 					"Secondary",
-					service->path, service->uuid);
+					service->handle, service->path,
+					service->uuid);
 	else
-		bt_shell_printf("%s%s%s%s Included Service\n\t%s\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%s%s Included Service (Handle 0x%04x)\n\t"
+					"%s\n\t%s\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
 					service->primary ? "Primary" :
 					"Secondary",
-					service->path, service->uuid, text);
+					service->handle, service->path,
+					service->uuid, text);
 }
 
 static void print_service_proxy(GDBusProxy *proxy, const char *description)
@@ -207,17 +218,20 @@ static void print_chrc(struct chrc *chrc, const char *description)
 
 	text = bt_uuidstr_to_str(chrc->uuid);
 	if (!text)
-		bt_shell_printf("%s%s%sCharacteristic\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%sCharacteristic (Handle 0x%04x)\n\t%s\n\t"
+					"%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
-					chrc->path, chrc->uuid);
+					chrc->handle, chrc->path, chrc->uuid);
 	else
-		bt_shell_printf("%s%s%sCharacteristic\n\t%s\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%sCharacteristic (Handle 0x%04x)\n\t%s\n\t"
+					"%s\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
-					chrc->path, chrc->uuid, text);
+					chrc->handle, chrc->path, chrc->uuid,
+					text);
 }
 
 static void print_characteristic(GDBusProxy *proxy, const char *description)
@@ -297,17 +311,20 @@ static void print_desc(struct desc *desc, const char *description)
 
 	text = bt_uuidstr_to_str(desc->uuid);
 	if (!text)
-		bt_shell_printf("%s%s%sDescriptor\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%sDescriptor (Handle 0x%04x)\n\t%s\n\t"
+					"%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
-					desc->path, desc->uuid);
+					desc->handle, desc->path, desc->uuid);
 	else
-		bt_shell_printf("%s%s%sDescriptor\n\t%s\n\t%s\n\t%s\n",
+		bt_shell_printf("%s%s%sDescriptor (Handle 0x%04x)\n\t%s\n\t"
+					"%s\n\t%s\n",
 					description ? "[" : "",
 					description ? : "",
 					description ? "] " : "",
-					desc->path, desc->uuid, text);
+					desc->handle, desc->path, desc->uuid,
+					text);
 }
 
 static void print_descriptor(GDBusProxy *proxy, const char *description)
@@ -397,8 +414,50 @@ static void list_attributes(const char *path, GList *source)
 	}
 }
 
+static void list_descs(GList *descs)
+{
+	GList *l;
+
+	for (l = descs; l; l = g_list_next(l)) {
+		struct desc *desc = l->data;
+
+		print_desc(desc, NULL);
+	}
+}
+
+static void list_chrcs(GList *chrcs)
+{
+	GList *l;
+
+	for (l = chrcs; l; l = g_list_next(l)) {
+		struct chrc *chrc = l->data;
+
+		print_chrc(chrc, NULL);
+
+		list_descs(chrc->descs);
+	}
+}
+
+static void list_services(void)
+{
+	GList *l;
+
+	for (l = local_services; l; l = g_list_next(l)) {
+		struct service *service = l->data;
+
+		print_service(service, NULL);
+
+		list_chrcs(service->chrcs);
+	}
+}
+
 void gatt_list_attributes(const char *path)
 {
+	if (path && !strcmp(path, "local")) {
+		list_services();
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
+
 	list_attributes(path, services);
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
@@ -1259,6 +1318,36 @@ static void service_free(void *data)
 	g_free(service);
 }
 
+static gboolean service_get_handle(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct service *service = data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16,
+						&service->handle);
+
+	return TRUE;
+}
+
+static void service_set_handle(const GDBusPropertyTable *property,
+			DBusMessageIter *value, GDBusPendingPropertySet id,
+			void *data)
+{
+	struct service *service = data;
+
+	if (dbus_message_iter_get_arg_type(value) != DBUS_TYPE_UINT16) {
+		g_dbus_pending_property_error(id, "org.bluez.InvalidArguments",
+					"Invalid arguments in method call");
+		return;
+	}
+
+	dbus_message_iter_get_basic(value, &service->handle);
+
+	print_service(service, COLORED_CHG);
+
+	g_dbus_pending_property_success(id);
+}
+
 static gboolean service_get_uuid(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
@@ -1326,6 +1415,7 @@ static gboolean service_exist_includes(const GDBusPropertyTable *property,
 
 
 static const GDBusPropertyTable service_properties[] = {
+	{ "Handle", "q", service_get_handle, service_set_handle },
 	{ "UUID", "s", service_get_uuid },
 	{ "Primary", "b", service_get_primary },
 	{ "Includes", "ao", service_get_includes,
@@ -1359,8 +1449,12 @@ void gatt_register_service(DBusConnection *conn, GDBusProxy *proxy,
 	service = g_new0(struct service, 1);
 	service->conn = conn;
 	service->uuid = g_strdup(argv[1]);
-	service->path = g_strdup_printf("%s/service%p", APP_PATH, service);
+	service->path = g_strdup_printf("%s/service%u", APP_PATH,
+					g_list_length(local_services));
 	service->primary = primary;
+
+	if (argc > 2)
+		service->handle = atoi(argv[2]);
 
 	if (g_dbus_register_interface(conn, service->path,
 					SERVICE_INTERFACE, NULL, NULL,
@@ -1493,6 +1587,35 @@ void gatt_unregister_include(DBusConnection *conn, GDBusProxy *proxy,
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
+static gboolean chrc_get_handle(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct chrc *chrc = data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16, &chrc->handle);
+
+	return TRUE;
+}
+
+static void chrc_set_handle(const GDBusPropertyTable *property,
+			DBusMessageIter *value, GDBusPendingPropertySet id,
+			void *data)
+{
+	struct chrc *chrc = data;
+
+	if (dbus_message_iter_get_arg_type(value) != DBUS_TYPE_UINT16) {
+		g_dbus_pending_property_error(id, "org.bluez.InvalidArguments",
+					"Invalid arguments in method call");
+		return;
+	}
+
+	dbus_message_iter_get_basic(value, &chrc->handle);
+
+	print_chrc(chrc, COLORED_CHG);
+
+	g_dbus_pending_property_success(id);
+}
+
 static gboolean chrc_get_uuid(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
@@ -1616,6 +1739,7 @@ static gboolean chrc_notify_acquired_exists(const GDBusPropertyTable *property,
 }
 
 static const GDBusPropertyTable chrc_properties[] = {
+	{ "Handle", "q", chrc_get_handle, chrc_set_handle, NULL },
 	{ "UUID", "s", chrc_get_uuid, NULL, NULL },
 	{ "Service", "o", chrc_get_service, NULL, NULL },
 	{ "Value", "ay", chrc_get_value, NULL, NULL },
@@ -2207,9 +2331,13 @@ void gatt_register_chrc(DBusConnection *conn, GDBusProxy *proxy,
 	chrc = g_new0(struct chrc, 1);
 	chrc->service = service;
 	chrc->uuid = g_strdup(argv[1]);
-	chrc->path = g_strdup_printf("%s/chrc%p", service->path, chrc);
+	chrc->path = g_strdup_printf("%s/chrc%u", service->path,
+					g_list_length(service->chrcs));
 	chrc->flags = g_strsplit(argv[2], ",", -1);
 	chrc->authorization_req = attr_authorization_flag_exists(chrc->flags);
+
+	if (argc > 3)
+		chrc->handle = atoi(argv[3]);
 
 	if (g_dbus_register_interface(conn, chrc->path, CHRC_INTERFACE,
 					chrc_methods, NULL, chrc_properties,
@@ -2342,6 +2470,35 @@ static const GDBusMethodTable desc_methods[] = {
 	{ }
 };
 
+static gboolean desc_get_handle(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct desc *desc = data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16, &desc->handle);
+
+	return TRUE;
+}
+
+static void desc_set_handle(const GDBusPropertyTable *property,
+			DBusMessageIter *value, GDBusPendingPropertySet id,
+			void *data)
+{
+	struct desc *desc = data;
+
+	if (dbus_message_iter_get_arg_type(value) != DBUS_TYPE_UINT16) {
+		g_dbus_pending_property_error(id, "org.bluez.InvalidArguments",
+					"Invalid arguments in method call");
+		return;
+	}
+
+	dbus_message_iter_get_basic(value, &desc->handle);
+
+	print_desc(desc, COLORED_CHG);
+
+	g_dbus_pending_property_success(id);
+}
+
 static gboolean desc_get_uuid(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
@@ -2400,6 +2557,7 @@ static gboolean desc_get_flags(const GDBusPropertyTable *property,
 }
 
 static const GDBusPropertyTable desc_properties[] = {
+	{ "Handle", "q", desc_get_handle, desc_set_handle, NULL },
 	{ "UUID", "s", desc_get_uuid, NULL, NULL },
 	{ "Characteristic", "o", desc_get_chrc, NULL, NULL },
 	{ "Value", "ay", desc_get_value, NULL, NULL },
@@ -2444,8 +2602,12 @@ void gatt_register_desc(DBusConnection *conn, GDBusProxy *proxy,
 	desc = g_new0(struct desc, 1);
 	desc->chrc = g_list_last(service->chrcs)->data;
 	desc->uuid = g_strdup(argv[1]);
-	desc->path = g_strdup_printf("%s/desc%p", desc->chrc->path, desc);
+	desc->path = g_strdup_printf("%s/desc%u", desc->chrc->path,
+					g_list_length(desc->chrc->descs));
 	desc->flags = g_strsplit(argv[2], ",", -1);
+
+	if (argc > 3)
+		desc->handle = atoi(argv[3]);
 
 	if (g_dbus_register_interface(conn, desc->path, DESC_INTERFACE,
 					desc_methods, NULL, desc_properties,

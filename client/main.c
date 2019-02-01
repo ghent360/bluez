@@ -1905,12 +1905,21 @@ static void cmd_disconn(int argc, char *argv[])
 static void cmd_list_attributes(int argc, char *argv[])
 {
 	GDBusProxy *proxy;
+	const char *path;
+
+	if (argc > 1 && !strcmp(argv[1], "local")) {
+		path = argv[1];
+		goto done;
+	}
 
 	proxy = find_device(argc, argv);
 	if (!proxy)
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
-	gatt_list_attributes(g_dbus_proxy_get_path(proxy));
+	path = g_dbus_proxy_get_path(proxy);
+
+done:
+	gatt_list_attributes(path);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
@@ -2596,8 +2605,8 @@ static const struct bt_shell_menu gatt_menu = {
 	.name = "gatt",
 	.desc = "Generic Attribute Submenu",
 	.entries = {
-	{ "list-attributes", "[dev]", cmd_list_attributes, "List attributes",
-							dev_generator },
+	{ "list-attributes", "[dev/local]", cmd_list_attributes,
+				"List attributes", dev_generator },
 	{ "select-attribute", "<attribute/UUID>",  cmd_select_attribute,
 				"Select attribute", attribute_generator },
 	{ "attribute-info", "[attribute/UUID]",  cmd_attribute_info,
@@ -2619,22 +2628,23 @@ static const struct bt_shell_menu gatt_menu = {
 						"Register profile to connect" },
 	{ "unregister-application", NULL, cmd_unregister_app,
 						"Unregister profile" },
-	{ "register-service", "<UUID>", cmd_register_service,
+	{ "register-service", "<UUID> [handle]", cmd_register_service,
 					"Register application service."  },
 	{ "unregister-service", "<UUID/object>", cmd_unregister_service,
 					"Unregister application service" },
-	{ "register-includes", "<UUID>", cmd_register_includes,
+	{ "register-includes", "<UUID> [handle]", cmd_register_includes,
 					"Register as Included service in." },
 	{ "unregister-includes", "<Service-UUID><Inc-UUID>",
 			cmd_unregister_includes,
 				 "Unregister Included service." },
-	{ "register-characteristic", "<UUID> <Flags=read,write,notify...> "
-					, cmd_register_characteristic,
-					"Register application characteristic" },
+	{ "register-characteristic",
+			"<UUID> <Flags=read,write,notify...> [handle]",
+			cmd_register_characteristic,
+			"Register application characteristic" },
 	{ "unregister-characteristic", "<UUID/object>",
 				cmd_unregister_characteristic,
 				"Unregister application characteristic" },
-	{ "register-descriptor", "<UUID> <Flags=read,write...>",
+	{ "register-descriptor", "<UUID> <Flags=read,write...> [handle]",
 					cmd_register_descriptor,
 					"Register application descriptor" },
 	{ "unregister-descriptor", "<UUID/object>",
