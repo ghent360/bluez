@@ -304,7 +304,7 @@ bool mesh_init(uint16_t index, const char *config_dir)
 	if (initialized)
 		return true;
 
-	if (!init_mgmt()) {
+	if (index == MGMT_INDEX_NONE && !init_mgmt()) {
 		l_error("Failed to initialize mesh management");
 		return false;
 	}
@@ -326,12 +326,18 @@ bool mesh_init(uint16_t index, const char *config_dir)
 	if (!storage_load_nodes(config_dir))
 		return false;
 
-	l_debug("send read index_list");
-	if (mgmt_send(mgmt_mesh, MGMT_OP_READ_INDEX_LIST,
-				MGMT_INDEX_NONE, 0, NULL,
-				read_index_list_cb, NULL, NULL) <= 0)
-		return false;
-
+	if (index == MGMT_INDEX_NONE) {
+		/* Use MGMT to find a candidate controller */
+		l_debug("send read index_list");
+		if (mgmt_send(mgmt_mesh, MGMT_OP_READ_INDEX_LIST,
+					MGMT_INDEX_NONE, 0, NULL,
+					read_index_list_cb, NULL, NULL) <= 0)
+			return false;
+	} else {
+		/* Open specified controller without searching */
+		start_io(mesh.req_index);
+		return mesh.io != NULL;
+	}
 	return true;
 }
 
@@ -665,7 +671,7 @@ static struct l_dbus_message *attach_call(struct l_dbus *dbus,
 						struct l_dbus_message *msg,
 						void *user_data)
 {
-	uint64_t token = 1;
+	uint64_t token;
 	const char *app_path, *sender;
 	struct attach_data *pending;
 
