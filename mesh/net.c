@@ -970,33 +970,9 @@ int mesh_net_del_key(struct mesh_net *net, uint16_t idx)
 	return MESH_STATUS_SUCCESS;
 }
 
-int mesh_net_add_key(struct mesh_net *net, bool update, uint16_t idx,
-							const void *value)
+static int add_key(struct mesh_net *net, uint16_t idx, const uint8_t *value)
 {
-	int status;
 	struct mesh_subnet *subnet;
-
-	subnet = l_queue_find(net->subnets, match_key_index,
-							L_UINT_TO_PTR(idx));
-
-	if (update) {
-		if (subnet && subnet->kr_phase == KEY_REFRESH_PHASE_NONE) {
-			l_info("Start key refresh");
-			status = mesh_net_kr_phase_one(net, idx, value);
-			if (status == MESH_STATUS_SUCCESS &&
-				!storage_net_key_add(net, idx,
-						value, KEY_REFRESH_PHASE_ONE))
-				return MESH_STATUS_STORAGE_FAIL;
-		} else
-			return MESH_STATUS_CANNOT_UPDATE;
-	}
-
-	if (subnet) {
-		if (net_key_confirm(subnet->net_key_cur, value))
-			return MESH_STATUS_SUCCESS;
-		else
-			return MESH_STATUS_IDX_ALREADY_STORED;
-	}
 
 	subnet = subnet_new(net, idx);
 	if (!subnet)
@@ -1014,8 +990,33 @@ int mesh_net_add_key(struct mesh_net *net, bool update, uint16_t idx,
 		return MESH_STATUS_INSUFF_RESOURCES;
 	}
 
-	if (!storage_net_key_add(net, idx, value,
-					KEY_REFRESH_PHASE_NONE)) {
+	return MESH_STATUS_SUCCESS;
+}
+
+/*
+ * This function is called when Configuration Server Model receives
+ * a NETKEY_ADD command
+ */
+int mesh_net_add_key(struct mesh_net *net, uint16_t idx, const uint8_t *value)
+{
+	struct mesh_subnet *subnet;
+	int status;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+
+	if (subnet) {
+		if (net_key_confirm(subnet->net_key_cur, value))
+			return MESH_STATUS_SUCCESS;
+		else
+			return MESH_STATUS_IDX_ALREADY_STORED;
+	}
+
+	status = add_key(net, idx, value);
+	if (status != MESH_STATUS_SUCCESS)
+		return status;
+
+	if (!storage_net_key_add(net, idx, value, false)) {
 		l_queue_remove(net->subnets, subnet);
 		subnet_free(subnet);
 		return MESH_STATUS_STORAGE_FAIL;
@@ -2627,6 +2628,74 @@ static void iv_upd_to(struct l_timeout *upd_timeout, void *user_data)
 	}
 }
 
+
+static int key_refresh_phase_two(struct mesh_net *net, uint16_t idx)
+{
+	struct mesh_subnet *subnet;
+
+	if (!net)
+		return MESH_STATUS_UNSPECIFIED_ERROR;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+
+	if (!subnet || !subnet->net_key_upd)
+		return MESH_STATUS_INVALID_NETKEY;
+
+	l_info("Key refresh procedure phase 2: start using new net TX keys");
+	subnet->key_refresh = 1;
+	subnet->net_key_tx = subnet->net_key_upd;
+	/* TODO: Provisioner may need to stay in phase three until
+	 * it hears beacons from all the nodes
+	 */
+	subnet->kr_phase = KEY_REFRESH_PHASE_TWO;
+	set_network_beacon(subnet, net);
+
+	if (net->friend_addr)
+		frnd_key_refresh(net, 2);
+	else
+		l_queue_foreach(net->friends, frnd_kr_phase2, net);
+
+	storage_set_key_refresh_phase(net, idx, KEY_REFRESH_PHASE_TWO);
+
+	return MESH_STATUS_SUCCESS;
+}
+
+static int key_refresh_finish(struct mesh_net *net, uint16_t idx)
+{
+	struct mesh_subnet *subnet;
+
+	if (!net)
+		return MESH_STATUS_UNSPECIFIED_ERROR;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+	if (!subnet || !subnet->net_key_upd)
+		return MESH_STATUS_INVALID_NETKEY;
+
+	if (subnet->kr_phase == KEY_REFRESH_PHASE_NONE)
+		return MESH_STATUS_SUCCESS;
+
+	l_info("Key refresh phase 3: use new keys only, discard old ones");
+
+	/* Switch to using new keys, discard old ones */
+	net_key_unref(subnet->net_key_cur);
+	subnet->net_key_tx = subnet->net_key_cur = subnet->net_key_upd;
+	subnet->net_key_upd = 0;
+	subnet->key_refresh = 0;
+	subnet->kr_phase = KEY_REFRESH_PHASE_NONE;
+	set_network_beacon(subnet, net);
+
+	if (net->friend_addr)
+		frnd_key_refresh(net, 3);
+	else
+		l_queue_foreach(net->friends, frnd_kr_phase3, net);
+
+	storage_set_key_refresh_phase(net, idx, KEY_REFRESH_PHASE_NONE);
+
+	return MESH_STATUS_SUCCESS;
+}
+
 static void update_iv_kr_state(struct mesh_subnet *subnet, uint32_t iv_index,
 				bool iv_update, bool kr_transition,
 				bool rxed_key_refresh, bool lpn)
@@ -2678,11 +2747,11 @@ static void update_iv_kr_state(struct mesh_subnet *subnet, uint32_t iv_index,
 
 		/* Figure out the key refresh phase */
 		if (kr_transition) {
+			l_debug("Beacon based KR phase change");
 			if (rxed_key_refresh)
-				mesh_net_key_refresh_phase_two(net,
-								subnet->idx);
+				key_refresh_phase_two(net, subnet->idx);
 			else
-				mesh_net_key_refresh_finish(net, subnet->idx);
+				key_refresh_finish(net, subnet->idx);
 		}
 
 		if (!lpn)
@@ -2715,9 +2784,9 @@ static void update_iv_kr_state(struct mesh_subnet *subnet, uint32_t iv_index,
 	/* Figure out the key refresh phase */
 	if (kr_transition) {
 		if (rxed_key_refresh)
-			mesh_net_key_refresh_phase_two(net, subnet->idx);
+			key_refresh_phase_two(net, subnet->idx);
 		else
-			mesh_net_key_refresh_finish(net, subnet->idx);
+			key_refresh_finish(net, subnet->idx);
 	}
 
 	if (!lpn)
@@ -2933,6 +3002,54 @@ bool mesh_net_set_beacon_mode(struct mesh_net *net, bool enable)
 
 		l_queue_foreach(net->subnets, start_network_beacon, net);
 	}
+
+	return true;
+}
+
+/* This function is called when network keys are restored from storage. */
+bool mesh_net_set_key(struct mesh_net *net, uint16_t idx, const uint8_t *key,
+					const uint8_t *new_key, uint8_t phase)
+{
+	struct mesh_subnet *subnet;
+	int status;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+	if (subnet)
+		return false;
+
+	/* Current key must be always present */
+	if (!key)
+		return false;
+
+	/* If key refresh is in progress, a new key must be present */
+	if (phase != KEY_REFRESH_PHASE_NONE && !new_key)
+		return false;
+
+	status = add_key(net, idx, key);
+	if (status != MESH_STATUS_SUCCESS)
+		return false;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+	if (!subnet)
+		return false;
+
+	if (new_key)
+		subnet->net_key_upd = net_key_add(new_key);
+
+	/* Preserve key refresh state to generate secure beacon flags*/
+	if (phase == KEY_REFRESH_PHASE_TWO) {
+		subnet->key_refresh = 1;
+		subnet->net_key_tx = subnet->net_key_upd;
+	}
+
+	subnet->kr_phase = phase;
+
+	set_network_beacon(subnet, net);
+
+	if (net->io)
+		start_network_beacon(subnet, net);
 
 	return true;
 }
@@ -3538,18 +3655,19 @@ uint8_t mesh_net_key_refresh_phase_set(struct mesh_net *net, uint16_t idx,
 
 	switch (transition) {
 	case 2:
-		if (mesh_net_key_refresh_phase_two(net, idx)
+		if (key_refresh_phase_two(net, idx)
 							!= MESH_STATUS_SUCCESS)
 			return MESH_STATUS_CANNOT_SET;
 		break;
 	case 3:
-		if (mesh_net_key_refresh_finish(net, idx)
+		if (key_refresh_finish(net, idx)
 							!= MESH_STATUS_SUCCESS)
 			return MESH_STATUS_CANNOT_SET;
 		break;
 	default:
 		return MESH_STATUS_CANNOT_SET;
 	}
+
 	return MESH_STATUS_SUCCESS;
 }
 
@@ -3570,7 +3688,11 @@ uint8_t mesh_net_key_refresh_phase_get(struct mesh_net *net, uint16_t idx,
 	return MESH_STATUS_SUCCESS;
 }
 
-int mesh_net_kr_phase_one(struct mesh_net *net, uint16_t idx,
+/*
+ * This function is called when Configuration Server Model receives
+ * a NETKEY_UPDATE command
+ */
+int mesh_net_update_key(struct mesh_net *net, uint16_t idx,
 							const uint8_t *value)
 {
 	struct mesh_subnet *subnet;
@@ -3580,7 +3702,16 @@ int mesh_net_kr_phase_one(struct mesh_net *net, uint16_t idx,
 
 	subnet = l_queue_find(net->subnets, match_key_index,
 							L_UINT_TO_PTR(idx));
+
 	if (!subnet)
+		return MESH_STATUS_INVALID_NETKEY;
+
+	/* Check if the key has been already successfully updated */
+	if (subnet->kr_phase == KEY_REFRESH_PHASE_ONE &&
+				net_key_confirm(subnet->net_key_upd, value))
+		return MESH_STATUS_SUCCESS;
+
+	if (subnet->kr_phase != KEY_REFRESH_PHASE_NONE)
 		return MESH_STATUS_CANNOT_UPDATE;
 
 	if (subnet->net_key_upd) {
@@ -3606,71 +3737,10 @@ int mesh_net_kr_phase_one(struct mesh_net *net, uint16_t idx,
 
 	l_info("key refresh phase 1: Key ID %d", subnet->net_key_upd);
 
+	if (!storage_net_key_add(net, idx, value, true))
+		return MESH_STATUS_STORAGE_FAIL;
+
 	subnet->kr_phase = KEY_REFRESH_PHASE_ONE;
-
-	return MESH_STATUS_SUCCESS;
-}
-
-int mesh_net_key_refresh_phase_two(struct mesh_net *net, uint16_t idx)
-{
-	struct mesh_subnet *subnet;
-
-	if (!net)
-		return MESH_STATUS_UNSPECIFIED_ERROR;
-
-	subnet = l_queue_find(net->subnets, match_key_index,
-							L_UINT_TO_PTR(idx));
-
-	if (!subnet || !subnet->net_key_upd)
-		return MESH_STATUS_INVALID_NETKEY;
-
-	l_info("Key refresh procedure phase 2: start using new net TX keys");
-	subnet->key_refresh = 1;
-	subnet->net_key_tx = subnet->net_key_upd;
-	/* TODO: Provisioner may need to stay in phase three until
-	 * it hears beacons from all the nodes
-	 */
-	subnet->kr_phase = KEY_REFRESH_PHASE_TWO;
-	set_network_beacon(subnet, net);
-
-	if (net->friend_addr)
-		frnd_key_refresh(net, 2);
-	else
-		l_queue_foreach(net->friends, frnd_kr_phase2, net);
-
-	return MESH_STATUS_SUCCESS;
-}
-
-int mesh_net_key_refresh_finish(struct mesh_net *net, uint16_t idx)
-{
-	struct mesh_subnet *subnet;
-
-	if (!net)
-		return MESH_STATUS_UNSPECIFIED_ERROR;
-
-	subnet = l_queue_find(net->subnets, match_key_index,
-							L_UINT_TO_PTR(idx));
-
-	if (!subnet || !subnet->net_key_upd)
-		return MESH_STATUS_INVALID_NETKEY;
-
-	if (subnet->kr_phase == KEY_REFRESH_PHASE_NONE)
-		return MESH_STATUS_SUCCESS;
-
-	l_info("Key refresh phase 3: use new keys only, discard old ones");
-
-	/* Switch to using new keys, discard old ones */
-	net_key_unref(subnet->net_key_cur);
-	subnet->net_key_tx = subnet->net_key_cur = subnet->net_key_upd;
-	subnet->net_key_upd = 0;
-	subnet->key_refresh = 0;
-	subnet->kr_phase = KEY_REFRESH_PHASE_NONE;
-	set_network_beacon(subnet, net);
-
-	if (net->friend_addr)
-		frnd_key_refresh(net, 3);
-	else
-		l_queue_foreach(net->friends, frnd_kr_phase3, net);
 
 	return MESH_STATUS_SUCCESS;
 }

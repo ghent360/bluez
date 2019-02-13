@@ -120,11 +120,7 @@ static bool read_net_keys_cb(uint16_t idx, uint8_t *key, uint8_t *new_key,
 	if (!net)
 		return false;
 
-	if (mesh_net_add_key(net, false, idx, key) != MESH_STATUS_SUCCESS)
-		return false;
-	/* TODO: handle restoring key refresh phase and new keys */
-
-	return true;
+	return mesh_net_set_key(net, idx, key, new_key, phase);
 }
 
 static bool read_app_keys_cb(uint16_t net_idx, uint16_t app_idx, uint8_t *key,
@@ -300,12 +296,15 @@ bool storage_app_key_del(struct mesh_net *net, uint16_t net_idx,
 }
 
 bool storage_net_key_add(struct mesh_net *net, uint16_t net_idx,
-					const uint8_t key[16], int phase)
+					const uint8_t key[16], bool update)
 {
 	struct mesh_node *node = mesh_net_node_get(net);
 	json_object *jnode = node_jconfig_get(node);
 
-	return mesh_db_net_key_add(jnode, net_idx, key, phase);
+	if (!update)
+		return mesh_db_net_key_add(jnode, net_idx, key);
+	else
+		return mesh_db_net_key_update(jnode, net_idx, key);
 }
 
 bool storage_net_key_del(struct mesh_net *net, uint16_t net_idx)
@@ -323,6 +322,15 @@ bool storage_set_iv_index(struct mesh_net *net, uint32_t iv_index,
 	json_object *jnode = node_jconfig_get(node);
 
 	return mesh_db_write_iv_index(jnode, iv_index, update);
+}
+
+bool storage_set_key_refresh_phase(struct mesh_net *net, uint16_t net_idx,
+								uint8_t phase)
+{
+	struct mesh_node *node = mesh_net_node_get(net);
+	json_object *jnode = node_jconfig_get(node);
+
+	return mesh_db_net_key_set_phase(jnode, net_idx, phase);
 }
 
 bool storage_write_sequence_number(struct mesh_net *net, uint32_t seq)

@@ -280,8 +280,12 @@ bool mesh_net_set_relay_mode(struct mesh_net *net, bool enable, uint8_t cnt,
 							uint8_t interval);
 bool mesh_net_set_friend_mode(struct mesh_net *net, bool enable);
 int mesh_net_del_key(struct mesh_net *net, uint16_t net_idx);
-int mesh_net_add_key(struct mesh_net *net, bool update,
-					uint16_t net_idx, const void *key);
+int mesh_net_add_key(struct mesh_net *net, uint16_t net_idx,
+							const uint8_t *key);
+int mesh_net_update_key(struct mesh_net *net, uint16_t net_idx,
+							const uint8_t *key);
+bool mesh_net_set_key(struct mesh_net *net, uint16_t idx, const uint8_t *key,
+					const uint8_t *new_key, uint8_t phase);
 uint32_t mesh_net_get_iv_index(struct mesh_net *net);
 void mesh_net_get_snb_state(struct mesh_net *net,
 					uint8_t *flags, uint32_t *iv_index);
@@ -335,10 +339,6 @@ uint8_t mesh_net_key_refresh_phase_set(struct mesh_net *net, uint16_t net_idx,
 							uint8_t transition);
 uint8_t mesh_net_key_refresh_phase_get(struct mesh_net *net, uint16_t net_idx,
 							uint8_t *phase);
-int mesh_net_kr_phase_one(struct mesh_net *net, uint16_t net_idx,
-							const uint8_t *key);
-int mesh_net_key_refresh_phase_two(struct mesh_net *net, uint16_t net_idx);
-int mesh_net_key_refresh_finish(struct mesh_net *net, uint16_t net_idx);
 void mesh_net_send_seg(struct mesh_net *net, uint32_t key_id,
 				uint32_t iv_index, uint8_t ttl, uint32_t seq,
 				uint16_t src, uint16_t dst, uint32_t hdr,
