@@ -1115,7 +1115,7 @@ static void print_power_level(int8_t level, const char *type)
 {
 	print_field("TX power%s%s%s: %d dbm (0x%2.2x)",
 		type ? " (" : "", type ? type : "", type ? ")" : "",
-								level, level);
+							level, (uint8_t) level);
 }
 
 static void print_host_flow_control(uint8_t enable)
@@ -6944,7 +6944,10 @@ static void le_set_ext_adv_params_cmd(const void *data, uint8_t size)
 	print_peer_addr_type("Peer address type", cmd->peer_addr_type);
 	print_addr("Peer address", cmd->peer_addr, cmd->peer_addr_type);
 	print_adv_filter_policy("Filter policy", cmd->filter_policy);
-	print_power_level(cmd->tx_power, NULL);
+	if (cmd->tx_power == 0xff)
+		print_field("TX power: Host has no preference (0xff)");
+	else
+		print_power_level(cmd->tx_power, NULL);
 
 	switch (cmd->primary_phy) {
 	case 0x01:
@@ -7431,6 +7434,108 @@ static void le_set_priv_mode_cmd(const void *data, uint8_t size)
 	}
 
 	print_field("Privacy Mode: %s (0x%2.2x)", str, cmd->priv_mode);
+}
+
+static void le_receiver_test_cmd_v3(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_receiver_test_v3 *cmd = data;
+	uint8_t i;
+
+	print_field("RX Channel: %u MHz (0x%2.2x)", cmd->rx_chan * 2 + 2402,
+							cmd->rx_chan);
+
+	switch (cmd->phy) {
+	case 0x01:
+		print_field("PHY: LE 1M (0x%2.2x)", cmd->phy);
+		break;
+	case 0x02:
+		print_field("PHY: LE 2M (0x%2.2x)", cmd->phy);
+		break;
+	case 0x03:
+		print_field("PHY: LE Coded (0x%2.2x)", cmd->phy);
+		break;
+	}
+
+	print_field("Modulation Index: %s (0x%2.2x)",
+		cmd->mod_index ? "stable" : "standard", cmd->mod_index);
+	print_field("Expected CTE Length: %u us (0x%2.2x)", cmd->cte_len * 8,
+								cmd->cte_len);
+	print_field("Expected CTE Type: %u us slots (0x%2.2x)", cmd->cte_type,
+								cmd->cte_type);
+	print_field("Slot Duration: %u us (0x%2.2x)", cmd->duration,
+								cmd->duration);
+	print_field("Number of Antenna IDs: %u", cmd->num_antenna_id);
+
+	if (size < sizeof(*cmd) + cmd->num_antenna_id)
+		return;
+
+	for (i = 0; i < cmd->num_antenna_id; i++)
+		print_field("  Antenna ID: %u", cmd->antenna_ids[i]);
+}
+
+static const char *parse_tx_test_payload(uint8_t payload)
+{
+	switch (payload) {
+	case 0x00:
+		return "PRBS9 sequence 11111111100000111101...";
+	case 0x01:
+		return "Repeated 11110000";
+	case 0x02:
+		return "Repeated 10101010";
+	case 0x03:
+		return "PRBS15";
+	case 0x04:
+		return "Repeated 11111111";
+	case 0x05:
+		return "Repeated 00000000";
+	case 0x06:
+		return "Repeated 00001111";
+	case 0x07:
+		return "Repeated 01010101";
+	default:
+		return "Reserved";
+	}
+}
+
+static void le_tx_test_cmd_v3(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_le_tx_test_v3 *cmd = data;
+	uint8_t i;
+
+	print_field("TX Channel: %u MHz (0x%2.2x)", cmd->chan * 2 + 2402,
+								cmd->chan);
+	print_field("Length of Test Data: %u", cmd->data_len);
+	print_field("Packet Payload: %s (0x%2.2x)",
+			parse_tx_test_payload(cmd->payload), cmd->payload);
+
+	switch (cmd->phy) {
+	case 0x01:
+		print_field("PHY: LE 1M (0x%2.2x)", cmd->phy);
+		break;
+	case 0x02:
+		print_field("PHY: LE 2M (0x%2.2x)", cmd->phy);
+		break;
+	case 0x03:
+		print_field("PHY: LE Coded with S=8 (0x%2.2x)", cmd->phy);
+		break;
+	case 0x04:
+		print_field("PHY: LE Coded with S=2 (0x%2.2x)", cmd->phy);
+		break;
+	}
+
+	print_field("Expected CTE Length: %u us (0x%2.2x)", cmd->cte_len * 8,
+								cmd->cte_len);
+	print_field("Expected CTE Type: %u us slots (0x%2.2x)", cmd->cte_type,
+								cmd->cte_type);
+	print_field("Slot Duration: %u us (0x%2.2x)", cmd->duration,
+								cmd->duration);
+	print_field("Number of Antenna IDs: %u", cmd->num_antenna_id);
+
+	if (size < sizeof(*cmd) + cmd->num_antenna_id)
+		return;
+
+	for (i = 0; i < cmd->num_antenna_id; i++)
+		print_field("  Antenna ID: %u", cmd->antenna_ids[i]);
 }
 
 struct opcode_data {
@@ -8219,6 +8324,12 @@ static const struct opcode_data opcode_table[] = {
 				status_rsp, 1, true },
 	{ 0x204e, 314, "LE Set Privacy Mode",
 				le_set_priv_mode_cmd, 8, true,
+				status_rsp, 1, true },
+	{ 0x204f, 315, "LE Receiver Test command [v3]",
+				le_receiver_test_cmd_v3, 7, false,
+				status_rsp, 1, true },
+	{ 0x2050, 316, "LE Transmitter Test command [v3]",
+				le_tx_test_cmd_v3, 9, false,
 				status_rsp, 1, true },
 	{ }
 };

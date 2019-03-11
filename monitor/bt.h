@@ -119,8 +119,61 @@ struct bt_ll_reject_ind_ext {
 #define BT_LL_PING_RSP		0x13
 
 #define BT_LL_LENGTH_REQ	0x14
+struct bt_ll_length {
+	uint16_t rx_len;
+	uint16_t rx_time;
+	uint16_t tx_len;
+	uint16_t tx_time;
+} __attribute__ ((packed));
 
 #define BT_LL_LENGTH_RSP	0x15
+
+#define BT_LL_PHY_REQ		0x16
+struct bt_ll_phy {
+	uint8_t  tx_phys;
+	uint8_t  rx_phys;
+} __attribute__ ((packed));
+
+#define BT_LL_PHY_RSP		0x17
+
+#define BT_LL_PHY_UPDATE_IND	0x18
+struct bt_ll_phy_update_ind {
+	uint8_t  m_phy;
+	uint8_t  s_phy;
+	uint16_t instant;
+} __attribute__ ((packed));
+
+#define BT_LL_MIN_USED_CHANNELS	0x19
+struct bt_ll_min_used_channels {
+	uint8_t  phys;
+	uint8_t  min_channels;
+} __attribute__ ((packed));
+
+#define BT_LL_CTE_REQ		0x1a
+struct bt_ll_cte_req {
+	uint8_t  cte;
+} __attribute__ ((packed));
+
+#define BT_LL_CTE_RSP		0x1b
+
+#define BT_LL_PERIODIC_SYNC_IND	0x1c
+struct bt_ll_periodic_sync_ind {
+	uint16_t id;
+	uint8_t  info[18];
+	uint16_t event_count;
+	uint16_t last_counter;
+	uint8_t  adv_info;
+	uint8_t  phy;
+	uint8_t  adv_addr[6];
+	uint16_t sync_counter;
+} __attribute__ ((packed));
+
+#define BT_LL_CLOCK_ACCURACY_REQ 0x1d
+struct bt_ll_clock_acc {
+	uint8_t  sca;
+} __attribute__ ((packed));
+
+#define BT_LL_CLOCK_ACCURACY_RSP 0x1e
 
 #define LMP_ESC4(x) ((127 << 8) | (x))
 
@@ -2381,6 +2434,31 @@ struct bt_hci_cmd_le_set_priv_mode {
 	uint8_t  peer_id_addr_type;
 	uint8_t  peer_id_addr[6];
 	uint8_t  priv_mode;
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_LE_RECEIVER_TEST_V3		0x204f
+struct bt_hci_cmd_le_receiver_test_v3 {
+	uint8_t  rx_chan;
+	uint8_t  phy;
+	uint8_t  mod_index;
+	uint8_t  cte_len;
+	uint8_t  cte_type;
+	uint8_t  duration;
+	uint8_t  num_antenna_id;
+	uint8_t  antenna_ids[0];
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_LE_TX_TEST_V3		0x2050
+struct bt_hci_cmd_le_tx_test_v3 {
+	uint8_t  chan;
+	uint8_t  data_len;
+	uint8_t  payload;
+	uint8_t  phy;
+	uint8_t  cte_len;
+	uint8_t  cte_type;
+	uint8_t  duration;
+	uint8_t  num_antenna_id;
+	uint8_t  antenna_ids[0];
 } __attribute__ ((packed));
 
 #define BT_HCI_EVT_INQUIRY_COMPLETE		0x01
