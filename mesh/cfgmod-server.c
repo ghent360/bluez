@@ -37,6 +37,7 @@
 #include "mesh/appkey.h"
 #include "mesh/model.h"
 #include "mesh/storage.h"
+#include "mesh/mesh-db.h"
 
 #include "mesh/cfgmod.h"
 
@@ -124,6 +125,9 @@ static bool config_pub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	uint8_t retransmit;
 	int status;
 	bool cred_flag, b_virt = false;
+	bool vendor = false;
+	struct mesh_model_pub *pub;
+	uint8_t ele_idx;
 
 	switch (size) {
 	default:
@@ -145,6 +149,7 @@ static bool config_pub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 		retransmit = pkt[8];
 		mod_id = l_get_le16(pkt + 9) << 16;
 		mod_id |= l_get_le16(pkt + 11);
+		vendor = true;
 		break;
 
 	case 25:
@@ -165,6 +170,7 @@ static bool config_pub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 		retransmit = pkt[22];
 		mod_id = l_get_le16(pkt + 23) << 16;
 		mod_id |= l_get_le16(pkt + 25);
+		vendor = true;
 		break;
 	}
 	ele_addr = l_get_le16(pkt);
@@ -192,10 +198,47 @@ static bool config_pub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	l_debug("pub_set: status %d, ea %4.4x, ota: %4.4x, mod: %x, idx: %3.3x",
 					status, ele_addr, ota, mod_id, idx);
 
-	if (IS_UNASSIGNED(ota) && !b_virt)
+	if (IS_UNASSIGNED(ota) && !b_virt) {
 		ttl = period = idx = 0;
 
-	if (status >= 0 && !unreliable)
+		/* Remove model publication from config file */
+		if (status == MESH_STATUS_SUCCESS)
+			mesh_db_model_pub_del(node_jconfig_get(node), ele_addr,
+					vendor ? mod_id : mod_id & 0x0000ffff,
+					vendor);
+		goto done;
+	}
+
+	if (status != MESH_STATUS_SUCCESS)
+		goto done;
+
+	ele_idx = node_get_element_idx(node, ele_addr);
+	pub = mesh_model_pub_get(node, ele_idx, mod_id, &status);
+
+	if (pub) {
+		struct mesh_db_pub db_pub = {
+			.virt = b_virt,
+			.addr = ota,
+			.idx = idx,
+			.ttl = ttl,
+			.credential = pub->credential,
+			.period = period,
+			.count = pub->retransmit >> 5,
+			.interval = ((0x1f & pub->retransmit) + 1) * 50
+		};
+
+		if (b_virt)
+			memcpy(db_pub.virt_addr, pub_addr, 16);
+
+		/* Save model publication to config file */
+		if (!mesh_db_model_pub_add(node_jconfig_get(node), ele_addr,
+					vendor ? mod_id : mod_id & 0x0000ffff,
+					vendor, &db_pub))
+			status = MESH_STATUS_STORAGE_FAIL;
+	}
+
+done:
+	if (!unreliable)
 		send_pub_status(node, src, dst, status, ele_addr, ota,
 				mod_id, idx, cred_flag, ttl, period,
 				retransmit);
@@ -285,6 +328,38 @@ static bool config_sub_get(struct mesh_node *node, uint16_t src, uint16_t dst,
 	return true;
 }
 
+static bool save_config_sub(struct mesh_node *node, uint16_t ele_addr,
+					uint32_t mod_id, bool vendor,
+					const uint8_t *addr, bool virt,
+					uint16_t grp, uint32_t opcode)
+{
+	struct mesh_db_sub db_sub = {
+				.virt = virt,
+				.src.addr = grp
+				};
+
+	if (virt)
+		memcpy(db_sub.src.virt_addr, addr, 16);
+
+	if (opcode == OP_CONFIG_MODEL_SUB_VIRT_OVERWRITE ||
+					opcode == OP_CONFIG_MODEL_SUB_OVERWRITE)
+		mesh_db_model_sub_del_all(node_jconfig_get(node),
+				ele_addr, vendor ? mod_id : mod_id & 0x0000ffff,
+									vendor);
+
+	if (opcode != OP_CONFIG_MODEL_SUB_VIRT_DELETE &&
+			opcode != OP_CONFIG_MODEL_SUB_DELETE)
+		return mesh_db_model_sub_add(node_jconfig_get(node),
+					ele_addr,
+					vendor ? mod_id : mod_id & 0x0000ffff,
+					vendor, &db_sub);
+	else
+		return mesh_db_model_sub_del(node_jconfig_get(node),
+					ele_addr,
+					vendor ? mod_id : mod_id & 0x0000ffff,
+					vendor, &db_sub);
+}
+
 static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 					const uint8_t *pkt, uint16_t size,
 					bool virt, uint32_t opcode)
@@ -294,6 +369,7 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	uint32_t mod_id, func;
 	const uint8_t *addr = NULL;
 	int status = 0;
+	bool vendor = false;
 
 	switch (size) {
 	default:
@@ -314,6 +390,7 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 		} else {
 			mod_id = l_get_le16(pkt + 2) << 16;
 			mod_id |= l_get_le16(pkt + 4);
+			vendor = true;
 		}
 		break;
 	case 8:
@@ -321,6 +398,7 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 			return;
 		mod_id = l_get_le16(pkt + 4) << 16;
 		mod_id |= l_get_le16(pkt + 6);
+		vendor = true;
 		break;
 	case 20:
 		if (!virt)
@@ -351,6 +429,11 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 
 	case OP_CONFIG_MODEL_SUB_DELETE_ALL:
 		status = mesh_model_sub_del_all(node, ele_addr, mod_id);
+
+		if (status == MESH_STATUS_SUCCESS)
+			mesh_db_model_sub_del_all(node_jconfig_get(node),
+				ele_addr, vendor ? mod_id : mod_id & 0x0000ffff,
+									vendor);
 		break;
 
 	case OP_CONFIG_MODEL_SUB_VIRT_OVERWRITE:
@@ -359,6 +442,10 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	case OP_CONFIG_MODEL_SUB_OVERWRITE:
 		status = mesh_model_sub_ovr(node, ele_addr, mod_id,
 							addr, virt, &grp);
+
+		if (status == MESH_STATUS_SUCCESS)
+			save_config_sub(node, ele_addr, mod_id, vendor, addr,
+							virt, grp, opcode);
 		break;
 	case OP_CONFIG_MODEL_SUB_VIRT_ADD:
 		grp = UNASSIGNED_ADDRESS;
@@ -366,6 +453,12 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	case OP_CONFIG_MODEL_SUB_ADD:
 		status = mesh_model_sub_add(node, ele_addr, mod_id,
 							addr, virt, &grp);
+
+		if (status == MESH_STATUS_SUCCESS &&
+				!save_config_sub(node, ele_addr, mod_id, vendor,
+						addr, virt, grp, opcode))
+			status = MESH_STATUS_STORAGE_FAIL;
+
 		break;
 	case OP_CONFIG_MODEL_SUB_VIRT_DELETE:
 		grp = UNASSIGNED_ADDRESS;
@@ -373,10 +466,15 @@ static void config_sub_set(struct mesh_node *node, uint16_t src, uint16_t dst,
 	case OP_CONFIG_MODEL_SUB_DELETE:
 		status = mesh_model_sub_del(node, ele_addr, mod_id,
 							addr, virt, &grp);
+
+		if (status == MESH_STATUS_SUCCESS)
+			save_config_sub(node, ele_addr, mod_id, vendor, addr,
+							virt, grp, opcode);
+
 		break;
 	}
 
-	if (!unreliable && status >= 0)
+	if (!unreliable)
 		send_sub_status(node, src, dst, status, ele_addr, grp, mod_id);
 
 }
