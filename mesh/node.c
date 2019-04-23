@@ -1146,9 +1146,13 @@ int node_attach(const char *app_path, const char *sender, uint64_t token,
 	if (!node)
 		return MESH_ERROR_NOT_FOUND;
 
-	/* TODO: decide what to do if previous node->app_path is not NULL */
-	node->app_path = l_strdup(app_path);
+	/* Check if the node is already in use */
+	if (node->owner) {
+		l_warn("The node is already in use");
+		return MESH_ERROR_ALREADY_EXISTS;
+	}
 
+	node->app_path = l_strdup(app_path);
 	node->owner = l_strdup(sender);
 
 	req = l_new(struct attach_obj_request, 1);
@@ -1293,7 +1297,7 @@ static void convert_node_to_storage(struct mesh_node *node,
 
 	memcpy(db_node->uuid, node->dev_uuid, 16);
 
-	node->friend = db_node->modes.friend;
+	db_node->modes.friend = node->friend;
 	db_node->modes.relay.state = node->relay.mode;
 	db_node->modes.relay.cnt = node->relay.cnt;
 	db_node->modes.relay.interval = node->relay.interval;
@@ -1474,10 +1478,10 @@ static void get_managed_objects_join_cb(struct l_dbus_message *msg,
 	return;
 fail:
 	if (agent)
-		free_node_resources(node);
+		mesh_agent_remove(agent);
 
 	if (node)
-		mesh_agent_remove(agent);
+		free_node_resources(node);
 
 	req->cb(NULL, NULL);
 }
