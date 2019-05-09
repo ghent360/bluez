@@ -139,6 +139,11 @@ struct a2dp_remote_sep {
 	struct avdtp_remote_sep *sep;
 };
 
+struct a2dp_last_used {
+	struct a2dp_sep *lsep;
+	struct a2dp_remote_sep *rsep;
+};
+
 struct a2dp_channel {
 	struct a2dp_server *server;
 	struct btd_device *device;
@@ -148,7 +153,7 @@ struct a2dp_channel {
 	unsigned int auth_id;
 	struct avdtp *session;
 	struct queue *seps;
-	struct a2dp_remote_sep *last_used;
+	struct a2dp_last_used *last_used;
 };
 
 static GSList *servers = NULL;
@@ -213,6 +218,8 @@ static void setup_free(struct a2dp_setup *s)
 		g_io_channel_shutdown(s->io, TRUE, NULL);
 		g_io_channel_unref(s->io);
 	}
+
+	queue_destroy(s->eps, NULL);
 
 	setups = g_slist_remove(setups, s);
 	if (s->session)
@@ -836,6 +843,77 @@ static void getconf_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
 		DBG("Source %p: Set_Configuration_Cfm", sep);
 }
 
+static bool match_remote_sep(const void *data, const void *user_data)
+{
+	const struct a2dp_remote_sep *sep = data;
+	const struct avdtp_remote_sep *rsep = user_data;
+
+	return sep->sep == rsep;
+}
+
+static void store_last_used(struct a2dp_channel *chan, uint8_t lseid,
+							uint8_t rseid)
+{
+	GKeyFile *key_file;
+	char filename[PATH_MAX];
+	char dst_addr[18];
+	char value[6];
+	char *data;
+	size_t len = 0;
+
+	ba2str(device_get_address(chan->device), dst_addr);
+
+	snprintf(filename, PATH_MAX, STORAGEDIR "/%s/cache/%s",
+		btd_adapter_get_storage_dir(device_get_adapter(chan->device)),
+		dst_addr);
+	key_file = g_key_file_new();
+	g_key_file_load_from_file(key_file, filename, 0, NULL);
+
+	sprintf(value, "%02hhx:%02hhx", lseid, rseid);
+
+	g_key_file_set_string(key_file, "Endpoints", "LastUsed", value);
+
+	data = g_key_file_to_data(key_file, &len, NULL);
+	g_file_set_contents(filename, data, len, NULL);
+
+	g_free(data);
+	g_key_file_free(key_file);
+}
+
+static void add_last_used(struct a2dp_channel *chan, struct a2dp_sep *lsep,
+				struct a2dp_remote_sep *rsep)
+{
+	if (!chan->last_used)
+		chan->last_used = new0(struct a2dp_last_used, 1);
+
+	chan->last_used->lsep = lsep;
+	chan->last_used->rsep = rsep;
+}
+
+static void update_last_used(struct a2dp_channel *chan, struct a2dp_sep *lsep,
+					struct avdtp_stream *stream)
+{
+	struct avdtp_remote_sep *rsep;
+	struct a2dp_remote_sep *sep;
+
+	rsep = avdtp_stream_get_remote_sep(stream);
+	sep = queue_find(chan->seps, match_remote_sep, rsep);
+	if (!sep) {
+		error("Unable to find remote SEP");
+		return;
+	}
+
+	/* Check if already stored then skip */
+	if (chan->last_used && (chan->last_used->lsep == lsep &&
+				chan->last_used->rsep == sep))
+		return;
+
+	add_last_used(chan, lsep, sep);
+
+	store_last_used(chan, avdtp_sep_get_seid(lsep->lsep),
+					avdtp_get_seid(rsep));
+}
+
 static gboolean open_ind(struct avdtp *session, struct avdtp_local_sep *sep,
 				struct avdtp_stream *stream, uint8_t *err,
 				void *user_data)
@@ -854,66 +932,15 @@ static gboolean open_ind(struct avdtp *session, struct avdtp_local_sep *sep,
 
 	setup->stream = stream;
 
+	if (!err && setup->chan)
+		update_last_used(setup->chan, a2dp_sep, stream);
+
 	if (setup->reconfigure)
 		setup->reconfigure = FALSE;
 
 	finalize_config(setup);
 
 	return TRUE;
-}
-
-static bool match_remote_sep(const void *data, const void *user_data)
-{
-	const struct a2dp_remote_sep *sep = data;
-	const struct avdtp_remote_sep *rsep = user_data;
-
-	return sep->sep == rsep;
-}
-
-static void store_last_used(struct a2dp_channel *chan,
-					struct avdtp_remote_sep *rsep)
-{
-	GKeyFile *key_file;
-	char filename[PATH_MAX];
-	char dst_addr[18];
-	char value[4];
-	char *data;
-	size_t len = 0;
-
-	ba2str(device_get_address(chan->device), dst_addr);
-
-	snprintf(filename, PATH_MAX, STORAGEDIR "/%s/cache/%s",
-		btd_adapter_get_storage_dir(device_get_adapter(chan->device)),
-		dst_addr);
-	key_file = g_key_file_new();
-	g_key_file_load_from_file(key_file, filename, 0, NULL);
-
-	sprintf(value, "%02hhx", avdtp_get_seid(rsep));
-
-	g_key_file_set_string(key_file, "Endpoints", "LastUsed", value);
-
-	data = g_key_file_to_data(key_file, &len, NULL);
-	g_file_set_contents(filename, data, len, NULL);
-
-	g_free(data);
-	g_key_file_free(key_file);
-}
-
-static void update_last_used(struct a2dp_channel *chan,
-						struct avdtp_stream *stream)
-{
-	struct avdtp_remote_sep *rsep;
-	struct a2dp_remote_sep *sep;
-
-	rsep = avdtp_stream_get_remote_sep(stream);
-
-	/* Update last used */
-	sep = queue_find(chan->seps, match_remote_sep, rsep);
-	if (chan->last_used == sep)
-		return;
-
-	chan->last_used = sep;
-	store_last_used(chan, rsep);
 }
 
 static void open_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
@@ -941,7 +968,7 @@ static void open_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
 		if (setup->start)
 			finalize_resume(setup);
 	} else if (setup->chan)
-		update_last_used(setup->chan, stream);
+		update_last_used(setup->chan, a2dp_sep, stream);
 
 	finalize_config(setup);
 
@@ -1257,6 +1284,11 @@ static void abort_cfm(struct avdtp *session, struct avdtp_local_sep *sep,
 	if (!setup)
 		return;
 
+	if (setup->reconfigure) {
+		g_timeout_add(RECONFIGURE_TIMEOUT, a2dp_reconfigure, setup);
+		return;
+	}
+
 	setup_unref(setup);
 }
 
@@ -1475,6 +1507,7 @@ static void channel_free(void *data)
 	avdtp_remove_state_cb(chan->state_id);
 
 	queue_destroy(chan->seps, remove_remote_sep);
+	free(chan->last_used);
 	g_free(chan);
 }
 
@@ -1623,6 +1656,9 @@ static int a2dp_reconfig(struct a2dp_channel *chan, const char *sender,
 	setup->sep = lsep;
 	setup->rsep = rsep;
 
+	g_slist_free_full(setup->caps, g_free);
+	setup->caps = NULL;
+
 	caps_add_codec(&setup->caps, setup->sep->codec, caps, size);
 
 	l = avdtp_get_type(rsep->sep) == AVDTP_SEP_TYPE_SINK ?
@@ -1640,10 +1676,18 @@ static int a2dp_reconfig(struct a2dp_channel *chan, const char *sender,
 							tmp->user_data)))
 				return -EPERM;
 
+			/* Check if stream is for the channel */
+			if (!avdtp_has_stream(chan->session, tmp->stream))
+				continue;
+
 			err = avdtp_close(chan->session, tmp->stream, FALSE);
 			if (err < 0) {
-				error("avdtp_close: %s", strerror(-err));
-				goto fail;
+				err = avdtp_abort(chan->session, tmp->stream);
+				if (err < 0) {
+					error("avdtp_abort: %s",
+							strerror(-err));
+					goto fail;
+				}
 			}
 
 			setup->reconfigure = TRUE;
@@ -1855,11 +1899,37 @@ static bool match_seid(const void *data, const void *user_data)
 	return avdtp_get_seid(sep->sep) == *seid;
 }
 
+static int match_sep(const void *data, const void *user_data)
+{
+	struct a2dp_sep *sep = (void *) data;
+	const uint8_t *seid = user_data;
+
+	return *seid - avdtp_sep_get_seid(sep->lsep);
+}
+
+static struct a2dp_sep *find_sep_by_seid(struct a2dp_server *server,
+							uint8_t seid)
+{
+	GSList *l;
+
+	l = g_slist_find_custom(server->sources, &seid, match_sep);
+	if (l)
+		return l->data;
+
+	l = g_slist_find_custom(server->sinks, &seid, match_sep);
+	if (l)
+		return l->data;
+
+	return NULL;
+}
+
 static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 								char **seids)
 {
-	struct avdtp_remote_sep *sep;
-	uint8_t seid;
+	struct a2dp_sep *lsep;
+	struct a2dp_remote_sep *sep;
+	struct avdtp_remote_sep *rsep;
+	uint8_t lseid, rseid;
 	char *value;
 
 	if (!seids)
@@ -1868,12 +1938,12 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 	for (; *seids; seids++) {
 		uint8_t type;
 		uint8_t codec;
+		GSList *l = NULL;
 		char caps[256];
 		uint8_t data[128];
 		int i, size;
-		GSList *l = NULL;
 
-		if (sscanf(*seids, "%02hhx", &seid) != 1)
+		if (sscanf(*seids, "%02hhx", &rseid) != 1)
 			continue;
 
 		value = g_key_file_get_string(key_file, "Endpoints", *seids,
@@ -1883,7 +1953,7 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 
 		if (sscanf(value, "%02hhx:%02hhx:%s", &type, &codec,
 								caps) != 3) {
-			warn("Unable to load Endpoint: seid %u", seid);
+			warn("Unable to load Endpoint: seid %u", rseid);
 			g_free(value);
 			continue;
 		}
@@ -1892,7 +1962,8 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 			uint8_t *tmp = data + i / 2;
 
 			if (sscanf(caps + i, "%02hhx", tmp) != 1) {
-				warn("Unable to load Endpoint: seid %u", seid);
+				warn("Unable to load Endpoint: seid %u", rseid);
+				g_free(value);
 				break;
 			}
 		}
@@ -1904,23 +1975,39 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 
 		caps_add_codec(&l, codec, data, size / 2);
 
-		sep = avdtp_register_remote_sep(chan->session, seid, type, l);
-		if (!sep) {
-			warn("Unable to register Endpoint: seid %u", seid);
+		rsep = avdtp_register_remote_sep(chan->session, rseid, type, l);
+		if (!rsep) {
+			warn("Unable to register Endpoint: seid %u", rseid);
 			continue;
 		}
 
-		register_remote_sep(sep, chan);
+		register_remote_sep(rsep, chan);
 	}
 
 	value = g_key_file_get_string(key_file, "Endpoints", "LastUsed", NULL);
 	if (!value)
 		return;
 
-	if (sscanf(value, "%02hhx", &seid) != 1)
+	if (sscanf(value, "%02hhx:%02hhx", &lseid, &rseid) != 2) {
+		warn("Unable to load LastUsed");
 		return;
+	}
 
-	chan->last_used = queue_find(chan->seps, match_seid, &seid);
+	g_free(value);
+
+	lsep = find_sep_by_seid(chan->server, lseid);
+	if (!lsep) {
+		warn("Unable to load LastUsed: lseid %u not found", lseid);
+		return;
+	}
+
+	sep = queue_find(chan->seps, match_seid, &rseid);
+	if (!sep) {
+		warn("Unable to load LastUsed: rseid %u not found", rseid);
+		return;
+	}
+
+	add_last_used(chan, lsep, sep);
 }
 
 static void load_remote_seps(struct a2dp_channel *chan)
@@ -2418,7 +2505,7 @@ static void select_cb(struct a2dp_setup *setup, void *ret, int size)
 	struct avdtp_media_codec_capability *codec;
 	int err;
 
-	if (size) {
+	if (size >= 0) {
 		caps_add_codec(&setup->caps, setup->sep->codec, ret, size);
 		goto done;
 	}
@@ -2426,7 +2513,6 @@ static void select_cb(struct a2dp_setup *setup, void *ret, int size)
 	setup->sep = queue_pop_head(setup->eps);
 	if (!setup->sep) {
 		error("Unable to select a valid configuration");
-		queue_destroy(setup->eps, NULL);
 		goto done;
 	}
 
@@ -2437,7 +2523,7 @@ static void select_cb(struct a2dp_setup *setup, void *ret, int size)
 	err = setup->sep->endpoint->select_configuration(setup->sep,
 					codec->data,
 					service->length - sizeof(*codec),
-					setup_ref(setup),
+					setup,
 					select_cb, setup->sep->user_data);
 	if (err == 0)
 		return;
@@ -2477,11 +2563,11 @@ static struct queue *a2dp_find_eps(struct avdtp *session, GSList *list,
 			seps = queue_new();
 
 		/* Prepend last used so it is preferred over others */
-		if (chan->last_used && chan->last_used->sep == rsep)
+		if (chan->last_used && (chan->last_used->lsep == sep &&
+					chan->last_used->rsep->sep == rsep))
 			queue_push_head(seps, sep);
 		else
 			queue_push_tail(seps, sep);
-
 	}
 
 	return seps;
@@ -2550,10 +2636,17 @@ static void store_remote_seps(struct a2dp_channel *chan)
 	key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, filename, 0, NULL);
 
+	data = g_key_file_get_string(key_file, "Endpoints", "LastUsed", NULL);
+
 	/* Remove current endpoints since it might have changed */
 	g_key_file_remove_group(key_file, "Endpoints", NULL);
 
 	queue_foreach(chan->seps, store_remote_sep, key_file);
+
+	if (data) {
+		g_key_file_set_string(key_file, "Endpoints", "LastUsed", data);
+		g_free(data);
+	}
 
 	data = g_key_file_to_data(key_file, &length, NULL);
 	g_file_set_contents(filename, data, length, NULL);
@@ -2640,10 +2733,12 @@ unsigned int a2dp_select_capabilities(struct avdtp *session,
 	codec = (struct avdtp_media_codec_capability *) service->data;
 
 	err = setup->sep->endpoint->select_configuration(setup->sep,
-					codec->data,
-					service->length - sizeof(*codec),
-					setup_ref(setup),
-					select_cb, setup->sep->user_data);
+							codec->data,
+							service->length -
+							sizeof(*codec),
+							setup_ref(setup),
+							select_cb,
+							setup->sep->user_data);
 	if (err == 0)
 		return cb_data->id;
 
@@ -2982,8 +3077,7 @@ struct btd_device *a2dp_setup_get_device(struct a2dp_setup *setup)
 const char *a2dp_setup_remote_path(struct a2dp_setup *setup)
 {
 	if (setup->rsep) {
-		if (setup->rsep->path)
-			return setup->rsep->path;
+		return setup->rsep->path;
 	}
 
 	return NULL;
