@@ -2,7 +2,7 @@
  *
  *  BlueZ - Bluetooth protocol stack for Linux
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018-2019 Intel Corporation. All rights reserved.
  *
  *
  *  This library is free software; you can redistribute it and/or
@@ -30,10 +30,9 @@
 #include "mesh/mesh-defs.h"
 #include "mesh/mesh-io.h"
 #include "mesh/node.h"
+#include "mesh/manager.h"
 #include "mesh/net.h"
-#include "mesh/storage.h"
 #include "mesh/cfgmod.h"
-#include "mesh/model.h"
 #include "mesh/mesh.h"
 #include "mesh/error.h"
 #include "mesh/dbus.h"
@@ -59,7 +58,8 @@ static struct error_entry const error_table[] =
 	{ ERROR_INTERFACE ".InProgress", "Already in progress"},
 	{ ERROR_INTERFACE ".AlreadyExists", "Already exists"},
 	{ ERROR_INTERFACE ".DoesNotExist", "Does not exist"},
-	{ ERROR_INTERFACE ".Canceled", "Operation canceled"}
+	{ ERROR_INTERFACE ".Canceled", "Operation canceled"},
+	{ ERROR_INTERFACE ".NotImplemented", "Not implemented"},
 };
 
 struct l_dbus_message *dbus_error(struct l_dbus_message *msg, int err,
@@ -94,6 +94,10 @@ bool dbus_init(struct l_dbus *bus)
 
 	/* Node interface */
 	if (!node_dbus_init(bus))
+		return false;
+
+	/* Management interface */
+	if (!manager_dbus_init(bus))
 		return false;
 
 	dbus = bus;
