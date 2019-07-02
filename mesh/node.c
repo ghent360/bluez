@@ -46,7 +46,6 @@
 #define MIN_COMP_SIZE 14
 
 #define MESH_NODE_PATH_PREFIX "/node"
-#define MESH_ELEMENT_PATH_PREFIX "/ele"
 
 /* Default values for a new locally created node */
 #define DEFAULT_NEW_UNICAST 0x0001
@@ -245,9 +244,14 @@ static void free_node_resources(void *data)
 	if (node->disc_watch)
 		l_dbus_remove_watch(dbus_get_bus(), node->disc_watch);
 
-	if (node->path)
+	if (node->path) {
 		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
 							MESH_NODE_INTERFACE);
+
+		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
+					       MESH_MANAGEMENT_INTERFACE);
+	}
+
 	l_free(node->path);
 
 	l_free(node);
@@ -420,6 +424,7 @@ void node_cleanup_all(void)
 {
 	l_queue_destroy(nodes, cleanup_node);
 	l_dbus_unregister_interface(dbus_get_bus(), MESH_NODE_INTERFACE);
+	l_dbus_unregister_interface(dbus_get_bus(), MESH_MANAGEMENT_INTERFACE);
 }
 
 bool node_is_provisioned(struct mesh_node *node)
@@ -1007,10 +1012,15 @@ static bool register_node_object(struct mesh_node *node)
 	if (!hex2str(node->uuid, sizeof(node->uuid), uuid, sizeof(uuid)))
 		return false;
 
-	node->path = l_strdup_printf(MESH_NODE_PATH_PREFIX "%s", uuid);
+	node->path = l_strdup_printf(BLUEZ_MESH_PATH MESH_NODE_PATH_PREFIX
+								"%s", uuid);
 
 	if (!l_dbus_object_add_interface(dbus_get_bus(), node->path,
-					MESH_NODE_INTERFACE, node))
+						MESH_NODE_INTERFACE, node))
+		return false;
+
+	if (!l_dbus_object_add_interface(dbus_get_bus(), node->path,
+					MESH_MANAGEMENT_INTERFACE, node))
 		return false;
 
 	return true;
@@ -1032,6 +1042,9 @@ static void app_disc_cb(struct l_dbus *bus, void *user_data)
 	if (node->path) {
 		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
 							MESH_NODE_INTERFACE);
+
+		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
+						MESH_MANAGEMENT_INTERFACE);
 		l_free(node->app_path);
 		node->app_path = NULL;
 	}
@@ -1601,7 +1614,7 @@ fail:
 	} else {
 		/* Handle failed Join and Create requests */
 		if (node)
-			free_node_resources(node);
+			node_remove(node);
 
 		if (req->type == REQUEST_TYPE_JOIN) {
 			node_join_ready_func_t cb = req->cb;
