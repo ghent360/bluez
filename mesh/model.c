@@ -39,6 +39,7 @@
 #include "mesh/dbus.h"
 #include "mesh/util.h"
 #include "mesh/model.h"
+#include "mesh/keyring.h"
 
 /* Divide and round to ceiling (up) to calculate segment count */
 #define CEILDIV(val, div) (((val) + (div) - 1) / (div))
@@ -249,10 +250,9 @@ static void config_update_model_pub_period(struct mesh_node *node,
 								&period);
 
 	l_dbus_message_builder_leave_array(builder);
-	if (l_dbus_message_builder_finalize(builder))
-		l_dbus_send(dbus, msg);
-
+	l_dbus_message_builder_finalize(builder);
 	l_dbus_message_builder_destroy(builder);
+	l_dbus_send(dbus, msg);
 }
 
 static void append_dict_uint16_array(struct l_dbus_message_builder *builder,
@@ -291,10 +291,9 @@ static void config_update_model_bindings(struct mesh_node *node,
 	append_dict_uint16_array(builder, mod->bindings, "Bindings");
 
 	l_dbus_message_builder_leave_array(builder);
-	if (l_dbus_message_builder_finalize(builder))
-		l_dbus_send(dbus, msg);
-
+	l_dbus_message_builder_finalize(builder);
 	l_dbus_message_builder_destroy(builder);
+	l_dbus_send(dbus, msg);
 }
 
 static void forward_model(void *a, void *b)
@@ -306,7 +305,9 @@ static void forward_model(void *a, void *b)
 	bool result;
 
 	l_debug("model %8.8x with idx %3.3x", mod->id, fwd->idx);
-	if (fwd->idx != APP_IDX_DEV && !has_binding(mod->bindings, fwd->idx))
+
+	if (fwd->idx != APP_IDX_DEV_LOCAL && fwd->idx != APP_IDX_DEV_REMOTE &&
+					!has_binding(mod->bindings, fwd->idx))
 		return;
 
 	dst = fwd->dst;
@@ -356,15 +357,24 @@ static int dev_packet_decrypt(struct mesh_node *node, const uint8_t *data,
 				uint16_t dst, uint8_t key_id, uint32_t seq,
 				uint32_t iv_idx, uint8_t *out)
 {
-	const uint8_t *dev_key;
+	uint8_t dev_key[16];
+	const uint8_t *key;
 
-	dev_key = node_get_device_key(node);
-	if (!dev_key)
-		return false;
+	key = node_get_device_key(node);
+	if (!key)
+		return -1;
 
 	if (mesh_crypto_payload_decrypt(NULL, 0, data, size, szmict, src,
-					dst, key_id, seq, iv_idx, out, dev_key))
-		return APP_IDX_DEV;
+					dst, key_id, seq, iv_idx, out, key))
+		return APP_IDX_DEV_LOCAL;
+
+	if (!keyring_get_remote_dev_key(node, src, dev_key))
+		return -1;
+
+	key = dev_key;
+	if (mesh_crypto_payload_decrypt(NULL, 0, data, size, szmict, src,
+					dst, key_id, seq, iv_idx, out, key))
+		return APP_IDX_DEV_REMOTE;
 
 	return -1;
 }
@@ -692,6 +702,39 @@ static int add_sub(struct mesh_net *net, struct mesh_model *mod,
 	return MESH_STATUS_SUCCESS;
 }
 
+static void send_dev_key_msg_rcvd(struct mesh_node *node, uint8_t ele_idx,
+					uint16_t src, uint16_t net_idx,
+					uint16_t size, const uint8_t *data)
+{
+	struct l_dbus *dbus = dbus_get_bus();
+	struct l_dbus_message *msg;
+	struct l_dbus_message_builder *builder;
+	const char *owner;
+	const char *path;
+
+	owner = node_get_owner(node);
+	path = node_get_element_path(node, ele_idx);
+	if (!path || !owner)
+		return;
+
+	l_debug("Send \"DevKeyMessageReceived\"");
+
+	msg = l_dbus_message_new_method_call(dbus, owner, path,
+						MESH_ELEMENT_INTERFACE,
+						"DevKeyMessageReceived");
+
+	builder = l_dbus_message_builder_new(msg);
+
+	l_dbus_message_builder_append_basic(builder, 'q', &src);
+	l_dbus_message_builder_append_basic(builder, 'q', &net_idx);
+	dbus_append_byte_array(builder, data, size);
+
+	l_dbus_message_builder_finalize(builder);
+	l_dbus_message_builder_destroy(builder);
+
+	l_dbus_send(dbus, msg);
+}
+
 static void send_msg_rcvd(struct mesh_node *node, uint8_t ele_idx, bool is_sub,
 					uint16_t src, uint16_t key_idx,
 					uint16_t size, const uint8_t *data)
@@ -714,25 +757,15 @@ static void send_msg_rcvd(struct mesh_node *node, uint8_t ele_idx, bool is_sub,
 
 	builder = l_dbus_message_builder_new(msg);
 
-	if (!l_dbus_message_builder_append_basic(builder, 'q', &src))
-		goto error;
+	l_dbus_message_builder_append_basic(builder, 'q', &src);
+	l_dbus_message_builder_append_basic(builder, 'q', &key_idx);
+	l_dbus_message_builder_append_basic(builder, 'b', &is_sub);
 
-	if (!l_dbus_message_builder_append_basic(builder, 'q', &key_idx))
-		goto error;
+	dbus_append_byte_array(builder, data, size);
 
-	if (!l_dbus_message_builder_append_basic(builder, 'b', &is_sub))
-		goto error;
-
-	if (!dbus_append_byte_array(builder, data, size))
-		goto error;
-
-	if (!l_dbus_message_builder_finalize(builder))
-		goto error;
-
-	l_dbus_send(dbus, msg);
-
-error:
+	l_dbus_message_builder_finalize(builder);
 	l_dbus_message_builder_destroy(builder);
+	l_dbus_send(dbus, msg);
 }
 
 bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
@@ -840,10 +873,17 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 		 * Cycle through external models if the message has not been
 		 * handled by internal models
 		 */
-		if (forward.has_dst && !forward.done)
-			send_msg_rcvd(node, i, is_subscription, src,
-					forward.idx, forward.size,
-					forward.data);
+		if (forward.has_dst && !forward.done) {
+			if ((decrypt_idx & APP_IDX_MASK) == decrypt_idx)
+				send_msg_rcvd(node, i, is_subscription, src,
+						forward.idx, forward.size,
+						forward.data);
+			else if (decrypt_idx == APP_IDX_DEV_REMOTE ||
+				(decrypt_idx == APP_IDX_DEV_LOCAL &&
+				 mesh_net_is_local_address(net, src)))
+				send_dev_key_msg_rcvd(node, i, src, 0,
+						forward.size, forward.data);
+		}
 
 		/*
 		 * Either the message has been processed internally or
@@ -939,6 +979,7 @@ bool mesh_model_send(struct mesh_node *node, uint16_t src, uint16_t target,
 					const void *msg, uint16_t msg_len)
 {
 	uint8_t key_id;
+	uint8_t dev_key[16];
 	const uint8_t *key;
 
 	/* print_packet("Mod Tx", msg, msg_len); */
@@ -952,12 +993,17 @@ bool mesh_model_send(struct mesh_node *node, uint16_t src, uint16_t target,
 	if (IS_UNASSIGNED(target))
 		return false;
 
-	if (app_idx == APP_IDX_DEV) {
+	if (app_idx == APP_IDX_DEV_LOCAL) {
 		key = node_get_device_key(node);
 		if (!key)
 			return false;
 
-		l_debug("(%x)", app_idx);
+		key_id = APP_ID_DEV;
+	} else if (app_idx == APP_IDX_DEV_REMOTE) {
+		if (!keyring_get_remote_dev_key(node, target, dev_key))
+			return false;
+
+		key = dev_key;
 		key_id = APP_ID_DEV;
 	} else {
 		key = appkey_get_key(node_get_net(node), app_idx, &key_id);
@@ -1074,7 +1120,7 @@ static void restore_model_state(struct mesh_model *mod)
 	if (!cbs)
 		return;
 
-	if (l_queue_isempty(mod->bindings) || !mod->cbs->bind) {
+	if (!l_queue_isempty(mod->bindings) && cbs->bind) {
 		for (b = l_queue_get_entries(mod->bindings); b; b = b->next) {
 			if (cbs->bind(L_PTR_TO_UINT(b->data), ACTION_ADD) !=
 							MESH_STATUS_SUCCESS)
@@ -1381,12 +1427,14 @@ struct mesh_model *mesh_model_setup(struct mesh_node *node, uint8_t ele_idx,
 		if (ele_idx != PRIMARY_ELE_IDX)
 			return NULL;
 
-		l_queue_push_head(mod->bindings, L_UINT_TO_PTR(APP_IDX_DEV));
+		l_queue_push_head(mod->bindings,
+					L_UINT_TO_PTR(APP_IDX_DEV_LOCAL));
 		return mod;
 	}
 
 	if (db_mod->id == CONFIG_CLI_MODEL) {
-		l_queue_push_head(mod->bindings, L_UINT_TO_PTR(APP_IDX_DEV));
+		l_queue_push_head(mod->bindings,
+					L_UINT_TO_PTR(APP_IDX_DEV_LOCAL));
 		return mod;
 	}
 

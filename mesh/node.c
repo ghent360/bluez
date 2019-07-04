@@ -226,6 +226,33 @@ static void element_free(void *data)
 	l_free(element);
 }
 
+static void free_node_dbus_resources(struct mesh_node *node)
+{
+	if (!node)
+		return;
+
+	if (node->disc_watch) {
+		l_dbus_remove_watch(dbus_get_bus(), node->disc_watch);
+		node->disc_watch = 0;
+	}
+
+	l_queue_foreach(node->elements, free_element_path, NULL);
+	l_free(node->owner);
+	node->owner = NULL;
+	l_free(node->app_path);
+	node->app_path = NULL;
+
+	if (node->path) {
+		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
+							MESH_NODE_INTERFACE);
+
+		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
+						MESH_MANAGEMENT_INTERFACE);
+		l_free(node->path);
+		node->path = NULL;
+	}
+}
+
 static void free_node_resources(void *data)
 {
 	struct mesh_node *node = data;
@@ -233,27 +260,14 @@ static void free_node_resources(void *data)
 	/* Unregister io callbacks */
 	if (node->net)
 		mesh_net_detach(node->net);
-	mesh_net_free(node->net);
 
 	l_queue_destroy(node->elements, element_free);
+	node->elements = NULL;
+
+	free_node_dbus_resources(node);
+
+	mesh_net_free(node->net);
 	l_free(node->comp);
-	l_free(node->app_path);
-	l_free(node->owner);
-	l_free(node->node_path);
-
-	if (node->disc_watch)
-		l_dbus_remove_watch(dbus_get_bus(), node->disc_watch);
-
-	if (node->path) {
-		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
-							MESH_NODE_INTERFACE);
-
-		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
-					       MESH_MANAGEMENT_INTERFACE);
-	}
-
-	l_free(node->path);
-
 	l_free(node);
 }
 
@@ -1033,23 +1047,8 @@ static void app_disc_cb(struct l_dbus *bus, void *user_data)
 	l_info("App %s disconnected (%u)", node->owner, node->disc_watch);
 
 	node->disc_watch = 0;
-
-	l_queue_foreach(node->elements, free_element_path, NULL);
-
-	l_free(node->owner);
-	node->owner = NULL;
-
-	if (node->path) {
-		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
-							MESH_NODE_INTERFACE);
-
-		l_dbus_object_remove_interface(dbus_get_bus(), node->path,
-						MESH_MANAGEMENT_INTERFACE);
-		l_free(node->app_path);
-		node->app_path = NULL;
-	}
+	free_node_dbus_resources(node);
 }
-
 
 static bool validate_model_property(struct node_element *ele,
 					struct l_dbus_message_iter *property,
@@ -1186,7 +1185,7 @@ static bool get_element_properties(struct mesh_node *node, const char *path,
 
 	while (l_dbus_message_iter_next_entry(properties, &key, &var)) {
 		if (!strcmp(key, "Location")) {
-			uint8_t loc;
+			uint16_t loc;
 
 			l_dbus_message_iter_get_variant(&var, "q", &loc);
 
@@ -1611,14 +1610,9 @@ fail:
 		/* Handle failed Attach request */
 		node_ready_func_t cb = req->cb;
 
-		l_queue_foreach(node->elements, free_element_path, NULL);
-		l_free(node->app_path);
-		node->app_path = NULL;
+		free_node_dbus_resources(node);
 
-		l_free(node->owner);
-		node->owner = NULL;
 		cb(req->user_data, MESH_ERROR_FAILED, node);
-
 	} else {
 		/* Handle failed Join and Create requests */
 		if (node)
@@ -1763,7 +1757,6 @@ static struct l_dbus_message *send_call(struct l_dbus *dbus,
 	uint16_t dst, app_idx, src;
 	uint8_t *data;
 	uint32_t len;
-	struct l_dbus_message *reply;
 
 	l_debug("Send");
 
@@ -1788,14 +1781,58 @@ static struct l_dbus_message *send_call(struct l_dbus *dbus,
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 							"Incorrect data");
 
-	if (!mesh_model_send(node, src, dst, app_idx,
+	if ((app_idx & APP_IDX_MASK) != app_idx)
+		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
+						"Invalid key_index");
+
+	if (!mesh_model_send(node, src, dst, app_idx & APP_IDX_MASK,
 				mesh_net_get_default_ttl(node->net), data, len))
 		return dbus_error(msg, MESH_ERROR_FAILED, NULL);
 
-	reply = l_dbus_message_new_method_return(msg);
-	l_dbus_message_set_arguments(reply, "");
+	return l_dbus_message_new_method_return(msg);
+}
 
-	return reply;
+static struct l_dbus_message *dev_key_send_call(struct l_dbus *dbus,
+						struct l_dbus_message *msg,
+						void *user_data)
+{
+	struct mesh_node *node = user_data;
+	const char *sender, *ele_path;
+	struct l_dbus_message_iter iter_data;
+	struct node_element *ele;
+	uint16_t dst, net_idx, src;
+	uint8_t *data;
+	uint32_t len;
+
+	l_debug("DevKeySend");
+
+	sender = l_dbus_message_get_sender(msg);
+
+	if (strcmp(sender, node->owner))
+		return dbus_error(msg, MESH_ERROR_NOT_AUTHORIZED, NULL);
+
+	if (!l_dbus_message_get_arguments(msg, "oqqay", &ele_path, &dst,
+							&net_idx, &iter_data))
+		return dbus_error(msg, MESH_ERROR_INVALID_ARGS, NULL);
+
+	ele = l_queue_find(node->elements, match_element_path, ele_path);
+	if (!ele)
+		return dbus_error(msg, MESH_ERROR_NOT_FOUND,
+							"Element not found");
+
+	src = node_get_primary(node) + ele->idx;
+
+	if (!l_dbus_message_iter_get_fixed_array(&iter_data, &data, &len) ||
+					!len || len > MESH_MAX_ACCESS_PAYLOAD)
+		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
+							"Incorrect data");
+
+	/* TODO: use net_idx */
+	if (!mesh_model_send(node, src, dst, APP_IDX_DEV_REMOTE,
+				mesh_net_get_default_ttl(node->net), data, len))
+		return dbus_error(msg, MESH_ERROR_NOT_FOUND, NULL);
+
+	return l_dbus_message_new_method_return(msg);
 }
 
 static struct l_dbus_message *publish_call(struct l_dbus *dbus,
@@ -1809,7 +1846,6 @@ static struct l_dbus_message *publish_call(struct l_dbus *dbus,
 	struct node_element *ele;
 	uint8_t *data;
 	uint32_t len;
-	struct l_dbus_message *reply;
 	int result;
 
 	l_debug("Publish");
@@ -1841,10 +1877,7 @@ static struct l_dbus_message *publish_call(struct l_dbus *dbus,
 	if (result != MESH_ERROR_NONE)
 		return dbus_error(msg, result, NULL);
 
-	reply = l_dbus_message_new_method_return(msg);
-	l_dbus_message_set_arguments(reply, "");
-
-	return reply;
+	return l_dbus_message_new_method_return(msg);
 }
 
 static struct l_dbus_message *vendor_publish_call(struct l_dbus *dbus,
@@ -1860,7 +1893,6 @@ static struct l_dbus_message *vendor_publish_call(struct l_dbus *dbus,
 	struct node_element *ele;
 	uint8_t *data = NULL;
 	uint32_t len;
-	struct l_dbus_message *reply;
 	int result;
 
 	l_debug("Publish");
@@ -1893,17 +1925,18 @@ static struct l_dbus_message *vendor_publish_call(struct l_dbus *dbus,
 	if (result != MESH_ERROR_NONE)
 		return dbus_error(msg, result, NULL);
 
-	reply = l_dbus_message_new_method_return(msg);
-	l_dbus_message_set_arguments(reply, "");
-
-	return reply;
+	return  l_dbus_message_new_method_return(msg);
 }
 
 static void setup_node_interface(struct l_dbus_interface *iface)
 {
 	l_dbus_interface_method(iface, "Send", 0, send_call, "", "oqqay",
 						"element_path", "destination",
-						"key", "data");
+						"key_index", "data");
+	l_dbus_interface_method(iface, "DevKeySend", 0, dev_key_send_call,
+						"", "oqqay", "element_path",
+						"destination", "net_index",
+						"data");
 	l_dbus_interface_method(iface, "Publish", 0, publish_call, "", "oqay",
 					"element_path", "model_id", "data");
 	l_dbus_interface_method(iface, "VendorPublish", 0, vendor_publish_call,
