@@ -24,11 +24,6 @@ struct mesh_agent;
 struct mesh_config;
 struct mesh_config_node;
 
-/* To prevent local node JSON cache thrashing, minimum update times */
-#define MIN_SEQ_TRIGGER	32
-#define MIN_SEQ_CACHE		(2*MIN_SEQ_TRIGGER)
-#define MIN_SEQ_CACHE_TIME	(5*60)
-
 typedef void (*node_ready_func_t) (void *user_data, int status,
 							struct mesh_node *node);
 
@@ -82,7 +77,6 @@ bool node_beacon_mode_set(struct mesh_node *node, bool enable);
 uint8_t node_beacon_mode_get(struct mesh_node *node);
 bool node_friend_mode_set(struct mesh_node *node, bool enable);
 uint8_t node_friend_mode_get(struct mesh_node *node);
-uint32_t node_seq_cache(struct mesh_node *node);
 const char *node_get_element_path(struct mesh_node *node, uint8_t ele_idx);
 const char *node_get_owner(struct mesh_node *node);
 const char *node_get_app_path(struct mesh_node *node);
@@ -95,6 +89,11 @@ void node_build_attach_reply(struct mesh_node *node,
 						struct l_dbus_message *reply);
 void node_create(const char *app_path, const char *sender, const uint8_t *uuid,
 					node_ready_func_t cb, void *user_data);
+bool node_import(const char *app_path, const char *sender, const uint8_t *uuid,
+			const uint8_t dev_key[16], const uint8_t net_key[16],
+			uint16_t net_idx, bool kr, bool ivu,
+			uint32_t iv_index, uint16_t unicast,
+			node_ready_func_t cb, void *user_data);
 void node_id_set(struct mesh_node *node, uint16_t node_id);
 uint16_t node_id_get(struct mesh_node *node);
 bool node_dbus_init(struct l_dbus *bus);

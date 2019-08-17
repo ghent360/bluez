@@ -25,8 +25,6 @@
 #include <dirent.h>
 #include <stdio.h>
 
-#include <sys/time.h>
-
 #include <ell/ell.h>
 
 #include "mesh/mesh-defs.h"
@@ -62,6 +60,7 @@ enum request_type {
 	REQUEST_TYPE_JOIN,
 	REQUEST_TYPE_ATTACH,
 	REQUEST_TYPE_CREATE,
+	REQUEST_TYPE_IMPORT,
 };
 
 struct node_element {
@@ -85,13 +84,10 @@ struct mesh_node {
 	char *owner;
 	char *obj_path;
 	struct mesh_agent *agent;
-	char *path;
 	struct mesh_config *cfg;
 	char *storage_dir;
 	uint32_t disc_watch;
-	time_t upd_sec;
 	uint32_t seq_number;
-	uint32_t seq_min_cache;
 	bool provisioner;
 	uint16_t primary;
 	struct node_composition *comp;
@@ -111,6 +107,18 @@ struct mesh_node {
 	uint8_t beacon;
 };
 
+struct node_import {
+	uint8_t dev_key[16];
+	uint8_t net_key[16];
+	uint16_t net_idx;
+	struct {
+		bool ivu;
+		bool kr;
+	} flags;
+	uint32_t iv_index;
+	uint16_t unicast;
+};
+
 struct managed_obj_request {
 	struct mesh_node *node;
 	union {
@@ -121,6 +129,7 @@ struct managed_obj_request {
 	enum request_type type;
 	union {
 		struct mesh_node *attach;
+		struct node_import *import;
 	};
 };
 
@@ -464,7 +473,6 @@ static bool init_from_storage(struct mesh_config_node *db_node,
 	node->lpn = db_node->modes.lpn;
 
 	node->proxy = db_node->modes.proxy;
-	node->lpn = db_node->modes.lpn;
 	node->friend = db_node->modes.friend;
 	node->relay.mode = db_node->modes.relay.state;
 	node->relay.cnt = db_node->modes.relay.cnt;
@@ -472,7 +480,7 @@ static bool init_from_storage(struct mesh_config_node *db_node,
 	node->beacon = db_node->modes.beacon;
 
 	l_debug("relay %2.2x, proxy %2.2x, lpn %2.2x, friend %2.2x",
-			node->relay.mode, node->proxy, node->friend, node->lpn);
+			node->relay.mode, node->proxy, node->lpn, node->friend);
 	node->ttl = db_node->ttl;
 	node->seq_number = db_node->seq_number;
 
@@ -545,15 +553,11 @@ static void cleanup_node(void *data)
 	struct mesh_node *node = data;
 	struct mesh_net *net = node->net;
 
-	/* Save local node configuration */
-	if (node->cfg) {
-
-		/* Preserve the last sequence number */
+	/* Preserve the last sequence number */
+	if (node->cfg)
 		mesh_config_write_seq_number(node->cfg,
-						mesh_net_get_seq_num(net));
-
-		mesh_config_save(node->cfg, true, NULL, NULL);
-	}
+						mesh_net_get_seq_num(net),
+						false);
 
 	free_node_resources(node);
 }
@@ -689,42 +693,12 @@ bool node_default_ttl_set(struct mesh_node *node, uint8_t ttl)
 
 bool node_set_sequence_number(struct mesh_node *node, uint32_t seq)
 {
-	struct timeval write_time;
-
 	if (!node)
 		return false;
 
 	node->seq_number = seq;
 
-	/*
-	 * Holistically determine worst case 5 minute sequence consumption
-	 * so that we typically (once we reach a steady state) rewrite the
-	 * local node file with a new seq cache value no more than once every
-	 * five minutes (or more)
-	 */
-	gettimeofday(&write_time, NULL);
-	if (node->upd_sec) {
-		uint32_t elapsed = write_time.tv_sec - node->upd_sec;
-
-		if (elapsed < MIN_SEQ_CACHE_TIME) {
-			uint32_t ideal = node->seq_min_cache;
-
-			l_debug("Old Seq Cache: %d", node->seq_min_cache);
-
-			ideal *= (MIN_SEQ_CACHE_TIME / elapsed);
-
-			if (ideal > node->seq_min_cache + MIN_SEQ_CACHE)
-				node->seq_min_cache = ideal;
-			else
-				node->seq_min_cache += MIN_SEQ_CACHE;
-
-			l_debug("New Seq Cache: %d", node->seq_min_cache);
-		}
-	}
-
-	node->upd_sec = write_time.tv_sec;
-
-	return mesh_config_write_seq_number(node->cfg, seq);
+	return mesh_config_write_seq_number(node->cfg, node->seq_number, true);
 }
 
 uint32_t node_get_sequence_number(struct mesh_node *node)
@@ -733,14 +707,6 @@ uint32_t node_get_sequence_number(struct mesh_node *node)
 		return 0xffffffff;
 
 	return node->seq_number;
-}
-
-uint32_t node_seq_cache(struct mesh_node *node)
-{
-	if (node->seq_min_cache < MIN_SEQ_CACHE)
-		node->seq_min_cache = MIN_SEQ_CACHE;
-
-	return node->seq_min_cache;
 }
 
 int node_get_element_idx(struct mesh_node *node, uint16_t ele_addr)
@@ -1712,6 +1678,36 @@ static void get_managed_objects_cb(struct l_dbus_message *msg, void *user_data)
 		if (!create_node_config(node, node->uuid))
 			goto fail;
 
+	} else if (req->type == REQUEST_TYPE_IMPORT) {
+		struct node_import *import = req->import;
+		struct keyring_net_key net_key;
+
+		if (!create_node_config(node, node->uuid))
+			goto fail;
+
+		if (!add_local_node(node, import->unicast, import->flags.kr,
+					import->flags.ivu,
+					import->iv_index, import->dev_key,
+					import->net_idx, import->net_key))
+			goto fail;
+
+		memcpy(net_key.old_key, import->net_key, 16);
+		net_key.net_idx = import->net_idx;
+		if (import->flags.kr)
+			net_key.phase = KEY_REFRESH_PHASE_TWO;
+		else
+			net_key.phase = KEY_REFRESH_PHASE_NONE;
+
+		/* Initialize directory for storing keyring info */
+		init_storage_dir(node);
+
+		if (!keyring_put_remote_dev_key(node, import->unicast,
+						num_ele, import->dev_key))
+			goto fail;
+
+		if (!keyring_put_net_key(node, import->net_idx, &net_key))
+			goto fail;
+
 	} else {
 		/* Callback for create node request */
 		struct keyring_net_key net_key;
@@ -1749,7 +1745,8 @@ static void get_managed_objects_cb(struct l_dbus_message *msg, void *user_data)
 	else
 		req->ready_cb(req->pending_msg, MESH_ERROR_NONE, node);
 
-	return;
+	goto done;
+
 fail:
 	if (agent)
 		mesh_agent_remove(agent);
@@ -1762,6 +1759,10 @@ fail:
 		req->join_ready_cb(NULL, NULL);
 	else
 		req->ready_cb(req->pending_msg, MESH_ERROR_FAILED, NULL);
+
+done:
+	if (req->type == REQUEST_TYPE_IMPORT)
+		l_free(req->import);
 }
 
 /* Establish relationship between application and mesh node */
@@ -1823,6 +1824,41 @@ void node_join(const char *app_path, const char *sender, const uint8_t *uuid,
 					"GetManagedObjects", NULL,
 					get_managed_objects_cb,
 					req, l_free);
+}
+
+bool node_import(const char *app_path, const char *sender, const uint8_t *uuid,
+			const uint8_t dev_key[16], const uint8_t net_key[16],
+			uint16_t net_idx, bool kr, bool ivu,
+			uint32_t iv_index, uint16_t unicast,
+			node_ready_func_t cb, void *user_data)
+{
+	struct managed_obj_request *req;
+
+	l_debug("");
+
+	req = l_new(struct managed_obj_request, 1);
+
+	req->node = node_new(uuid);
+	req->ready_cb = cb;
+	req->pending_msg = user_data;
+
+	req->import = l_new(struct node_import, 1);
+	memcpy(req->import->dev_key, dev_key, 16);
+	memcpy(req->import->net_key, net_key, 16);
+	req->import->net_idx = net_idx;
+	req->import->flags.kr = kr;
+	req->import->flags.ivu = ivu;
+	req->import->iv_index = iv_index;
+	req->import->unicast = unicast;
+
+	req->type = REQUEST_TYPE_IMPORT;
+
+	l_dbus_method_call(dbus_get_bus(), sender, app_path,
+						L_DBUS_INTERFACE_OBJECT_MANAGER,
+						"GetManagedObjects", NULL,
+						get_managed_objects_cb,
+						req, l_free);
+	return true;
 }
 
 void node_create(const char *app_path, const char *sender, const uint8_t *uuid,
@@ -1916,7 +1952,7 @@ static struct l_dbus_message *send_call(struct l_dbus *dbus,
 	src = node_get_primary(node) + ele->idx;
 
 	if (!l_dbus_message_iter_get_fixed_array(&iter_data, &data, &len) ||
-					!len || len > MESH_MAX_ACCESS_PAYLOAD)
+					!len || len > MAX_MSG_LEN)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 							"Incorrect data");
 
@@ -1962,7 +1998,7 @@ static struct l_dbus_message *dev_key_send_call(struct l_dbus *dbus,
 	src = node_get_primary(node) + ele->idx;
 
 	if (!l_dbus_message_iter_get_fixed_array(&iter_data, &data, &len) ||
-					!len || len > MESH_MAX_ACCESS_PAYLOAD)
+					!len || len > MAX_MSG_LEN)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 							"Incorrect data");
 
@@ -2006,7 +2042,7 @@ static struct l_dbus_message *publish_call(struct l_dbus *dbus,
 	src = node_get_primary(node) + ele->idx;
 
 	if (!l_dbus_message_iter_get_fixed_array(&iter_data, &data, &len) ||
-					!len || len > MESH_MAX_ACCESS_PAYLOAD)
+					!len || len > MAX_MSG_LEN)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 							"Incorrect data");
 
@@ -2053,7 +2089,7 @@ static struct l_dbus_message *vendor_publish_call(struct l_dbus *dbus,
 	src = node_get_primary(node) + ele->idx;
 
 	if (!l_dbus_message_iter_get_fixed_array(&iter_data, &data, &len) ||
-					!len || len > MESH_MAX_ACCESS_PAYLOAD)
+					!len || len > MAX_MSG_LEN)
 		return dbus_error(msg, MESH_ERROR_INVALID_ARGS,
 							"Incorrect data");
 

@@ -31,6 +31,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <sys/time.h>
+
 #include <ell/ell.h>
 #include <json-c/json.h>
 
@@ -38,12 +40,19 @@
 #include "mesh/util.h"
 #include "mesh/mesh-config.h"
 
+/* To prevent local node JSON cache thrashing, minimum update times */
+#define MIN_SEQ_CACHE_TRIGGER	32
+#define MIN_SEQ_CACHE_VALUE	(2 * 32)
+#define MIN_SEQ_CACHE_TIME	(5 * 60)
+
 #define CHECK_KEY_IDX_RANGE(x) (((x) >= 0) && ((x) <= 4095))
 
 struct mesh_config {
 	json_object *jnode;
 	char *node_dir_path;
 	uint8_t uuid[16];
+	uint32_t write_seq;
+	struct timeval write_time;
 };
 
 struct write_info {
@@ -297,6 +306,65 @@ static json_object *jarray_key_del(json_object *jarray, int16_t idx)
 	return jarray_new;
 }
 
+static bool read_unicast_address(json_object *jobj, uint16_t *unicast)
+{
+	json_object *jvalue;
+	char *str;
+
+	if (!json_object_object_get_ex(jobj, "unicastAddress", &jvalue))
+		return false;
+
+	str = (char *)json_object_get_string(jvalue);
+	if (sscanf(str, "%04hx", unicast) != 1)
+		return false;
+
+	return true;
+}
+
+static bool read_default_ttl(json_object *jobj, uint8_t *ttl)
+{
+	json_object *jvalue;
+	int val;
+
+	/* defaultTTL is optional */
+	if (!json_object_object_get_ex(jobj, "defaultTTL", &jvalue))
+		return true;
+
+	val = json_object_get_int(jvalue);
+
+	if (!val && errno == EINVAL)
+		return false;
+
+	if (val < 0 || val == 1 || val > DEFAULT_TTL)
+		return false;
+
+	*ttl = (uint8_t) val;
+
+	return true;
+}
+
+static bool read_seq_number(json_object *jobj, uint32_t *seq_number)
+{
+	json_object *jvalue;
+	int val;
+
+	/* sequenceNumber is optional */
+	if (!json_object_object_get_ex(jobj, "sequenceNumber", &jvalue))
+		return true;
+
+	val = json_object_get_int(jvalue);
+
+	if (!val && errno == EINVAL)
+		return false;
+
+	if (val < 0 || val > 0xffffff)
+		return false;
+
+	*seq_number = (uint32_t) val;
+
+	return true;
+}
+
 static bool read_iv_index(json_object *jobj, uint32_t *idx, bool *update)
 {
 	int tmp;
@@ -424,7 +492,7 @@ fail:
 	return false;
 }
 
-static bool read_net_keys(json_object *jobj,  struct mesh_config_node *node)
+static bool read_net_keys(json_object *jobj, struct mesh_config_node *node)
 {
 	json_object *jarray;
 	int len;
@@ -1294,7 +1362,6 @@ static bool read_net_transmit(json_object *jobj, struct mesh_config_node *node)
 static bool read_node(json_object *jnode, struct mesh_config_node *node)
 {
 	json_object *jvalue;
-	char *str;
 
 	if (!read_iv_index(jnode, &node->iv_index, &node->iv_update)) {
 		l_info("Failed to read IV index");
@@ -1318,25 +1385,20 @@ static bool read_node(json_object *jnode, struct mesh_config_node *node)
 
 	parse_features(jnode, node);
 
-	if (!json_object_object_get_ex(jnode, "unicastAddress", &jvalue)) {
-		l_info("Bad config: Unicast address must be present");
+	if (!read_unicast_address(jnode, &node->unicast)) {
+		l_info("Failed to parse unicast address");
 		return false;
 	}
 
-	str = (char *)json_object_get_string(jvalue);
-	if (sscanf(str, "%04hx", &node->unicast) != 1)
+	if (!read_default_ttl(jnode, &node->ttl)) {
+		l_info("Failed to parse default ttl");
 		return false;
-
-	if (json_object_object_get_ex(jnode, "defaultTTL", &jvalue)) {
-		int ttl = json_object_get_int(jvalue);
-
-		if (ttl < 0 || ttl == 1 || ttl > DEFAULT_TTL)
-			return false;
-		node->ttl = (uint8_t) ttl;
 	}
 
-	if (json_object_object_get_ex(jnode, "sequenceNumber", &jvalue))
-		node->seq_number = json_object_get_int(jvalue);
+	if (!read_seq_number(jnode, &node->seq_number)) {
+		l_info("Failed to parse sequence number");
+		return false;
+	}
 
 	/* Check for required "elements" property */
 	if (!json_object_object_get_ex(jnode, "elements", &jvalue))
@@ -1500,7 +1562,7 @@ bool mesh_config_write_net_transmit(struct mesh_config *cfg, uint8_t cnt,
 	jnode = cfg->jnode;
 
 	jretransmit = json_object_new_object();
-	if (jretransmit)
+	if (!jretransmit)
 		return false;
 
 	if (!write_int(jretransmit, "count", cnt))
@@ -1655,6 +1717,8 @@ static struct mesh_config *create_config(const char *cfg_path,
 	cfg->jnode = jnode;
 	memcpy(cfg->uuid, uuid, 16);
 	cfg->node_dir_path = l_strdup(cfg_path);
+	cfg->write_seq = node->seq_number;
+	gettimeofday(&cfg->write_time, NULL);
 
 	return cfg;
 }
@@ -1967,12 +2031,59 @@ bool mesh_config_model_sub_del_all(struct mesh_config *cfg, uint16_t addr,
 	return save_config(cfg->jnode, cfg->node_dir_path);
 }
 
-bool mesh_config_write_seq_number(struct mesh_config *cfg, uint32_t seq)
+bool mesh_config_write_seq_number(struct mesh_config *cfg, uint32_t seq,
+								bool cache)
 {
-	if (!cfg || !write_int(cfg->jnode, "sequenceNumber", seq))
+	int value;
+	uint32_t cached = 0;
+
+	if (!cfg)
 		return false;
 
-	mesh_config_save(cfg, false, NULL, NULL);
+	if (!cache) {
+		if (!write_int(cfg->jnode, "sequenceNumber", seq))
+		    return false;
+
+		return mesh_config_save(cfg, true, NULL, NULL);
+	}
+
+	if (get_int(cfg->jnode, "sequenceNumber", &value))
+		cached = (uint32_t)value;
+
+	/*
+	 * When sequence number approaches value stored on disk, calculate
+	 * average time between sequence number updates, then overcommit the
+	 * sequence number by MIN_SEQ_CACHE_TIME seconds worth of traffic or
+	 * MIN_SEQ_CACHE_VALUE (whichever is greater) to avoid frequent writes
+	 * to disk and to protect against crashes.
+	 *
+	 * The real value will be saved when daemon shuts down properly.
+	 */
+	if (seq + MIN_SEQ_CACHE_TRIGGER >= cached) {
+		struct timeval now;
+		struct timeval elapsed;
+		uint64_t elapsed_ms;
+
+		gettimeofday(&now, NULL);
+		timersub(&now, &cfg->write_time, &elapsed);
+		elapsed_ms = elapsed.tv_sec * 1000 + elapsed.tv_usec / 1000;
+
+		cached = seq + (seq - cfg->write_seq) *
+					1000 * MIN_SEQ_CACHE_TIME / elapsed_ms;
+
+		if (cached < seq + MIN_SEQ_CACHE_VALUE)
+			cached = seq + MIN_SEQ_CACHE_VALUE;
+
+		l_debug("Seq Cache: %d -> %d", seq, cached);
+
+		cfg->write_seq = seq;
+
+		if (!write_int(cfg->jnode, "sequenceNumber", cached))
+		    return false;
+
+		return mesh_config_save(cfg, false, NULL, NULL);
+	}
+
 	return true;
 }
 
@@ -2036,6 +2147,9 @@ static bool load_node(const char *fname, const uint8_t uuid[16],
 		cfg->jnode = jnode;
 		memcpy(cfg->uuid, uuid, 16);
 		cfg->node_dir_path = l_strdup(fname);
+		cfg->write_seq = node.seq_number;
+		gettimeofday(&cfg->write_time, NULL);
+
 		result = cb(&node, uuid, cfg, user_data);
 
 		if (!result) {
@@ -2094,10 +2208,13 @@ static void idle_save_config(void *user_data)
 	l_free(fname_tmp);
 	l_free(fname_bak);
 
+	gettimeofday(&info->cfg->write_time, NULL);
+
 	if (info->cb)
 		info->cb(info->user_data, result);
 
 	l_free(info);
+
 }
 
 bool mesh_config_save(struct mesh_config *cfg, bool no_wait,
