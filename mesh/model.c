@@ -561,7 +561,6 @@ static int update_binding(struct mesh_node *node, uint16_t addr, uint32_t id,
 	int status;
 	struct mesh_model *mod;
 	bool is_present, is_vendor;
-	uint8_t ele_idx;
 
 	mod = find_model(node, addr, id, &status);
 	if (!mod) {
@@ -586,12 +585,10 @@ static int update_binding(struct mesh_node *node, uint16_t addr, uint32_t id,
 	if (is_present && !unbind)
 		return MESH_STATUS_SUCCESS;
 
-	ele_idx = (uint8_t) node_get_element_idx(node, addr);
-
 	if (unbind) {
 		model_unbind_idx(node, mod, app_idx);
 		if (!mesh_config_model_binding_del(node_config_get(node),
-					ele_idx, is_vendor, id, app_idx))
+					addr, is_vendor, id, app_idx))
 			return MESH_STATUS_STORAGE_FAIL;
 
 		return MESH_STATUS_SUCCESS;
@@ -601,7 +598,7 @@ static int update_binding(struct mesh_node *node, uint16_t addr, uint32_t id,
 		return MESH_STATUS_INSUFF_RESOURCES;
 
 	if (!mesh_config_model_binding_add(node_config_get(node),
-					ele_idx, is_vendor, id, app_idx))
+					addr, is_vendor, id, app_idx))
 		return MESH_STATUS_STORAGE_FAIL;
 
 	model_bind_idx(node, mod, app_idx);
@@ -735,14 +732,16 @@ static int add_sub(struct mesh_net *net, struct mesh_model *mod,
 }
 
 static void send_dev_key_msg_rcvd(struct mesh_node *node, uint8_t ele_idx,
-					uint16_t src, uint16_t net_idx,
-					uint16_t size, const uint8_t *data)
+					uint16_t src, uint16_t app_idx,
+					uint16_t net_idx, uint16_t size,
+					const uint8_t *data)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 	struct l_dbus_message *msg;
 	struct l_dbus_message_builder *builder;
 	const char *owner;
 	const char *path;
+	bool remote = (app_idx != APP_IDX_DEV_LOCAL);
 
 	owner = node_get_owner(node);
 	path = node_get_element_path(node, ele_idx);
@@ -758,6 +757,7 @@ static void send_dev_key_msg_rcvd(struct mesh_node *node, uint8_t ele_idx,
 	builder = l_dbus_message_builder_new(msg);
 
 	l_dbus_message_builder_append_basic(builder, 'q', &src);
+	l_dbus_message_builder_append_basic(builder, 'b', &remote);
 	l_dbus_message_builder_append_basic(builder, 'q', &net_idx);
 	dbus_append_byte_array(builder, data, size);
 
@@ -936,8 +936,8 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 			else if (decrypt_idx == APP_IDX_DEV_REMOTE ||
 				(decrypt_idx == APP_IDX_DEV_LOCAL &&
 				 mesh_net_is_local_address(net, src, 1)))
-				send_dev_key_msg_rcvd(node, i, src, 0,
-						forward.size, forward.data);
+				send_dev_key_msg_rcvd(node, i, src, decrypt_idx,
+						0, forward.size, forward.data);
 		}
 
 		/*
