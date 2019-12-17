@@ -265,12 +265,14 @@ static void add_internal_model(struct mesh_node *node, uint32_t mod_id,
 
 static void set_defaults(struct mesh_node *node)
 {
-	/* TODO: these values should come from mesh.conf */
 	node->lpn = MESH_MODE_UNSUPPORTED;
 	node->proxy = MESH_MODE_UNSUPPORTED;
-	node->friend = MESH_MODE_UNSUPPORTED;
-	node->beacon = MESH_MODE_DISABLED;
-	node->relay.mode = MESH_MODE_DISABLED;
+	node->friend = (mesh_friendship_supported()) ? MESH_MODE_DISABLED :
+							MESH_MODE_UNSUPPORTED;
+	node->beacon = (mesh_beacon_enabled()) ? MESH_MODE_ENABLED :
+							MESH_MODE_DISABLED;
+	node->relay.mode = (mesh_relay_supported()) ? MESH_MODE_DISABLED :
+							MESH_MODE_UNSUPPORTED;
 	node->ttl = TTL_MASK;
 	node->seq_number = DEFAULT_SEQUENCE_NUMBER;
 }
@@ -1081,7 +1083,7 @@ static void app_disc_cb(struct l_dbus *bus, void *user_data)
 	free_node_dbus_resources(node);
 }
 
-static void get_sig_models_from_properties(struct node_element *ele,
+static bool get_sig_models_from_properties(struct node_element *ele,
 					struct l_dbus_message_iter *property)
 {
 	struct l_dbus_message_iter ids;
@@ -1091,24 +1093,31 @@ static void get_sig_models_from_properties(struct node_element *ele,
 		ele->models = l_queue_new();
 
 	if (!l_dbus_message_iter_get_variant(property, "aq", &ids))
-		return;
+		return false;
 
 	/* Bluetooth SIG defined models */
 	while (l_dbus_message_iter_next_entry(&ids, &mod_id)) {
 		struct mesh_model *mod;
 		uint32_t id = mod_id | VENDOR_ID_MASK;
 
+		/* Allow Config Server Model only on the primary element */
+		if (ele->idx != PRIMARY_ELE_IDX && id == CONFIG_SRV_MODEL)
+			return false;
+
+		/* Disallow duplicates */
 		if (l_queue_find(ele->models, match_model_id,
 						L_UINT_TO_PTR(id)))
-			continue;
+			return false;
 
 		mod = mesh_model_new(ele->idx, id);
 
 		l_queue_insert(ele->models, mod, compare_model_id, NULL);
 	}
+
+	return true;
 }
 
-static void get_vendor_models_from_properties(struct node_element *ele,
+static bool get_vendor_models_from_properties(struct node_element *ele,
 					struct l_dbus_message_iter *property)
 {
 	struct l_dbus_message_iter ids;
@@ -1118,21 +1127,24 @@ static void get_vendor_models_from_properties(struct node_element *ele,
 		ele->models = l_queue_new();
 
 	if (!l_dbus_message_iter_get_variant(property, "a(qq)", &ids))
-		return;
+		return false;
 
 	/* Vendor defined models */
 	while (l_dbus_message_iter_next_entry(&ids, &vendor_id, &mod_id)) {
 		struct mesh_model *mod;
 		uint32_t id = mod_id | (vendor_id << 16);
 
+		/* Disallow duplicates */
 		if (l_queue_find(ele->models, match_model_id,
 							L_UINT_TO_PTR(id)))
-			continue;
+			return false;
 
 		mod = mesh_model_new(ele->idx, id);
 
 		l_queue_insert(ele->models, mod, compare_model_id, NULL);
 	}
+
+	return true;
 }
 
 static bool get_element_properties(struct mesh_node *node, const char *path,
@@ -1150,34 +1162,36 @@ static bool get_element_properties(struct mesh_node *node, const char *path,
 	ele->location = DEFAULT_LOCATION;
 
 	while (l_dbus_message_iter_next_entry(properties, &key, &var)) {
-		if (!idx && !strcmp(key, "Index")) {
-			if (!l_dbus_message_iter_get_variant(&var, "y",
+		if (!strcmp(key, "Index")) {
+
+			if (idx || !l_dbus_message_iter_get_variant(&var, "y",
 								&ele->idx))
 				goto fail;
+
 			idx = true;
-			continue;
-		}
 
-		if (!mods && !strcmp(key, "Models")) {
-			get_sig_models_from_properties(ele, &var);
+		} else if (!strcmp(key, "Models")) {
+
+			if (mods || !get_sig_models_from_properties(ele, &var))
+				goto fail;
+
 			mods = true;
-			continue;
-		}
+		} else if (!strcmp(key, "VendorModels")) {
 
-		if (!vendor_mods && !strcmp(key, "VendorModels")) {
-			get_vendor_models_from_properties(ele, &var);
+			if (vendor_mods ||
+				!get_vendor_models_from_properties(ele, &var))
+				goto fail;
+
 			vendor_mods = true;
-			continue;
-		}
 
-		if (!strcmp(key, "Location")) {
+		} else if (!strcmp(key, "Location")) {
 			if (!l_dbus_message_iter_get_variant(&var, "q",
 							&ele->location))
 				goto fail;
-			continue;
 		}
 	}
 
+	/* Check for the presence of the required properties */
 	if (!idx || !mods || !vendor_mods)
 		goto fail;
 
@@ -1299,7 +1313,7 @@ static bool get_app_properties(struct mesh_node *node, const char *path,
 	l_debug("path %s", path);
 
 	node->comp = l_new(struct node_composition, 1);
-	node->comp->crpl = DEFAULT_CRPL;
+	node->comp->crpl = mesh_get_crpl();
 
 	while (l_dbus_message_iter_next_entry(properties, &key, &variant)) {
 		if (!cid && !strcmp(key, "CompanyID")) {

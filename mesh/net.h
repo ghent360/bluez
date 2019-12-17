@@ -117,6 +117,9 @@ struct mesh_node;
 #define FRND_OPCODE(x) \
 		((x) >= NET_OP_FRND_POLL && (x) <= NET_OP_FRND_CLEAR_CONFIRM)
 
+#define DEFAULT_MIN_DELAY		0
+#define DEFAULT_MAX_DELAY		25
+
 struct mesh_net_addr_range {
 	uint16_t low;
 	uint16_t high;
@@ -276,8 +279,6 @@ void mesh_net_set_frnd_seq(struct mesh_net *net, bool seq);
 uint16_t mesh_net_get_address(struct mesh_net *net);
 bool mesh_net_register_unicast(struct mesh_net *net,
 					uint16_t unicast, uint8_t num_ele);
-bool mesh_net_set_friend(struct mesh_net *net, uint16_t friend_addr);
-uint16_t mesh_net_get_friend(struct mesh_net *net);
 uint8_t mesh_net_get_num_ele(struct mesh_net *net);
 bool mesh_net_set_beacon_mode(struct mesh_net *net, bool enable);
 bool mesh_net_set_proxy_mode(struct mesh_net *net, bool enable);
