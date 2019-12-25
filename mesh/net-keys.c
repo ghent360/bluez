@@ -410,7 +410,6 @@ static void snb_timeout(struct l_timeout *timeout, void *user_data)
 	}
 
 	interval = key->snb.observe_period / 2;
-	key->snb.ts = get_timestamp_secs();
 	key->snb.half_period = !key->snb.half_period;
 
 	if (key->beacon_enables)
@@ -425,8 +424,20 @@ void net_key_beacon_seen(uint32_t id)
 {
 	struct net_key *key = l_queue_find(keys, match_id, L_UINT_TO_PTR(id));
 
-	if (key)
+	if (key) {
 		key->snb.observed++;
+		key->snb.ts = get_timestamp_secs();
+	}
+}
+
+uint32_t net_key_beacon_last_seen(uint32_t id)
+{
+	struct net_key *key = l_queue_find(keys, match_id, L_UINT_TO_PTR(id));
+
+	if (key)
+		return key->snb.ts;
+
+	return 0;
 }
 
 void net_key_beacon_enable(uint32_t id)
@@ -451,7 +462,6 @@ void net_key_beacon_enable(uint32_t id)
 	rand_ms++;
 
 	/* Enable Periodic Beaconing on this key */
-	key->snb.ts = get_timestamp_secs();
 	key->snb.observe_period = BEACON_INTERVAL_MIN * 2;
 	key->snb.expected = 2;
 	key->snb.observed = 0;
@@ -479,6 +489,9 @@ bool net_key_beacon_refresh(uint32_t id, uint32_t iv_index, bool kr, bool ivu)
 
 	l_debug("Setting SNB: IVI: %8.8x, IVU: %d, KR: %d", iv_index, ivu, kr);
 	print_packet("Set SNB Beacon to", beacon, sizeof(beacon));
+
+	/* Propagate changes to all local nodes */
+	net_local_beacon(id, beacon);
 
 	/* Send one new SNB soon, after all nodes have seen it */
 	l_getrandom(&rand_ms, sizeof(rand_ms));

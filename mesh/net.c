@@ -2739,6 +2739,19 @@ static void beacon_recv(void *user_data, struct mesh_io_recv_info *info,
 		net_key_beacon_seen(beacon_data.key_id);
 }
 
+void net_local_beacon(uint32_t key_id, uint8_t *beacon)
+{
+	struct net_beacon_data beacon_data = {
+		.key_id = key_id,
+		.ivu = !!(beacon[2] & 0x02),
+		.kr = !!(beacon[2] & 0x01),
+		.ivi = l_get_be32(beacon + 11),
+	};
+
+	/* Deliver locally generated beacons to all nodes */
+	l_queue_foreach(nets, process_beacon, &beacon_data);
+}
+
 bool mesh_net_set_beacon_mode(struct mesh_net *net, bool enable)
 {
 	if (!net)
@@ -3649,7 +3662,22 @@ void mesh_net_set_prov(struct mesh_net *net, struct mesh_prov *prov)
 	net->prov = prov;
 }
 
+static void refresh_instant(void *a, void *b)
+{
+	struct mesh_subnet *subnet = a;
+	struct mesh_net *net = b;
+	uint32_t instant = net_key_beacon_last_seen(subnet->net_key_tx);
+
+	if (net->instant < instant)
+		net->instant = instant;
+}
+
 uint32_t mesh_net_get_instant(struct mesh_net *net)
 {
+	if (!net)
+		return 0;
+
+	l_queue_foreach(net->subnets, refresh_instant, net);
+
 	return net->instant;
 }
