@@ -2371,13 +2371,13 @@ struct bt_hci_le_ext_create_conn {
 
 #define BT_HCI_CMD_LE_PERIODIC_ADV_CREATE_SYNC		0x2044
 struct bt_hci_cmd_le_periodic_adv_create_sync {
-	uint8_t  filter_policy;
+	uint8_t  options;
 	uint8_t  sid;
 	uint8_t  addr_type;
 	uint8_t  addr[6];
 	uint16_t skip;
 	uint16_t sync_timeout;
-	uint8_t  unused;
+	uint8_t  sync_cte_type;
 } __attribute__ ((packed));
 
 #define BT_HCI_CMD_LE_PERIODIC_ADV_CREATE_SYNC_CANCEL		0x2045
@@ -2459,6 +2459,43 @@ struct bt_hci_cmd_le_tx_test_v3 {
 	uint8_t  duration;
 	uint8_t  num_antenna_id;
 	uint8_t  antenna_ids[0];
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_SET_PERIODIC_ADV_REC_ENABLE	0x2059
+struct bt_hci_cmd_set_periodic_adv_rec_enable {
+	uint16_t sync_handle;
+	uint8_t  enable;
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_PERIODIC_SYNC_TRANS	0x205a
+struct bt_hci_cmd_periodic_sync_trans {
+	uint16_t handle;
+	uint16_t service_data;
+	uint16_t sync_handle;
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_PERIODIC_ADV_SET_INFO_TRANS	0x205b
+struct bt_hci_cmd_periodic_adv_set_info_trans {
+	uint16_t handle;
+	uint16_t service_data;
+	uint16_t adv_handle;
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_PERIODIC_ADV_SYNC_TRANS_PARAMS	0x205c
+struct bt_hci_cmd_periodic_adv_sync_trans_params {
+	uint16_t  handle;
+	uint8_t   mode;
+	uint16_t  skip;
+	uint16_t  sync_timeout;
+	uint8_t   cte_type;
+} __attribute__ ((packed));
+
+#define BT_HCI_CMD_DEFAULT_PERIODIC_ADV_SYNC_TRANS_PARAMS	0x205d
+struct bt_hci_cmd_default_periodic_adv_sync_trans_params {
+	uint8_t  mode;
+	uint16_t skip;
+	uint16_t sync_timeout;
+	uint8_t  cte_type;
 } __attribute__ ((packed));
 
 #define BT_HCI_EVT_INQUIRY_COMPLETE		0x01
@@ -3108,7 +3145,7 @@ struct bt_hci_le_per_adv_report {
 	uint16_t handle;
 	uint8_t  tx_power;
 	int8_t   rssi;
-	uint8_t  unused;
+	uint8_t  cte_type;
 	uint8_t  data_status;
 	uint8_t  data_len;
 	uint8_t  data[0];
@@ -3138,6 +3175,26 @@ struct bt_hci_evt_le_scan_req_received {
 struct bt_hci_evt_le_chan_select_alg {
 	uint16_t handle;
 	uint8_t  algorithm;
+} __attribute__ ((packed));
+
+#define BT_HCI_EVT_LE_CTE_REQUEST_FAILED	0x17
+struct bt_hci_evt_le_cte_request_failed {
+	uint8_t  status;
+	uint16_t handle;
+} __attribute__ ((packed));
+
+#define BT_HCI_EVT_LE_PER_ADV_SYNC_TRANS_REC		0x18
+struct bt_hci_evt_le_per_adv_sync_trans_rec {
+	uint8_t  status;
+	uint16_t handle;
+	uint16_t service_data;
+	uint16_t sync_handle;
+	uint8_t  sid;
+	uint8_t  addr_type;
+	uint8_t  addr[6];
+	uint8_t  phy;
+	uint16_t interval;
+	uint8_t  clock_accuracy;
 } __attribute__ ((packed));
 
 #define BT_HCI_ERR_SUCCESS			0x00
