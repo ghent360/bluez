@@ -511,6 +511,15 @@ uint32_t mesh_net_next_seq_num(struct mesh_net *net)
 {
 	uint32_t seq = net->seq_num++;
 
+	/* Cap out-of-range seq_num max value to +1. Out of range
+	 * seq_nums will not be sent as they would violate spec.
+	 * This condition signals a runaway seq_num condition, and
+	 * the node must wait for a completed IV Index update procedure
+	 * before it can send again.
+	 */
+	if (net->seq_num > SEQ_MASK)
+		net->seq_num = SEQ_MASK + 1;
+
 	node_set_sequence_number(net->node, net->seq_num);
 	return seq;
 }
@@ -1065,26 +1074,46 @@ bool mesh_net_get_key(struct mesh_net *net, bool new_key, uint16_t idx,
 bool mesh_net_key_list_get(struct mesh_net *net, uint8_t *buf, uint16_t *size)
 {
 	const struct l_queue_entry *entry;
-	uint16_t n, buf_size;
+	uint16_t num_keys, req_size, buf_size;
+	struct mesh_subnet *subnet;
 
 	if (!net || !buf || !size)
 		return false;
 
 	buf_size = *size;
-	if (buf_size < l_queue_length(net->subnets) * 2)
+
+	num_keys = l_queue_length(net->subnets);
+	req_size = (num_keys / 2) * 3 + (num_keys % 2) * 2;
+
+	if (buf_size < req_size)
 		return false;
 
-	n = 0;
-	entry = l_queue_get_entries(net->subnets);
+	*size = req_size;
 
-	for (; entry; entry = entry->next) {
-		struct mesh_subnet *subnet = entry->data;
+	/* Pack NetKey indices in 3 octets */
+	for (entry = l_queue_get_entries(net->subnets); num_keys > 1;) {
+		uint32_t idx_pair;
 
-		l_put_le16(subnet->idx, buf);
-		n += 2;
+		subnet = entry->data;
+		idx_pair = subnet->idx;
+		idx_pair <<= 12;
+
+		subnet = entry->next->data;
+		idx_pair += subnet->idx;
+
+		l_put_le32(idx_pair, buf);
+		buf += 3;
+
+		num_keys -= 2;
+		entry = entry->next->next;
 	}
 
-	*size = n;
+	/* If odd number of NetKeys, fill in the end of the buffer */
+	if (num_keys % 2) {
+		subnet = entry->data;
+		l_put_le16(subnet->idx, buf);
+	}
+
 	return true;
 }
 
@@ -2690,11 +2719,17 @@ static void process_beacon(void *net_ptr, void *user_data)
 	/* We have officially *seen* this beacon now */
 	beacon_data->processed = true;
 
-	if (ivi == net->iv_index && ivu == net->iv_update && kr == local_kr)
-		return;
+	/*
+	 * Ignore the beacon if it doesn't change anything, unless we're
+	 * doing IV Recovery
+	 */
+	if (net->iv_upd_state == IV_UPD_INIT ||
+				ivi != net->iv_index || ivu != net->iv_update)
+		update_iv_ivu_state(net, ivi, ivu);
 
-	update_iv_ivu_state(net, ivi, ivu);
-	update_kr_state(subnet, kr, beacon_data->key_id);
+	if (kr != local_kr)
+		update_kr_state(subnet, kr, beacon_data->key_id);
+
 	net_key_beacon_refresh(beacon_data->key_id, net->iv_index,
 		!!(subnet->kr_phase == KEY_REFRESH_PHASE_TWO), net->iv_update);
 }
