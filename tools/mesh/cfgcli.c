@@ -73,9 +73,9 @@ static uint32_t parms[8];
 static struct cfg_cmd cmds[] = {
 	{ OP_APPKEY_ADD, OP_APPKEY_STATUS, "AppKeyAdd" },
 	{ OP_APPKEY_DELETE, OP_APPKEY_STATUS, "AppKeyDelete" },
-	{ OP_APPKEY_GET, OP_APPKEY_LIST, "AppKeyGet"},
-	{ OP_APPKEY_LIST, NO_RESPONSE, "AppKeyList"},
-	{ OP_APPKEY_STATUS, NO_RESPONSE, "AppKeyStatus"},
+	{ OP_APPKEY_GET, OP_APPKEY_LIST, "AppKeyGet" },
+	{ OP_APPKEY_LIST, NO_RESPONSE, "AppKeyList" },
+	{ OP_APPKEY_STATUS, NO_RESPONSE, "AppKeyStatus" },
 	{ OP_APPKEY_UPDATE, OP_APPKEY_STATUS, "AppKeyUpdate" },
 	{ OP_DEV_COMP_GET, OP_DEV_COMP_STATUS, "DeviceCompositionGet" },
 	{ OP_DEV_COMP_STATUS, NO_RESPONSE, "DeviceCompositionStatus" },
@@ -240,20 +240,21 @@ static void add_request(uint32_t opcode)
 	l_queue_push_tail(requests, req);
 }
 
-static uint32_t print_mod_id(uint8_t *data, bool vid, const char *offset)
+static uint32_t print_mod_id(uint8_t *data, bool vendor, const char *offset)
 {
 	uint32_t mod_id;
 
-	if (!vid) {
+	if (!vendor) {
 		mod_id = get_le16(data);
-		bt_shell_printf("%sModel Id\t%4.4x\n", offset, mod_id);
+		bt_shell_printf("%sModel ID\t%4.4x\n", offset, mod_id);
 		mod_id = VENDOR_ID_MASK | mod_id;
 	} else {
 		mod_id = get_le16(data + 2);
-		bt_shell_printf("%sModel Id\t%4.4x %4.4x\n", offset,
+		bt_shell_printf("%sModel ID\t%4.4x %4.4x\n", offset,
 							get_le16(data), mod_id);
 		mod_id = get_le16(data) << 16 | mod_id;
 	}
+
 	return mod_id;
 }
 
@@ -356,7 +357,7 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 	} else
 		return false;
 
-	bt_shell_printf("Received %s\n", opcode_str(opcode));
+	bt_shell_printf("Received %s (len %u)\n", opcode_str(opcode), len);
 
 	req = get_req_by_rsp(src, (opcode & ~OP_UNRELIABLE));
 	if (req) {
@@ -581,11 +582,11 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 
 	/* Per Mesh Profile 4.3.2.19 */
 	case OP_CONFIG_MODEL_SUB_STATUS:
+		if (len != 7 && len != 9)
+			return true;
+
 		bt_shell_printf("\nNode %4.4x Subscription status %s\n",
 				src, mesh_status_str(data[0]));
-
-		if (data[0] != MESH_STATUS_SUCCESS)
-			return true;
 
 		ele_addr = get_le16(data + 1);
 		addr = get_le16(data + 3);
@@ -599,28 +600,43 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 
 	/* Per Mesh Profile 4.3.2.27 */
 	case OP_CONFIG_MODEL_SUB_LIST:
+		if (len < 5)
+			return true;
 
 		bt_shell_printf("\nNode %4.4x Subscription List status %s\n",
 				src, mesh_status_str(data[0]));
 
-		if (data[0] != MESH_STATUS_SUCCESS)
-			return true;
-
 		bt_shell_printf("Element Addr\t%4.4x\n", get_le16(data + 1));
-		bt_shell_printf("Model ID\t%4.4x\n", get_le16(data + 3));
+		print_mod_id(data + 3, false, "");
 
 		for (i = 5; i < len; i += 2)
 			bt_shell_printf("Subscr Addr\t%4.4x\n",
 							get_le16(data + i));
 		break;
 
+	case OP_CONFIG_VEND_MODEL_SUB_LIST:
+		if (len < 7)
+			return true;
+
+		bt_shell_printf("\nNode %4.4x Subscription List status %s\n",
+				src, mesh_status_str(data[0]));
+
+		bt_shell_printf("Element Addr\t%4.4x\n", get_le16(data + 1));
+		print_mod_id(data + 3, true, "");
+
+		for (i = 7; i < len; i += 2)
+			bt_shell_printf("Subscr Addr\t%4.4x\n",
+							get_le16(data + i));
+		break;
+
+
 	/* Per Mesh Profile 4.3.2.50 */
 	case OP_MODEL_APP_LIST:
+		if (len < 5)
+			return true;
+
 		bt_shell_printf("\nNode %4.4x Model AppIdx status %s\n",
 						src, mesh_status_str(data[0]));
-
-		if (data[0] != MESH_STATUS_SUCCESS)
-			return true;
 
 		bt_shell_printf("Element Addr\t%4.4x\n", get_le16(data + 1));
 		bt_shell_printf("Model ID\t%4.4x\n", get_le16(data + 3));
@@ -630,13 +646,31 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 							get_le16(data + i));
 		break;
 
-	/* Per Mesh Profile 4.3.2.63 */
-	case OP_CONFIG_HEARTBEAT_PUB_STATUS:
-		bt_shell_printf("\nNode %4.4x Heartbeat publish status %s\n",
-				src, mesh_status_str(data[0]));
+	case OP_VEND_MODEL_APP_LIST:
+		if (len < 7)
+			return true;
+
+		bt_shell_printf("\nNode %4.4x Vendor Model AppIdx status %s\n",
+						src, mesh_status_str(data[0]));
 
 		if (data[0] != MESH_STATUS_SUCCESS)
 			return true;
+
+		bt_shell_printf("Element Addr\t%4.4x\n", get_le16(data + 1));
+		print_mod_id(data + 3, true, "");
+
+		for (i = 7; i < len; i += 2)
+			bt_shell_printf("Model AppIdx\t%4.4x\n",
+							get_le16(data + i));
+		break;
+
+	/* Per Mesh Profile 4.3.2.63 */
+	case OP_CONFIG_HEARTBEAT_PUB_STATUS:
+		if (len != 10)
+			return true;
+
+		bt_shell_printf("\nNode %4.4x Heartbeat publish status %s\n",
+				src, mesh_status_str(data[0]));
 
 		bt_shell_printf("Destination\t%4.4x\n", get_le16(data + 1));
 		bt_shell_printf("Count\t\t%2.2x\n", data[3]);
@@ -648,11 +682,11 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 
 	/* Per Mesh Profile 4.3.2.66 */
 	case OP_CONFIG_HEARTBEAT_SUB_STATUS:
+		if (len != 9)
+			return true;
+
 		bt_shell_printf("\nNode %4.4x Heartbeat subscribe status %s\n",
 				src, mesh_status_str(data[0]));
-
-		if (data[0] != MESH_STATUS_SUCCESS)
-			return true;
 
 		bt_shell_printf("Source\t\t%4.4x\n", get_le16(data + 1));
 		bt_shell_printf("Destination\t%4.4x\n", get_le16(data + 3));
@@ -673,6 +707,9 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 
 	/* Per Mesh Profile 4.3.2.54 */
 	case OP_NODE_RESET_STATUS:
+		if (len != 1)
+			return true;
+
 		bt_shell_printf("Node %4.4x reset status %s\n",
 				src, mesh_status_str(data[0]));
 
@@ -689,6 +726,21 @@ static bool msg_recvd(uint16_t src, uint16_t idx, uint8_t *data,
 	}
 
 	return true;
+}
+
+static uint16_t put_model_id(uint8_t *buf, uint32_t *args, bool vendor)
+{
+	uint16_t n = 2;
+
+	if (vendor) {
+		put_le16(args[1], buf);
+		buf += 2;
+		n = 4;
+	}
+
+	put_le16(args[0], buf);
+
+	return n;
 }
 
 static uint32_t read_input_parameters(int argc, char *argv[])
@@ -973,14 +1025,7 @@ static void cmd_bind(uint32_t opcode, int argc, char *argv[])
 	put_le16(parms[1], msg + n);
 	n += 2;
 
-	if (parm_cnt == 4) {
-		put_le16(parms[3], msg + n);
-		put_le16(parms[2], msg + n + 2);
-		n += 4;
-	} else {
-		put_le16(parms[2], msg + n);
-		n += 2;
-	}
+	n += put_model_id(msg + n, &parms[2], parm_cnt == 4);
 
 	if (!config_send(msg, n, opcode))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
@@ -1178,14 +1223,7 @@ static void cmd_pub_set(int argc, char *argv[])
 	msg[n++] = parms[4];
 
 	/* Model Id */
-	if (parm_cnt == 7) {
-		put_le16(parms[6], msg + n);
-		put_le16(parms[5], msg + n + 2);
-		n += 4;
-	} else {
-		put_le16(parms[5], msg + n);
-		n += 2;
-	}
+	n += put_model_id(msg + n, &parms[5], parm_cnt == 7);
 
 	if (!config_send(msg, n, OP_CONFIG_MODEL_PUB_SET))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
@@ -1212,14 +1250,7 @@ static void cmd_pub_get(int argc, char *argv[])
 	n += 2;
 
 	/* Model Id */
-	if (parm_cnt == 3) {
-		put_le16(parms[2], msg + n);
-		put_le16(parms[1], msg + n + 2);
-		n += 4;
-	} else {
-		put_le16(parms[1], msg + n);
-		n += 2;
-	}
+	n += put_model_id(msg + n, &parms[1], parm_cnt == 3);
 
 	if (!config_send(msg, n, OP_CONFIG_MODEL_PUB_GET))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
@@ -1227,32 +1258,73 @@ static void cmd_pub_get(int argc, char *argv[])
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void cmd_sub_add(int argc, char *argv[])
+static void subscription_cmd(int argc, char *argv[], uint32_t opcode)
 {
 	uint16_t n;
 	uint8_t msg[32];
 	int parm_cnt;
 
-	n = mesh_opcode_set(OP_CONFIG_MODEL_SUB_ADD, msg);
+	n = mesh_opcode_set(opcode, msg);
 
 	parm_cnt = read_input_parameters(argc, argv);
-	if (parm_cnt != 3) {
+	if (parm_cnt != 3 && parm_cnt != 4) {
 		bt_shell_printf("Bad arguments: %s\n", argv[1]);
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	/* Per Mesh Profile 4.3.2.19 */
 	/* Element Address */
 	put_le16(parms[0], msg + n);
 	n += 2;
 	/* Subscription Address */
 	put_le16(parms[1], msg + n);
 	n += 2;
-	/* SIG Model ID */
-	put_le16(parms[2], msg + n);
+
+	/* Model ID */
+	n += put_model_id(msg + n, &parms[2], parm_cnt == 4);
+
+	if (!config_send(msg, n, opcode))
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void cmd_sub_add(int argc, char *argv[])
+{
+	subscription_cmd(argc, argv, OP_CONFIG_MODEL_SUB_ADD);
+}
+
+static void cmd_sub_del(int argc, char *argv[])
+{
+	subscription_cmd(argc, argv, OP_CONFIG_MODEL_SUB_DELETE);
+}
+
+static void cmd_sub_ovwrt(int argc, char *argv[])
+{
+	subscription_cmd(argc, argv, OP_CONFIG_MODEL_SUB_OVERWRITE);
+}
+
+static void cmd_sub_del_all(int argc, char *argv[])
+{
+	uint16_t n;
+	uint8_t msg[32];
+	int parm_cnt;
+
+	n = mesh_opcode_set(OP_CONFIG_MODEL_SUB_DELETE_ALL, msg);
+
+	parm_cnt = read_input_parameters(argc, argv);
+	if (parm_cnt != 2 && parm_cnt != 3) {
+		bt_shell_printf("Bad arguments: %s\n", argv[1]);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	/* Element Address */
+	put_le16(parms[0], msg + n);
 	n += 2;
 
-	if (!config_send(msg, n, OP_CONFIG_MODEL_SUB_ADD))
+	/* Model ID */
+	n += put_model_id(msg + n, &parms[1], parm_cnt == 3);
+
+	if (!config_send(msg, n, OP_CONFIG_MODEL_SUB_DELETE_ALL))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
@@ -1263,24 +1335,27 @@ static void cmd_sub_get(int argc, char *argv[])
 	uint16_t n;
 	uint8_t msg[32];
 	int parm_cnt;
-
-	n = mesh_opcode_set(OP_CONFIG_MODEL_SUB_GET, msg);
+	bool vendor;
+	uint32_t opcode;
 
 	parm_cnt = read_input_parameters(argc, argv);
-	if (parm_cnt != 2) {
+	if (parm_cnt != 2 && parm_cnt != 3) {
 		bt_shell_printf("Bad arguments: %s\n", argv[1]);
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	/* Per Mesh Profile 4.3.2.27 */
+	vendor = (parm_cnt == 3);
+	opcode = !vendor ? OP_CONFIG_MODEL_SUB_GET :
+						OP_CONFIG_VEND_MODEL_SUB_GET;
+	n = mesh_opcode_set(opcode, msg);
+
 	/* Element Address */
 	put_le16(parms[0], msg + n);
 	n += 2;
 	/* Model ID */
-	put_le16(parms[1], msg + n);
-	n += 2;
+	n += put_model_id(msg + n, &parms[1], vendor);
 
-	if (!config_send(msg, n, OP_CONFIG_MODEL_SUB_GET))
+	if (!config_send(msg, n, opcode))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
@@ -1291,24 +1366,26 @@ static void cmd_mod_appidx_get(int argc, char *argv[])
 	uint16_t n;
 	uint8_t msg[32];
 	int parm_cnt;
-
-	n = mesh_opcode_set(OP_MODEL_APP_GET, msg);
+	bool vendor;
+	uint32_t opcode;
 
 	parm_cnt = read_input_parameters(argc, argv);
-	if (parm_cnt != 2) {
+	if (parm_cnt != 2 && parm_cnt != 3) {
 		bt_shell_printf("Bad arguments: %s\n", argv[1]);
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	/* Per Mesh Profile 4.3.2.49 */
+	vendor = (parm_cnt == 3);
+	opcode = !vendor ? OP_MODEL_APP_GET : OP_VEND_MODEL_APP_GET;
+	n = mesh_opcode_set(opcode, msg);
+
 	/* Element Address */
 	put_le16(parms[0], msg + n);
 	n += 2;
 	/* Model ID */
-	put_le16(parms[1], msg + n);
-	n += 2;
+	n += put_model_id(msg + n, &parms[1], vendor);
 
-	if (!config_send(msg, n, OP_MODEL_APP_GET))
+	if (!config_send(msg, n, opcode))
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
@@ -1497,21 +1574,23 @@ static const struct bt_shell_menu cfg_menu = {
 				"Delete AppKey"},
 	{"appkey-get", "<net_idx>", cmd_appkey_get,
 				"List AppKeys bound to the NetKey"},
-	{"bind", "<ele_addr> <app_idx> <mod_id> [vendor_id]", cmd_add_binding,
+	{"bind", "<ele_addr> <app_idx> <model_id> [vendor_id]", cmd_add_binding,
 				"Bind AppKey to a model"},
-	{"unbind", "<ele_addr> <app_idx> <mod_id> [vendor_id]", cmd_del_binding,
+	{"unbind", "<ele_addr> <app_idx> <model_id> [vendor_id]",
+				cmd_del_binding,
 				"Remove AppKey from a model"},
-	{"mod-appidx-get", "<ele_addr> <model id>", cmd_mod_appidx_get,
+	{"mod-appidx-get", "<ele_addr> <model_id> [vendor_id]",
+				cmd_mod_appidx_get,
 				"Get model app_idx"},
 	{"ttl-set", "<ttl>", cmd_ttl_set,
 				"Set default TTL"},
 	{"ttl-get", NULL, cmd_ttl_get,
 				"Get default TTL"},
 	{"pub-set", "<ele_addr> <pub_addr> <app_idx> <per (step|res)> "
-			"<re-xmt (cnt|per)> <mod id> [vendor_id]",
+			"<re-xmt (cnt|per)> <model_id> [vendor_id]",
 				cmd_pub_set,
 				"Set publication"},
-	{"pub-get", "<ele_addr> <model>", cmd_pub_get,
+	{"pub-get", "<ele_addr> <model_id> [vendor_id]", cmd_pub_get,
 				"Get publication"},
 	{"proxy-set", "<proxy>", cmd_proxy_set,
 				"Set proxy state"},
@@ -1546,9 +1625,15 @@ static const struct bt_shell_menu cfg_menu = {
 				"Set heartbeat subscribe"},
 	{"hb-sub-get", NULL, cmd_hb_sub_get,
 				"Get heartbeat subscribe"},
-	{"sub-add", "<ele_addr> <sub_addr> <model id>", cmd_sub_add,
+	{"sub-add", "<ele_addr> <sub_addr> <model_id> [vendor]", cmd_sub_add,
 				"Add subscription"},
-	{"sub-get", "<ele_addr> <model id>", cmd_sub_get,
+	{"sub-del", "<ele_addr> <sub_addr> <model_id> [vendor]", cmd_sub_del,
+				"Delete subscription"},
+	{"sub-wrt", "<ele_addr> <sub_addr> <model_id> [vendor]", cmd_sub_ovwrt,
+				"Overwrite subscription"},
+	{"sub-del-all", "<ele_addr> <model_id> [vendor]", cmd_sub_del_all,
+				"Delete subscription"},
+	{"sub-get", "<ele_addr> <model_id> [vendor]", cmd_sub_get,
 				"Get subscription"},
 	{"node-reset", NULL, cmd_node_reset,
 				"Reset a node and remove it from network"},
