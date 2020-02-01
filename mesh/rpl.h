@@ -2,7 +2,7 @@
  *
  *  BlueZ - Bluetooth protocol stack for Linux
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2020  Intel Corporation. All rights reserved.
  *
  *
  *  This library is free software; you can redistribute it and/or
@@ -17,10 +17,14 @@
  *
  */
 
-uint32_t get_timestamp_secs(void);
-bool str2hex(const char *str, uint16_t in_len, uint8_t *out,
-							uint16_t out_len);
-size_t hex2str(uint8_t *in, size_t in_len, char *out, size_t out_len);
-void print_packet(const char *label, const void *data, uint16_t size);
-int create_dir(const char *dir_name);
-void del_path(const char *path);
+struct mesh_rpl {
+	uint32_t iv_index;
+	uint32_t seq;
+	uint16_t src;
+};
+
+bool rpl_put_entry(struct mesh_node *node, uint16_t src, uint32_t iv_index,
+								uint32_t seq);
+void rpl_del_entry(struct mesh_node *node, uint16_t src);
+bool rpl_get_list(struct mesh_node *node, struct l_queue *rpl_list);
+void rpl_init(struct mesh_node *node, uint32_t iv_index);

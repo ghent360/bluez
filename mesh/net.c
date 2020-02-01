@@ -36,6 +36,7 @@
 #include "mesh/mesh-config.h"
 #include "mesh/model.h"
 #include "mesh/appkey.h"
+#include "mesh/rpl.h"
 
 #define abs_diff(a, b) ((a) > (b) ? (a) - (b) : (b) - (a))
 
@@ -135,6 +136,7 @@ struct mesh_net {
 
 	struct l_queue *subnets;
 	struct l_queue *msg_cache;
+	struct l_queue *replay_cache;
 	struct l_queue *sar_in;
 	struct l_queue *sar_out;
 	struct l_queue *frnd_msgs;
@@ -554,13 +556,6 @@ static void mesh_sar_free(void *data)
 	l_free(sar);
 }
 
-static void mesh_msg_free(void *data)
-{
-	struct mesh_msg *msg = data;
-
-	l_free(msg);
-}
-
 static void subnet_free(void *data)
 {
 	struct mesh_subnet *subnet = data;
@@ -688,7 +683,8 @@ void mesh_net_free(struct mesh_net *net)
 		return;
 
 	l_queue_destroy(net->subnets, subnet_free);
-	l_queue_destroy(net->msg_cache, mesh_msg_free);
+	l_queue_destroy(net->msg_cache, l_free);
+	l_queue_destroy(net->replay_cache, l_free);
 	l_queue_destroy(net->sar_in, mesh_sar_free);
 	l_queue_destroy(net->sar_out, mesh_sar_free);
 	l_queue_destroy(net->frnd_msgs, l_free);
@@ -1024,7 +1020,7 @@ int mesh_net_add_key(struct mesh_net *net, uint16_t idx, const uint8_t *value)
 
 void mesh_net_flush_msg_queues(struct mesh_net *net)
 {
-	l_queue_clear(net->msg_cache, mesh_msg_free);
+	l_queue_clear(net->msg_cache, l_free);
 }
 
 uint32_t mesh_net_get_iv_index(struct mesh_net *net)
@@ -2713,6 +2709,9 @@ static void update_iv_ivu_state(struct mesh_net *net, uint32_t iv_index,
 		struct mesh_config *cfg = node_config_get(net->node);
 
 		mesh_config_write_iv_index(cfg, iv_index, ivu);
+
+		/* Cleanup Replay Protection List NVM */
+		rpl_init(net->node, iv_index);
 	}
 
 	net->iv_index = iv_index;
@@ -3042,14 +3041,19 @@ static bool send_seg(struct mesh_net *net, struct mesh_sar *msg, uint8_t segO)
 	uint8_t segN = SEG_MAX(msg->len);
 	uint16_t seg_off = SEG_OFF(segO);
 	uint32_t key_id = 0;
-	uint32_t seq_num = mesh_net_next_seq_num(net);
+	uint32_t seq_num;
 
 	if (segN) {
+		/* Send each segment on unique seq_num */
+		seq_num = mesh_net_next_seq_num(net);
+
 		if (msg->len - seg_off > SEG_OFF(1))
 			seg_len = SEG_OFF(1);
 		else
 			seg_len = msg->len - seg_off;
 	} else {
+		/* Send on same seq_num used for Access Layer */
+		seq_num = msg->seqAuth;
 		seg_len = msg->len;
 	}
 
@@ -3184,7 +3188,7 @@ bool mesh_net_app_send(struct mesh_net *net, bool frnd_cred, uint16_t src,
 
 	/* First enqueue to any Friends and internal models */
 	result = msg_rxed(net, false, iv_index, ttl,
-				seq + seg_max,
+				seq,
 				net_idx,
 				src, dst,
 				key_aid,
@@ -3195,12 +3199,8 @@ bool mesh_net_app_send(struct mesh_net *net, bool frnd_cred, uint16_t src,
 	 * or delivered to one of our Unicast addresses we are done
 	 */
 	if ((result && IS_UNICAST(dst)) || src == dst ||
-			(dst >= net->src_addr && dst <= net->last_addr)) {
-		/* Adjust our seq_num for "virtual" delivery */
-		net->seq_num += seg_max;
-		mesh_net_next_seq_num(net);
+			(dst >= net->src_addr && dst <= net->last_addr))
 		return true;
-	}
 
 	/* If Segmented, Cancel any OB segmented message to same DST */
 	if (seg_max) {
@@ -3225,7 +3225,7 @@ bool mesh_net_app_send(struct mesh_net *net, bool frnd_cred, uint16_t src,
 	}
 
 	payload->iv_index = mesh_net_get_iv_index(net);
-	payload->seqAuth = net->seq_num;
+	payload->seqAuth = seq;
 
 	result = true;
 	if (!IS_UNICAST(dst) && seg_max) {
@@ -3733,4 +3733,98 @@ uint32_t mesh_net_get_instant(struct mesh_net *net)
 	l_queue_foreach(net->subnets, refresh_instant, net);
 
 	return net->instant;
+}
+
+static bool match_replay_cache(const void *a, const void *b)
+{
+	const struct mesh_rpl *rpe = a;
+	uint16_t src = L_PTR_TO_UINT(b);
+
+	return src == rpe->src;
+}
+
+static bool clean_old_iv_index(void *a, void *b)
+{
+	struct mesh_rpl *rpe = a;
+	uint32_t iv_index = L_PTR_TO_UINT(b);
+
+	if (iv_index < 2)
+		return false;
+
+	if (rpe->iv_index < iv_index - 1) {
+		l_free(rpe);
+		return true;
+	}
+
+	return false;
+}
+
+bool net_msg_check_replay_cache(struct mesh_net *net, uint16_t src,
+				uint16_t crpl, uint32_t seq, uint32_t iv_index)
+{
+	struct mesh_rpl *rpe;
+
+	/* If anything missing reject this message by returning true */
+	if (!net || !net->node)
+		return true;
+
+	if (!net->replay_cache) {
+		net->replay_cache = l_queue_new();
+		rpl_init(net->node, net->iv_index);
+		rpl_get_list(net->node, net->replay_cache);
+	}
+
+	l_debug("Test Replay src: %4.4x seq: %6.6x iv: %8.8x",
+						src, seq, iv_index);
+
+	rpe = l_queue_find(net->replay_cache, match_replay_cache,
+						L_UINT_TO_PTR(src));
+
+	if (rpe) {
+		if (iv_index > rpe->iv_index)
+			return false;
+
+		/* Return true if (iv_index | seq) too low */
+		if (iv_index < rpe->iv_index || seq <= rpe->seq) {
+			l_debug("Ignoring replayed packet");
+			return true;
+		}
+	}
+
+	/* SRC not in Replay Cache... see if there is space for it */
+	else if (l_queue_length(net->replay_cache) >= crpl) {
+		int ret = l_queue_foreach_remove(net->replay_cache,
+				clean_old_iv_index, L_UINT_TO_PTR(iv_index));
+
+		/* Return true if no space could be freed */
+		if (!ret)
+			return true;
+	}
+
+	return false;
+}
+
+void net_msg_add_replay_cache(struct mesh_net *net, uint16_t src, uint32_t seq,
+							uint32_t iv_index)
+{
+	struct mesh_rpl *rpe;
+
+	if (!net || !net->replay_cache)
+		return;
+
+	rpe = l_queue_remove_if(net->replay_cache, match_replay_cache,
+						L_UINT_TO_PTR(src));
+
+	if (!rpe) {
+		l_debug("New Entry for %4.4x", src);
+		rpe = l_new(struct mesh_rpl, 1);
+		rpe->seq = src;
+	}
+
+	rpe->seq = seq;
+	rpe->iv_index = iv_index;
+	rpl_put_entry(net->node, src, iv_index, seq);
+
+	/* Optimize so that most recent conversations stay earliest in cache */
+	l_queue_push_head(net->replay_cache, rpe);
 }

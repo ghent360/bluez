@@ -608,7 +608,7 @@ static bool msg_send(struct mesh_node *node, bool credential, uint16_t src,
 
 	iv_index = mesh_net_get_iv_index(net);
 
-	seq_num = mesh_net_get_seq_num(net);
+	seq_num = mesh_net_next_seq_num(net);
 	if (!mesh_crypto_payload_encrypt(label, msg, out, msg_len, src, dst,
 				key_aid, seq_num, iv_index, szmic, key)) {
 		l_error("Failed to Encrypt Payload");
@@ -949,7 +949,7 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 	struct mesh_net *net = node_get_net(node);
 	uint8_t num_ele;
 	int decrypt_idx, i, ele_idx;
-	uint16_t addr;
+	uint16_t addr, crpl;
 	struct mesh_virtual *decrypt_virt = NULL;
 	bool result = false;
 	bool is_subscription;
@@ -964,10 +964,12 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 		/* Unicast and not addressed to us */
 		return false;
 
-	clear_text = l_malloc(size);
-	if (!clear_text)
+	/* Don't process if already in RPL */
+	crpl = node_get_crpl(node);
+	if (net_msg_check_replay_cache(net, src, crpl, seq, iv_index))
 		return false;
 
+	clear_text = l_malloc(size);
 	forward.data = clear_text;
 
 	/*
@@ -993,18 +995,6 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 		l_error("model.c - Failed to decrypt application payload");
 		result = false;
 		goto done;
-	}
-
-	/* print_packet("Clr Rx (pre-cache-check)", clear_text, size - 4); */
-
-	if (key_aid != APP_AID_DEV) {
-		uint16_t crpl = node_get_crpl(node);
-
-		if (appkey_msg_in_replay_cache(net, (uint16_t) decrypt_idx, src,
-							crpl, seq, iv_index)) {
-			result = true;
-			goto done;
-		}
 	}
 
 	print_packet("Clr Rx", clear_text, size - (szmict ? 8 : 4));
@@ -1075,7 +1065,7 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 		 * Either the message has been processed internally or
 		 * has been passed on to an external model.
 		 */
-		result = forward.has_dst | forward.done;
+		result |= forward.has_dst | forward.done;
 
 		/* If the message was to unicast address, we are done */
 		if (!is_subscription && ele_idx == i)
@@ -1090,8 +1080,13 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 			break;
 	}
 
+	/* If message has been handled by us, add to RPL */
+	if (result)
+		net_msg_add_replay_cache(net, src, seq, iv_index);
+
 done:
 	l_free(clear_text);
+
 	return result;
 }
 
