@@ -1025,7 +1025,7 @@ done:
 	bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void cmd_version(int argc, char **argv)
+static void cmd_revision(int argc, char **argv)
 {
 	if (mgmt_send(mgmt, MGMT_OP_READ_VERSION, MGMT_INDEX_NONE,
 				0, NULL, version_rsp, NULL, NULL) == 0) {
@@ -4391,8 +4391,8 @@ static const struct bt_shell_menu main_menu = {
 	.entries = {
 	{ "select",		"<index>",
 		cmd_select,		"Select a different index"	},
-	{ "version",		NULL,
-		cmd_version,		"Get the MGMT Version"		},
+	{ "revision",		NULL,
+		cmd_revision,		"Get the MGMT Revision"		},
 	{ "commands",		NULL,
 		cmd_commands,		"List supported commands"	},
 	{ "config",		NULL,
@@ -4455,7 +4455,7 @@ static const struct bt_shell_menu main_menu = {
 		cmd_keys,		"Load Link Keys"		},
 	{ "ltks",		NULL,
 		cmd_ltks,		"Load Long Term Keys"		},
-	{ "irks",		"[--local <index>] [--file <file path>]",
+	{ "irks",		"[--local index] [--file file path]",
 		cmd_irks,		"Load Identity Resolving Keys"	},
 	{ "block",		"[-t type] <remote address>",
 		cmd_block,		"Block Device"			},
