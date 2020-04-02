@@ -632,6 +632,13 @@ static bool register_agent(void)
 		return false;
 	}
 
+	if (!l_dbus_object_add_interface(dbus, app.agent_path,
+					 L_DBUS_INTERFACE_PROPERTIES, NULL)) {
+		l_error("Failed to add interface %s",
+					L_DBUS_INTERFACE_PROPERTIES);
+		return false;
+	}
+
 	return true;
 }
 
@@ -950,14 +957,25 @@ fail:
 static void subnet_set_phase_reply(struct l_dbus_proxy *proxy,
 				struct l_dbus_message *msg, void *user_data)
 {
+	struct generic_request *req = user_data;
+	uint16_t net_idx;
+	uint8_t phase;
+
 	if (l_dbus_message_is_error(msg)) {
 		const char *name;
 
 		l_dbus_message_get_error(msg, &name, NULL);
 		l_error("Failed to set subnet phase: %s", name);
+		return;
 	}
 
-	/* TODO: Set key phase in configuration */
+	net_idx = (uint16_t) req->arg1;
+	phase = (uint8_t) req->arg2;
+
+	if (phase == KEY_REFRESH_PHASE_THREE)
+		phase = KEY_REFRESH_PHASE_NONE;
+
+	keys_set_net_key_phase(net_idx, phase);
 }
 
 static void subnet_set_phase_setup(struct l_dbus_message *msg, void *user_data)
@@ -1016,6 +1034,7 @@ static void mgr_key_reply(struct l_dbus_proxy *proxy,
 
 		l_dbus_message_get_error(msg, &name, NULL);
 		l_error("Method %s returned error: %s", method, name);
+		bt_shell_printf("Method %s returned error: %s\n", method, name);
 		return;
 	}
 
@@ -1025,6 +1044,8 @@ static void mgr_key_reply(struct l_dbus_proxy *proxy,
 	} else if (!strcmp("DeleteSubnet", method)) {
 		keys_del_net_key(idx);
 		mesh_db_net_key_del(idx);
+	} else if (!strcmp("UpdateSubnet", method)) {
+		keys_set_net_key_phase(idx, KEY_REFRESH_PHASE_ONE);
 	} else if (!strcmp("DeleteAppKey", method)) {
 		keys_del_app_key(idx);
 		mesh_db_app_key_del(idx);
@@ -1557,6 +1578,19 @@ static struct l_dbus_message *scan_result_call(struct l_dbus *dbus,
 	bt_shell_printf("\t" COLOR_GREEN "UUID = %s\n" COLOR_OFF, str);
 	l_free(str);
 
+	if (n >= 18) {
+		str = l_util_hexstring_upper(prov_data + 16, 2);
+		bt_shell_printf("\t" COLOR_GREEN "OOB = %s\n" COLOR_OFF, str);
+		l_free(str);
+	}
+
+	if (n >= 22) {
+		str = l_util_hexstring_upper(prov_data + 18, 4);
+		bt_shell_printf("\t" COLOR_GREEN "URI Hash = %s\n" COLOR_OFF,
+									str);
+		l_free(str);
+	}
+
 	/* TODO: Handle the rest of provisioning data if present */
 
 	dev = l_queue_find(devices, match_device_uuid, prov_data);
@@ -1693,7 +1727,7 @@ static struct l_dbus_message *add_node_fail_call(struct l_dbus *dbus,
 static void setup_prov_iface(struct l_dbus_interface *iface)
 {
 	l_dbus_interface_method(iface, "ScanResult", 0, scan_result_call, "",
-						"naya{sv}", "rssi", "data");
+						"naya{sv}", "rssi", "data", "options");
 
 	l_dbus_interface_method(iface, "RequestProvData", 0, req_prov_call,
 				"qq", "y", "net_index", "unicast", "count");
