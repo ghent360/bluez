@@ -1401,7 +1401,7 @@ static void ext_index_rsp(uint8_t status, uint16_t len, const void *param,
 							void *user_data)
 {
 	const struct mgmt_rp_read_ext_index_list *rp = param;
-	uint16_t count, index_filter = PTR_TO_UINT(user_data);
+	uint16_t count;
 	unsigned int i;
 
 	if (status != 0) {
@@ -1429,9 +1429,6 @@ static void ext_index_rsp(uint8_t status, uint16_t len, const void *param,
 	for (i = 0; i < count; i++) {
 		uint16_t index = le16_to_cpu(rp->entry[i].index);
 		char *busstr = hci_bustostr(rp->entry[i].bus);
-
-		if (index_filter != MGMT_INDEX_NONE && index_filter != index)
-			continue;
 
 		switch (rp->entry[i].type) {
 		case 0x00:
@@ -1471,13 +1468,118 @@ static void ext_index_rsp(uint8_t status, uint16_t len, const void *param,
 		bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static void cmd_extinfo(
-						int argc, char **argv)
+static void cmd_extinfo(int argc, char **argv)
 {
-	if (!mgmt_send(mgmt, MGMT_OP_READ_EXT_INDEX_LIST,
-				MGMT_INDEX_NONE, 0, NULL,
-				ext_index_rsp, UINT_TO_PTR(index), NULL)) {
-		error("Unable to send ext_index_list cmd");
+	if (mgmt_index == MGMT_INDEX_NONE) {
+		if (!mgmt_send(mgmt, MGMT_OP_READ_EXT_INDEX_LIST,
+					MGMT_INDEX_NONE, 0, NULL,
+					ext_index_rsp, mgmt, NULL)) {
+			error("Unable to send ext_index_list cmd");
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
+
+		return;
+	}
+
+	if (!mgmt_send(mgmt, MGMT_OP_READ_EXT_INFO, mgmt_index, 0, NULL,
+					ext_info_rsp,
+					UINT_TO_PTR(mgmt_index), NULL)) {
+		error("Unable to send ext_read_info cmd");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+}
+
+static void sec_info_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_read_security_info *rp = param;
+	uint16_t index = PTR_TO_UINT(user_data);
+
+	if (status != 0) {
+		error("Reading hci%u security failed with status 0x%02x (%s)",
+					index, status, mgmt_errstr(status));
+		goto done;
+	}
+
+	if (len < sizeof(*rp)) {
+		error("Too small info reply (%u bytes)", len);
+		goto done;
+	}
+
+	print("Primary controller (hci%u)", index);
+	print("\tSecurity info length: %u", le16_to_cpu(rp->sec_len));
+
+done:
+	pending_index--;
+
+	if (pending_index > 0)
+		return;
+
+	bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void sec_index_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_read_ext_index_list *rp = param;
+	uint16_t count;
+	unsigned int i;
+
+	if (status != 0) {
+		error("Reading ext index list failed with status 0x%02x (%s)",
+						status, mgmt_errstr(status));
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	if (len < sizeof(*rp)) {
+		error("Too small ext index list reply (%u bytes)", len);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	count = get_le16(&rp->num_controllers);
+
+	if (len < sizeof(*rp) + count * (sizeof(uint16_t) + sizeof(uint8_t))) {
+		error("Index count (%u) doesn't match reply length (%u)",
+								count, len);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	for (i = 0; i < count; i++) {
+		uint16_t index = le16_to_cpu(rp->entry[i].index);
+
+		if (rp->entry[i].type != 0x00)
+			continue;
+
+		if (!mgmt_send(mgmt, MGMT_OP_READ_SECURITY_INFO,
+						index, 0, NULL, sec_info_rsp,
+						UINT_TO_PTR(index), NULL)) {
+				error("Unable to send read_security_info cmd");
+				return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
+		pending_index++;
+	}
+
+	if (!count)
+		bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void cmd_secinfo(int argc, char **argv)
+{
+	if (mgmt_index == MGMT_INDEX_NONE) {
+		if (!mgmt_send(mgmt, MGMT_OP_READ_EXT_INDEX_LIST,
+					MGMT_INDEX_NONE, 0, NULL,
+					sec_index_rsp, mgmt, NULL)) {
+			error("Unable to send ext_index_list cmd");
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
+
+		return;
+	}
+
+	if (!mgmt_send(mgmt, MGMT_OP_READ_SECURITY_INFO, mgmt_index, 0, NULL,
+					sec_info_rsp,
+					UINT_TO_PTR(mgmt_index), NULL)) {
+		error("Unable to send read_security_info cmd");
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 }
@@ -4318,6 +4420,11 @@ static void cmd_phy(int argc, char **argv)
 	}
 }
 
+static void cmd_wbs(int argc, char **argv)
+{
+	cmd_setting(MGMT_OP_SET_WIDEBAND_SPEECH, argc, argv);
+}
+
 static void register_mgmt_callbacks(struct mgmt *mgmt, uint16_t index)
 {
 	mgmt_register(mgmt, MGMT_EV_CONTROLLER_ERROR, index, controller_error,
@@ -4519,6 +4626,10 @@ static const struct bt_shell_menu main_menu = {
 				"[EDR2M1SLOT] [EDR2M3SLOT] [EDR2M5SLOT]"
 				"[EDR3M1SLOT] [EDR3M3SLOT] [EDR3M5SLOT]",
 		cmd_phy,		"Get/Set PHY Configuration"	},
+	{ "wbs",		"<on/off>",
+		cmd_wbs,		"Toggle Wideband-Speech support"},
+	{ "secinfo",		NULL,
+		cmd_secinfo,		"Show security information"	},
 	{} },
 };
 
