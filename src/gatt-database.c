@@ -2358,7 +2358,7 @@ static bool sock_io_read(struct io *io, void *user_data)
 	ssize_t bytes_read;
 
 	bytes_read = read(fd, buf, sizeof(buf));
-	if (bytes_read < 0)
+	if (bytes_read <= 0)
 		return false;
 
 	send_notification_to_devices(chrc->service->app->database,
@@ -2379,8 +2379,6 @@ static struct io *sock_io_new(int fd, void *user_data)
 
 	io_set_close_on_destroy(io, true);
 
-	io_set_read_handler(io, sock_io_read, user_data, NULL);
-
 	io_set_disconnect_handler(io, sock_hup, user_data, NULL);
 
 	return io;
@@ -2396,6 +2394,7 @@ static int sock_io_send(struct io *io, const void *data, size_t len)
 
 	memset(&msg, 0, sizeof(msg));
 	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
 
 	return sendmsg(io_get_fd(io), &msg, MSG_NOSIGNAL);
 }
@@ -2537,6 +2536,7 @@ static void acquire_notify_reply(DBusMessage *message, void *user_data)
 	DBG("AcquireNotify success: fd %d MTU %u\n", fd, mtu);
 
 	chrc->notify_io = sock_io_new(fd, chrc);
+	io_set_read_handler(chrc->notify_io, sock_io_read, chrc, NULL);
 
 	__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
 
