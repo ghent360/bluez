@@ -632,7 +632,13 @@ static bool discover_descs(struct discovery_op *op, bool *discovering)
 			util_debug(client->debug_callback, client->debug_data,
 				"Failed to insert characteristic at 0x%04x",
 				chrc_data->value_handle);
-			goto failed;
+
+			/* Some devices have been seen reporting orphaned
+			 * characteristics.  In order to favor interoperability
+			 * we skip over characteristics in error
+			 */
+			free(chrc_data);
+			continue;
 		}
 
 		if (gatt_db_attribute_get_handle(attr) !=
@@ -642,7 +648,7 @@ static bool discover_descs(struct discovery_op *op, bool *discovering)
 		gatt_db_attribute_get_service_handles(svc, &start, &end);
 
 		/*
-		 * Ajust end_handle in case the next chrc is not within the
+		 * Adjust end_handle in case the next chrc is not within the
 		 * same service.
 		 */
 		if (chrc_data->end_handle > end)
@@ -651,7 +657,7 @@ static bool discover_descs(struct discovery_op *op, bool *discovering)
 		/*
 		 * check for descriptors presence, before initializing the
 		 * desc_handle and avoid integer overflow during desc_handle
-		 * intialization.
+		 * initialization.
 		 */
 		if (chrc_data->value_handle >= chrc_data->end_handle) {
 			free(chrc_data);
