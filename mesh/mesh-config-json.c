@@ -105,7 +105,7 @@ static bool get_int(json_object *jobj, const char *keyword, int *value)
 	return true;
 }
 
-static bool add_u64_value(json_object *jobject, const char *desc,
+static bool add_u64_value(json_object *jobj, const char *desc,
 					const uint8_t u64[8])
 {
 	json_object *jstring;
@@ -116,11 +116,12 @@ static bool add_u64_value(json_object *jobject, const char *desc,
 	if (!jstring)
 		return false;
 
-	json_object_object_add(jobject, desc, jstring);
+	json_object_object_del(jobj, desc);
+	json_object_object_add(jobj, desc, jstring);
 	return true;
 }
 
-static bool add_key_value(json_object *jobject, const char *desc,
+static bool add_key_value(json_object *jobj, const char *desc,
 					const uint8_t key[16])
 {
 	json_object *jstring;
@@ -131,7 +132,8 @@ static bool add_key_value(json_object *jobject, const char *desc,
 	if (!jstring)
 		return false;
 
-	json_object_object_add(jobject, desc, jstring);
+	json_object_object_del(jobj, desc);
+	json_object_object_add(jobj, desc, jstring);
 	return true;
 }
 
@@ -1398,6 +1400,7 @@ static bool write_uint16_hex(json_object *jobj, const char *desc,
 	if (!jstring)
 		return false;
 
+	json_object_object_del(jobj, desc);
 	json_object_object_add(jobj, desc, jstring);
 	return true;
 }
@@ -1412,21 +1415,21 @@ static bool write_uint32_hex(json_object *jobj, const char *desc, uint32_t val)
 	if (!jstring)
 		return false;
 
+	json_object_object_del(jobj, desc);
 	json_object_object_add(jobj, desc, jstring);
 	return true;
 }
 
-static bool write_int(json_object *jobj, const char *keyword, int val)
+static bool write_int(json_object *jobj, const char *desc, int val)
 {
 	json_object *jvalue;
-
-	json_object_object_del(jobj, keyword);
 
 	jvalue = json_object_new_int(val);
 	if (!jvalue)
 		return false;
 
-	json_object_object_add(jobj, keyword, jvalue);
+	json_object_object_del(jobj, desc);
+	json_object_object_add(jobj, desc, jvalue);
 	return true;
 }
 
@@ -1442,7 +1445,7 @@ static const char *mode_to_string(int mode)
 	}
 }
 
-static bool write_mode(json_object *jobj, const char *keyword, int value)
+static bool write_mode(json_object *jobj, const char *desc, int value)
 {
 	json_object *jstring;
 
@@ -1451,7 +1454,8 @@ static bool write_mode(json_object *jobj, const char *keyword, int value)
 	if (!jstring)
 		return false;
 
-	json_object_object_add(jobj, keyword, jstring);
+	json_object_object_del(jobj, desc);
+	json_object_object_add(jobj, desc, jstring);
 
 	return true;
 }
@@ -2048,6 +2052,38 @@ bool mesh_config_write_seq_number(struct mesh_config *cfg, uint32_t seq,
 bool mesh_config_write_ttl(struct mesh_config *cfg, uint8_t ttl)
 {
 	if (!cfg || !write_int(cfg->jnode, "defaultTTL", ttl))
+		return false;
+
+	return save_config(cfg->jnode, cfg->node_dir_path);
+}
+
+bool mesh_config_update_company_id(struct mesh_config *cfg, uint16_t cid)
+{
+	if (!cfg || !write_uint16_hex(cfg->jnode, "cid", cid))
+		return false;
+
+	return save_config(cfg->jnode, cfg->node_dir_path);
+}
+
+bool mesh_config_update_product_id(struct mesh_config *cfg, uint16_t pid)
+{
+	if (!cfg || !write_uint16_hex(cfg->jnode, "pid", pid))
+		return false;
+
+	return save_config(cfg->jnode, cfg->node_dir_path);
+}
+
+bool mesh_config_update_version_id(struct mesh_config *cfg, uint16_t vid)
+{
+	if (!cfg || !write_uint16_hex(cfg->jnode, "vid", vid))
+		return false;
+
+	return save_config(cfg->jnode, cfg->node_dir_path);
+}
+
+bool mesh_config_update_crpl(struct mesh_config *cfg, uint16_t crpl)
+{
+	if (!cfg || !write_uint16_hex(cfg->jnode, "crpl", crpl))
 		return false;
 
 	return save_config(cfg->jnode, cfg->node_dir_path);
