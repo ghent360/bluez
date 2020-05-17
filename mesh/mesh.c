@@ -27,6 +27,7 @@
 #include "mesh/mesh-io.h"
 #include "mesh/node.h"
 #include "mesh/net.h"
+#include "mesh/net-keys.h"
 #include "mesh/provision.h"
 #include "mesh/model.h"
 #include "mesh/dbus.h"
@@ -209,7 +210,7 @@ static void parse_settings(const char *mesh_conf_fname)
 
 	settings = l_settings_new();
 	if (!l_settings_load_from_file(settings, mesh_conf_fname))
-		return;
+		goto done;
 
 	str = l_settings_get_string(settings, "General", "Beacon");
 	if (str) {
@@ -242,6 +243,9 @@ static void parse_settings(const char *mesh_conf_fname)
 
 	if (l_settings_get_uint(settings, "General", "ProvTimeout", &value))
 		mesh.prov_timeout = value;
+
+done:
+	l_settings_free(settings);
 }
 
 bool mesh_init(const char *config_dir, const char *mesh_conf_fname,
@@ -337,8 +341,11 @@ void mesh_cleanup(void)
 	}
 
 	l_queue_destroy(pending_queue, pending_request_exit);
+	mesh_agent_cleanup();
 	node_cleanup_all();
 	mesh_model_cleanup();
+	mesh_net_cleanup();
+	net_key_cleanup();
 
 	l_dbus_object_remove_interface(dbus_get_bus(), BLUEZ_MESH_PATH,
 							MESH_NETWORK_INTERFACE);
