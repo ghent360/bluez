@@ -333,6 +333,7 @@ static void free_node_resources(void *data)
 	/* Free dynamic resources */
 	free_node_dbus_resources(node);
 	l_queue_destroy(node->elements, element_free);
+	mesh_agent_remove(node->agent);
 	mesh_config_release(node->cfg);
 	mesh_net_free(node->net);
 	l_free(node->storage_dir);
@@ -991,12 +992,6 @@ static void attach_io(void *a, void *b)
 		mesh_net_attach(node->net, io);
 }
 
-/* Register callback for the node's io */
-void node_attach_io(struct mesh_node *node, struct mesh_io *io)
-{
-	attach_io(node, io);
-}
-
 /* Register callbacks for all nodes io */
 void node_attach_io_all(struct mesh_io *io)
 {
@@ -1466,7 +1461,6 @@ static void get_managed_objects_cb(struct l_dbus_message *msg, void *user_data)
 	const char *path;
 	struct mesh_node *node = req->node;
 	struct node_import *import;
-	void *agent = NULL;
 	bool have_app = false;
 	unsigned int num_ele;
 	struct keyring_net_key net_key;
@@ -1514,12 +1508,10 @@ static void get_managed_objects_cb(struct l_dbus_message *msg, void *user_data)
 				const char *sender;
 
 				sender = l_dbus_message_get_sender(msg);
-				agent = mesh_agent_create(path, sender,
+				node->agent = mesh_agent_create(path, sender,
 								&properties);
-				if (!agent)
+				if (!node->agent)
 					goto fail;
-
-				node->agent = agent;
 
 			} else if (!strcmp(MESH_PROVISIONER_INTERFACE,
 								interface)) {
@@ -1628,9 +1620,6 @@ static void get_managed_objects_cb(struct l_dbus_message *msg, void *user_data)
 	}
 
 fail:
-	if (agent)
-		mesh_agent_remove(agent);
-
 	/* Handle failed requests */
 	if (node)
 		node_remove(node);
@@ -1645,20 +1634,23 @@ fail:
 }
 
 /* Establish relationship between application and mesh node */
-int node_attach(const char *app_root, const char *sender, uint64_t token,
+void node_attach(const char *app_root, const char *sender, uint64_t token,
 					node_ready_func_t cb, void *user_data)
 {
 	struct managed_obj_request *req;
 	struct mesh_node *node;
 
 	node = l_queue_find(nodes, match_token, (void *) &token);
-	if (!node)
-		return MESH_ERROR_NOT_FOUND;
+	if (!node) {
+		cb(user_data, MESH_ERROR_NOT_FOUND, NULL);
+		return;
+	}
 
 	/* Check if the node is already in use */
 	if (node->owner) {
 		l_warn("The node is already in use");
-		return MESH_ERROR_ALREADY_EXISTS;
+		cb(user_data, MESH_ERROR_ALREADY_EXISTS, NULL);
+		return;
 	}
 
 	req = l_new(struct managed_obj_request, 1);
@@ -1679,10 +1671,7 @@ int node_attach(const char *app_root, const char *sender, uint64_t token,
 					"GetManagedObjects", NULL,
 					get_managed_objects_cb,
 					req, l_free);
-	return MESH_ERROR_NONE;
-
 }
-
 
 /* Create a temporary pre-provisioned node */
 void node_join(const char *app_root, const char *sender, const uint8_t *uuid,
@@ -1704,7 +1693,7 @@ void node_join(const char *app_root, const char *sender, const uint8_t *uuid,
 					req, l_free);
 }
 
-bool node_import(const char *app_root, const char *sender, const uint8_t *uuid,
+void node_import(const char *app_root, const char *sender, const uint8_t *uuid,
 			const uint8_t dev_key[16], const uint8_t net_key[16],
 			uint16_t net_idx, bool kr, bool ivu,
 			uint32_t iv_index, uint16_t unicast,
@@ -1736,7 +1725,6 @@ bool node_import(const char *app_root, const char *sender, const uint8_t *uuid,
 						"GetManagedObjects", NULL,
 						get_managed_objects_cb,
 						req, l_free);
-	return true;
 }
 
 void node_create(const char *app_root, const char *sender, const uint8_t *uuid,
@@ -2346,4 +2334,27 @@ struct mesh_agent *node_get_agent(struct mesh_node *node)
 bool node_load_from_storage(const char *storage_dir)
 {
 	return mesh_config_load_nodes(storage_dir, init_from_storage, NULL);
+}
+
+/*
+ * This is called for a new node that:
+ *         - has been created as a result of successful completion of Join()
+ *           or Create() or Import() methods
+ *     and
+ *         - has been confirmed via successful token delivery to the application
+ *
+ * After a node has been created, the information gathered during initial
+ * GetManagedObjects() call is cleared. The subsequent call to Attach() would
+ * verify node's integrity and re-initialize node's D-Bus resources.
+ */
+void node_finalize_new_node(struct mesh_node *node, struct mesh_io *io)
+{
+	if (!node)
+		return;
+
+	free_node_dbus_resources(node);
+	mesh_agent_remove(node->agent);
+
+	/* Register callback for the node's io */
+	attach_io(node, io);
 }
