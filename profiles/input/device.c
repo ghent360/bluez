@@ -333,8 +333,10 @@ static gboolean intr_watch_cb(GIOChannel *chan, GIOCondition cond, gpointer data
 		idev->intr_io = NULL;
 	}
 
-	/* Close control channel */
-	if (idev->ctrl_io && !(cond & G_IO_NVAL))
+	/* Close control channel if the closing of interrupt channel is not
+	 * initiated by the other party
+	 */
+	if (idev->ctrl_io && !(cond & (G_IO_NVAL | G_IO_ERR)))
 		g_io_channel_shutdown(idev->ctrl_io, TRUE, NULL);
 
 	btd_service_disconnecting_complete(idev->service, 0);
@@ -1026,14 +1028,19 @@ static bool is_connected(struct input_device *idev)
 
 static int connection_disconnect(struct input_device *idev, uint32_t flags)
 {
+	int sock;
+
 	if (!is_connected(idev))
 		return -ENOTCONN;
 
-	/* Standard HID disconnect */
-	if (idev->intr_io)
-		g_io_channel_shutdown(idev->intr_io, TRUE, NULL);
-	if (idev->ctrl_io)
-		g_io_channel_shutdown(idev->ctrl_io, TRUE, NULL);
+	/* Standard HID disconnect
+	 * Intr channel must be disconnected before ctrl channel, so only
+	 * disconnect intr here, ctrl is disconnected in intr_watch_cb.
+	 */
+	if (idev->intr_io) {
+		sock = g_io_channel_unix_get_fd(idev->intr_io);
+		shutdown(sock, SHUT_WR);
+	}
 
 	if (idev->uhid)
 		return 0;
