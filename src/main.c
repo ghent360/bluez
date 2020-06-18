@@ -120,6 +120,7 @@ static const char *controller_options[] = {
 	"LEMaxConnectionInterval",
 	"LEConnectionLatency",
 	"LEConnectionSupervisionTimeout",
+	"LEAutoconnecttimeout",
 	NULL
 };
 
@@ -410,6 +411,26 @@ static void parse_controller_config(GKeyFile *config)
 		  &main_opts.default_params.le_scan_win_connect,
 		  0x0004,
 		  0x4000},
+		{ "LEMinConnectionInterval",
+		  &main_opts.default_params.le_min_conn_interval,
+		  0x0006,
+		  0x0C80},
+		{ "LEMaxConnectionInterval",
+		  &main_opts.default_params.le_max_conn_interval,
+		  0x0006,
+		  0x0C80},
+		{ "LEConnectionLatency",
+		  &main_opts.default_params.le_conn_latency,
+		  0x0000,
+		  0x01F3},
+		{ "LEConnectionSupervisionTimeout",
+		  &main_opts.default_params.le_conn_lsto,
+		  0x000A,
+		  0x0C80},
+		{ "LEAutoconnecttimeout",
+		  &main_opts.default_params.le_autoconnect_timeout,
+		  0x0001,
+		  0x4000},
 	};
 	uint16_t i;
 
@@ -421,12 +442,13 @@ static void parse_controller_config(GKeyFile *config)
 		int val = g_key_file_get_integer(config, "Controller",
 						params[i].val_name, &err);
 		if (err) {
+			warn("%s", err->message);
 			g_clear_error(&err);
 		} else {
-			DBG("%s=%d", params[i].val_name, val);
+			info("%s=%d", params[i].val_name, val);
 
-			val = MIN(val, params[i].min);
-			val = MAX(val, params[i].max);
+			val = MAX(val, params[i].min);
+			val = MIN(val, params[i].max);
 			*params[i].val = val;
 			++main_opts.default_params.num_entries;
 		}
