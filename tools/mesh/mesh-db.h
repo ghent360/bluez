@@ -26,7 +26,8 @@ bool mesh_db_create(const char *fname, const uint8_t token[8],
 bool mesh_db_load(const char *fname);
 
 bool mesh_db_get_token(uint8_t token[8]);
-
+bool mesh_db_set_iv_index(uint32_t ivi);
+uint32_t mesh_db_get_iv_index(void);
 bool mesh_db_net_key_add(uint16_t idx);
 bool mesh_db_net_key_del(uint16_t idx);
 bool mesh_db_net_key_phase_set(uint16_t net_idx, uint8_t phase);
@@ -57,3 +58,5 @@ bool mesh_db_node_model_binding_del(uint16_t unicast, uint8_t ele, bool vendor,
 					uint32_t mod_id, uint16_t app_idx);
 struct l_queue *mesh_db_load_groups(void);
 bool mesh_db_add_group(struct mesh_group *grp);
+bool mesh_db_add_blacklisted_addr(uint16_t unicast, uint32_t iv_index);
+bool mesh_db_clear_blacklisted(uint32_t iv_index);

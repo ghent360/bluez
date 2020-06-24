@@ -1013,6 +1013,34 @@ static void advertising_removed(uint16_t index, uint16_t len,
 	print("hci%u advertising_removed: instance %u", index, ev->instance);
 }
 
+static void advmon_added(uint16_t index, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_ev_adv_monitor_added *ev = param;
+
+	if (len < sizeof(*ev)) {
+		error("Too small (%u bytes) %s event", len, __func__);
+		return;
+	}
+
+	print("hci%u %s: handle %u", index, __func__,
+					le16_to_cpu(ev->monitor_handle));
+}
+
+static void advmon_removed(uint16_t index, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_ev_adv_monitor_removed *ev = param;
+
+	if (len < sizeof(*ev)) {
+		error("Too small (%u bytes) %s event", len, __func__);
+		return;
+	}
+
+	print("hci%u %s: handle %u", index, __func__,
+					le16_to_cpu(ev->monitor_handle));
+}
+
 static void version_rsp(uint8_t status, uint16_t len, const void *param,
 							void *user_data)
 {
@@ -4567,6 +4595,227 @@ static void cmd_wbs(int argc, char **argv)
 	cmd_setting(MGMT_OP_SET_WIDEBAND_SPEECH, argc, argv);
 }
 
+static const char * const advmon_features_str[] = {
+	"Pattern monitor with logic OR.",
+};
+
+static const char *advmon_features2str(uint32_t features)
+{
+	static char str[512];
+	unsigned int off, i;
+
+	off = 0;
+	snprintf(str, sizeof(str), "\n\tNone");
+
+	for (i = 0; i < NELEM(advmon_features_str); i++) {
+		if ((features & (1 << i)) != 0 && off < sizeof(str))
+			off += snprintf(str + off, sizeof(str) - off, "\n\t%s",
+						advmon_features_str[i]);
+	}
+
+	return str;
+}
+
+static void advmon_features_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_read_adv_monitor_features *rp = param;
+	uint32_t supported_features, enabled_features;
+	uint16_t num_handles;
+	int i;
+
+	if (status != MGMT_STATUS_SUCCESS) {
+		error("Reading adv monitor features failed with status 0x%02x "
+					"(%s)", status, mgmt_errstr(status));
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	if (len < sizeof(*rp)) {
+		error("Too small adv monitor features reply (%u bytes)", len);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	supported_features = le32_to_cpu(rp->supported_features);
+	enabled_features = le32_to_cpu(rp->enabled_features);
+	num_handles = le16_to_cpu(rp->num_handles);
+
+	if (len < sizeof(*rp) + num_handles * sizeof(uint16_t)) {
+		error("Handles count (%u) doesn't match reply length (%u)",
+							num_handles, len);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	print("Supported features:%s", advmon_features2str(supported_features));
+	print("Enabled features:%s", advmon_features2str(enabled_features));
+	print("Max number of handles: %u", le16_to_cpu(rp->max_num_handles));
+	print("Max number of patterns: %u", rp->max_num_patterns);
+	print("Handles list with %u item%s", num_handles,
+			num_handles == 0 ? "" : num_handles == 1 ? ":" : "s:");
+	for (i = 0; i < num_handles; i++)
+		print("\t0x%04x ", le16_to_cpu(rp->handles[i]));
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void cmd_advmon_features(int argc, char **argv)
+{
+	uint16_t index;
+
+	index = mgmt_index;
+	if (index == MGMT_INDEX_NONE)
+		index = 0;
+
+	if (!mgmt_send(mgmt, MGMT_OP_READ_ADV_MONITOR_FEATURES, index, 0, NULL,
+					advmon_features_rsp, NULL, NULL)) {
+		error("Unable to send advertising monitor features command");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+}
+
+static void advmon_add_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_add_adv_patterns_monitor *rp = param;
+
+	if (status != MGMT_STATUS_SUCCESS) {
+		error("Could not add advertisement monitor with status "
+				"0x%02x (%s)", status, mgmt_errstr(status));
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	print("Advertisement monitor with handle:0x%04x added",
+					le16_to_cpu(rp->monitor_handle));
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static bool str2pattern(struct mgmt_adv_pattern *pattern, const char *str)
+{
+	int type_len, offset_len, offset_end_pos, str_len;
+	int i, j;
+	char pattern_str[62] = { 0 };
+	char tmp;
+
+	if (sscanf(str, "%2hhx%n:%2hhx%n:%s", &pattern->ad_type, &type_len,
+			&pattern->offset, &offset_end_pos, pattern_str) != 3)
+		return false;
+
+	offset_len = offset_end_pos - type_len - 1;
+	str_len = strlen(pattern_str);
+	pattern->length = str_len / 2 + str_len % 2;
+
+	if (type_len > 2 || offset_len > 2 ||
+					pattern->offset + pattern->length > 31)
+		return false;
+
+	for (i = 0, j = 0; i < str_len; i++, j++) {
+		if (sscanf(&pattern_str[i++], "%2hhx", &pattern->value[j])
+									!= 1)
+			return false;
+		if (i < str_len && sscanf(&pattern_str[i], "%1hhx", &tmp) != 1)
+			return false;
+	}
+
+	return true;
+}
+
+static void advmon_add_usage(void)
+{
+	bt_shell_usage();
+	print("Monitor Types:\n\t-p <ad_type:offset:pattern>..."
+		"\tPattern Monitor\ne.g.:\n\tadd -p 0:1:c504 1:a:9a55beef");
+}
+
+static bool advmon_add_pattern(int argc, char **argv)
+{
+	uint16_t index;
+	int i, cp_len;
+	struct mgmt_cp_add_adv_monitor *cp = NULL;
+	bool success = false;
+
+	index = mgmt_index;
+	if (index == MGMT_INDEX_NONE)
+		index = 0;
+
+	cp_len = sizeof(struct mgmt_cp_add_adv_monitor) +
+			argc * sizeof(struct mgmt_adv_pattern);
+
+	cp = malloc0(cp_len);
+	cp->pattern_count = argc;
+
+	for (i = 0; i < argc; i++) {
+		if (!str2pattern(&cp->patterns[i], argv[i])) {
+			error("Failed to parse monitor patterns.");
+			goto done;
+		}
+	}
+
+	if (!mgmt_send(mgmt, MGMT_OP_ADD_ADV_PATTERNS_MONITOR, index, cp_len,
+					cp, advmon_add_rsp, NULL, NULL)) {
+		error("Unable to send \"Add Advertising Monitor\" command");
+		goto done;
+	}
+
+	success = true;
+
+done:
+	free(cp);
+	return success;
+}
+
+static void cmd_advmon_add(int argc, char **argv)
+{
+	bool success = false;
+
+	if (strcasecmp(argv[1], "-p") == 0 && argc > 2) {
+		argc -= 2;
+		argv += 2;
+		success = advmon_add_pattern(argc, argv);
+	}
+
+	if (!success) {
+		advmon_add_usage();
+		bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+}
+
+static void advmon_remove_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_remove_adv_monitor *rp = param;
+
+	if (status != MGMT_STATUS_SUCCESS) {
+		error("Could not remove advertisement monitor with status "
+				"0x%02x (%s)", status, mgmt_errstr(status));
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	print("Advertisement monitor with handle: 0x%04x removed",
+					le16_to_cpu(rp->monitor_handle));
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void cmd_advmon_remove(int argc, char **argv)
+{
+	struct mgmt_cp_remove_adv_monitor cp;
+	uint16_t index, monitor_handle;
+
+	index = mgmt_index;
+	if (index == MGMT_INDEX_NONE)
+		index = 0;
+
+	if (sscanf(argv[1], "%hx", &monitor_handle) != 1) {
+		error("Wrong formatted handle argument");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	cp.monitor_handle = cpu_to_le16(monitor_handle);
+	if (mgmt_send(mgmt, MGMT_OP_REMOVE_ADV_MONITOR, index, sizeof(cp), &cp,
+					advmon_remove_rsp, NULL, NULL) == 0) {
+		error("Unable to send appearance cmd");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+}
+
 static void register_mgmt_callbacks(struct mgmt *mgmt, uint16_t index)
 {
 	mgmt_register(mgmt, MGMT_EV_CONTROLLER_ERROR, index, controller_error,
@@ -4619,6 +4868,10 @@ static void register_mgmt_callbacks(struct mgmt *mgmt, uint16_t index)
 						advertising_added, NULL, NULL);
 	mgmt_register(mgmt, MGMT_EV_ADVERTISING_REMOVED, index,
 					advertising_removed, NULL, NULL);
+	mgmt_register(mgmt, MGMT_EV_ADV_MONITOR_ADDED, index, advmon_added,
+								NULL, NULL);
+	mgmt_register(mgmt, MGMT_EV_ADV_MONITOR_REMOVED, index, advmon_removed,
+								NULL, NULL);
 }
 
 static void cmd_select(int argc, char **argv)
@@ -4634,6 +4887,20 @@ static void cmd_select(int argc, char **argv)
 
 	update_prompt(mgmt_index);
 }
+
+static const struct bt_shell_menu monitor_menu = {
+	.name = "monitor",
+	.desc = "Advertisement Monitor Submenu",
+	.entries = {
+	{ "features",		NULL,
+		cmd_advmon_features,	"Show advertisement monitor "
+					"features"			},
+	{ "remove",		"<handle>",
+		cmd_advmon_remove,	"Remove advertisement monitor "	},
+	{ "add",		"<-p|-h> [options...]",
+		cmd_advmon_add,		"Add advertisement monitor"	},
+	{ } },
+};
 
 static const struct bt_shell_menu main_menu = {
 	.name = "main",
@@ -4815,6 +5082,7 @@ int main(int argc, char *argv[])
 
 	bt_shell_init(argc, argv, &opt);
 	bt_shell_set_menu(&main_menu);
+	bt_shell_add_submenu(&monitor_menu);
 
 	mgmt = mgmt_new_default();
 	if (!mgmt) {
