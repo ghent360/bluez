@@ -34,6 +34,12 @@
 
 #define CFG_MAX_MSG_LEN 380
 
+/* Supported composition pages, sorted high to low */
+/* Only page 0 is currently supported */
+static const uint8_t supported_pages[] = {
+	0
+};
+
 static void send_pub_status(struct mesh_node *node, uint16_t net_idx,
 			uint16_t src, uint16_t dst,
 			uint8_t status, uint16_t ele_addr, uint32_t mod_id,
@@ -98,9 +104,8 @@ static void config_pub_get(struct mesh_node *node, uint16_t net_idx,
 }
 
 static void config_pub_set(struct mesh_node *node, uint16_t net_idx,
-					uint16_t src, uint16_t dst,
-					const uint8_t *pkt, bool virt,
-					bool vendor, bool unreliable)
+				uint16_t src, uint16_t dst,
+				const uint8_t *pkt, bool virt, bool vendor)
 {
 	uint32_t mod_id;
 	uint16_t ele_addr, idx, ota = UNASSIGNED_ADDRESS;
@@ -143,9 +148,8 @@ static void config_pub_set(struct mesh_node *node, uint16_t net_idx,
 					status, ele_addr, ota, mod_id, idx);
 
 	if (status != MESH_STATUS_SUCCESS) {
-		if (!unreliable)
-			send_pub_status(node, net_idx, src, dst, status,
-					ele_addr, mod_id, 0, 0, 0, 0, 0, 0);
+		send_pub_status(node, net_idx, src, dst, status, ele_addr,
+						mod_id, 0, 0, 0, 0, 0, 0);
 
 		return;
 	}
@@ -180,10 +184,8 @@ static void config_pub_set(struct mesh_node *node, uint16_t net_idx,
 			status = MESH_STATUS_STORAGE_FAIL;
 	}
 
-	if (!unreliable)
-		send_pub_status(node, net_idx, src, dst, status, ele_addr,
-					mod_id, ota, idx, cred_flag, ttl,
-					period, retransmit);
+	send_pub_status(node, net_idx, src, dst, status, ele_addr, mod_id, ota,
+				idx, cred_flag, ttl, period, retransmit);
 }
 
 static void send_sub_status(struct mesh_node *node, uint16_t net_idx,
@@ -311,7 +313,6 @@ static void config_sub_set(struct mesh_node *node, uint16_t net_idx,
 					bool virt, uint32_t opcode)
 {
 	uint16_t grp, ele_addr;
-	bool unreliable = !!(opcode & OP_UNRELIABLE);
 	uint32_t mod_id;
 	const uint8_t *addr = NULL;
 	int status = MESH_STATUS_SUCCESS;
@@ -369,7 +370,7 @@ static void config_sub_set(struct mesh_node *node, uint16_t net_idx,
 	} else
 		grp = UNASSIGNED_ADDRESS;
 
-	switch (opcode & ~OP_UNRELIABLE) {
+	switch (opcode) {
 	default:
 		l_debug("Bad opcode: %x", opcode);
 		return;
@@ -411,8 +412,8 @@ static void config_sub_set(struct mesh_node *node, uint16_t net_idx,
 		grp = UNASSIGNED_ADDRESS;
 		/* Fall Through */
 	case OP_CONFIG_MODEL_SUB_DELETE:
-		status = mesh_model_sub_del(node, ele_addr, mod_id,
-							addr, virt, &grp);
+		status = mesh_model_sub_del(node, ele_addr, mod_id, addr, virt,
+									&grp);
 
 		if (status == MESH_STATUS_SUCCESS)
 			save_config_sub(node, ele_addr, mod_id, vendor, addr,
@@ -421,10 +422,7 @@ static void config_sub_set(struct mesh_node *node, uint16_t net_idx,
 		break;
 	}
 
-	if (!unreliable)
-		send_sub_status(node, net_idx, src, dst, status, ele_addr,
-								grp, mod_id);
-
+	send_sub_status(node, net_idx, src, dst, status, ele_addr, grp, mod_id);
 }
 
 static void send_model_app_status(struct mesh_node *node, uint16_t net_idx,
@@ -701,6 +699,33 @@ static void node_reset(void *user_data)
 	node_remove(node);
 }
 
+static uint16_t get_composition(struct mesh_node *node, uint8_t page,
+								uint8_t *buf)
+{
+	const uint8_t *comp;
+	uint16_t len = 0;
+	size_t i;
+
+	for (i = 0; i < sizeof(supported_pages); i++) {
+		if (page < supported_pages[i])
+			continue;
+
+		page = supported_pages[i];
+		comp = node_get_comp(node, page, &len);
+
+		if (!page || len)
+			break;
+	}
+
+	if (!len)
+		return 0;
+
+	*buf++ = page;
+	memcpy(buf, comp, len);
+
+	return len + 1;
+}
+
 static bool cfg_srv_pkt(uint16_t src, uint16_t dst, uint16_t app_idx,
 				uint16_t net_idx, const uint8_t *data,
 				uint16_t size, const void *user_data)
@@ -746,16 +771,9 @@ static bool cfg_srv_pkt(uint16_t src, uint16_t dst, uint16_t app_idx,
 		if (size != 1)
 			return false;
 
-		/* Only page 0 is currently supported */
-		if (pkt[0] != 0) {
-			l_debug("Unsupported page number %d", pkt[0]);
-			l_debug("Returning page number 0");
-		}
 		long_msg = l_malloc(CFG_MAX_MSG_LEN);
 		n = mesh_model_opcode_set(OP_DEV_COMP_STATUS, long_msg);
-		long_msg[n++] = 0;
-		n += node_generate_comp(node, long_msg + n,
-							CFG_MAX_MSG_LEN - n);
+		n += get_composition(node, pkt[0], long_msg + n);
 
 		break;
 
@@ -786,8 +804,7 @@ static bool cfg_srv_pkt(uint16_t src, uint16_t dst, uint16_t app_idx,
 			return true;
 
 		config_pub_set(node, net_idx, src, dst, pkt, virt,
-						size == 13 || size == 27,
-						!!(opcode & OP_UNRELIABLE));
+						size == 13 || size == 27);
 		break;
 
 	case OP_CONFIG_MODEL_PUB_GET:

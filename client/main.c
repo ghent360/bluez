@@ -925,6 +925,7 @@ static void cmd_show(int argc, char *argv[])
 	print_uuids(adapter->proxy);
 	print_property(adapter->proxy, "Modalias");
 	print_property(adapter->proxy, "Discovering");
+	print_property(adapter->proxy, "Roles");
 
 	if (adapter->ad_proxy) {
 		bt_shell_printf("Advertising Features:\n");
@@ -1675,6 +1676,7 @@ static void cmd_info(int argc, char *argv[])
 	print_property(proxy, "Trusted");
 	print_property(proxy, "Blocked");
 	print_property(proxy, "Connected");
+	print_property(proxy, "WakeAllowed");
 	print_property(proxy, "LegacyPairing");
 	print_uuids(proxy);
 	print_property(proxy, "Modalias");
