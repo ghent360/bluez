@@ -174,9 +174,12 @@ static void request_unref(void *data)
 }
 
 struct notify_chrc {
+	struct bt_gatt_client *client;
+	struct gatt_db_attribute *attr;
 	uint16_t value_handle;
 	uint16_t ccc_handle;
 	uint16_t properties;
+	unsigned int notify_id;
 	int notify_count;  /* Reference count of registered notify callbacks */
 
 	/* Pending calls to register_notify are queued here so that they can be
@@ -235,6 +238,51 @@ static void find_ccc(struct gatt_db_attribute *attr, void *user_data)
 	*ccc_ptr = attr;
 }
 
+static bool match_notify_chrc(const void *data, const void *user_data)
+{
+	const struct notify_data *notify_data = data;
+	const struct notify_chrc *chrc = user_data;
+
+	return notify_data->chrc == chrc;
+}
+
+static void notify_data_cleanup(void *data)
+{
+	struct notify_data *notify_data = data;
+
+	if (notify_data->att_id)
+		bt_att_cancel(notify_data->client->att, notify_data->att_id);
+
+	notify_data_unref(notify_data);
+}
+
+static void notify_chrc_free(void *data)
+{
+	struct notify_chrc *chrc = data;
+
+	if (chrc->notify_id)
+		gatt_db_attribute_unregister(chrc->attr, chrc->notify_id);
+
+	queue_destroy(chrc->reg_notify_queue, notify_data_unref);
+	free(chrc);
+}
+
+static void chrc_removed(struct gatt_db_attribute *attr, void *user_data)
+{
+	struct notify_chrc *chrc = user_data;
+	struct bt_gatt_client *client = chrc->client;
+	struct notify_data *data;
+
+	chrc->notify_id = 0;
+
+	while ((data = queue_remove_if(client->notify_list, match_notify_chrc,
+								chrc)))
+		notify_data_cleanup(data);
+
+	queue_remove(client->notify_chrcs, chrc);
+	notify_chrc_free(chrc);
+}
+
 static struct notify_chrc *notify_chrc_create(struct bt_gatt_client *client,
 							uint16_t value_handle)
 {
@@ -274,20 +322,16 @@ static struct notify_chrc *notify_chrc_create(struct bt_gatt_client *client,
 	if (ccc)
 		chrc->ccc_handle = gatt_db_attribute_get_handle(ccc);
 
+	chrc->client = client;
+	chrc->attr = attr;
 	chrc->value_handle = value_handle;
 	chrc->properties = properties;
+	chrc->notify_id = gatt_db_attribute_register(attr, chrc_removed, chrc,
+									NULL);
 
 	queue_push_tail(client->notify_chrcs, chrc);
 
 	return chrc;
-}
-
-static void notify_chrc_free(void *data)
-{
-	struct notify_chrc *chrc = data;
-
-	queue_destroy(chrc->reg_notify_queue, notify_data_unref);
-	free(chrc);
 }
 
 static bool match_notify_data_id(const void *a, const void *b)
@@ -302,16 +346,6 @@ struct handle_range {
 	uint16_t start;
 	uint16_t end;
 };
-
-static void notify_data_cleanup(void *data)
-{
-	struct notify_data *notify_data = data;
-
-	if (notify_data->att_id)
-		bt_att_cancel(notify_data->client->att, notify_data->att_id);
-
-	notify_data_unref(notify_data);
-}
 
 struct discovery_op;
 
@@ -377,6 +411,10 @@ static void discovery_op_complete(struct discovery_op *op, bool success,
 	for (svc = queue_get_entries(op->pending_svcs); svc; svc = svc->next) {
 		struct gatt_db_attribute *attr = svc->data;
 		uint16_t start, end;
+
+		/* Leave active services if operation was aborted */
+		if ((!success && err == 0) && gatt_db_service_get_active(attr))
+			continue;
 
 		gatt_db_attribute_get_service_data(attr, &start, &end,
 							NULL, NULL);
@@ -1422,8 +1460,10 @@ static bool read_db_hash(struct discovery_op *op)
 	struct bt_gatt_client *client = op->client;
 	bt_uuid_t uuid;
 
-	/* Check if hash was already read */
-	if (op->hash)
+	/* Check if hash was already been read or there are more services to
+	 * process.
+	 */
+	if (op->hash || !queue_isempty(client->svc_chngd_queue))
 		return false;
 
 	bt_uuid16_create(&uuid, GATT_CHARAC_DB_HASH);
@@ -2192,6 +2232,7 @@ static void bt_gatt_client_free(struct bt_gatt_client *client)
 {
 	bt_gatt_client_cancel_all(client);
 
+	queue_destroy(client->notify_chrcs, notify_chrc_free);
 	queue_destroy(client->notify_list, notify_data_cleanup);
 
 	queue_destroy(client->ready_cbs, ready_destroy);
@@ -2212,7 +2253,6 @@ static void bt_gatt_client_free(struct bt_gatt_client *client)
 	queue_destroy(client->clones, NULL);
 	queue_destroy(client->svc_chngd_queue, free);
 	queue_destroy(client->long_write_queue, request_unref);
-	queue_destroy(client->notify_chrcs, notify_chrc_free);
 	queue_destroy(client->pending_requests, request_unref);
 
 	if (client->parent) {
