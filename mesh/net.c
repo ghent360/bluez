@@ -23,6 +23,8 @@
 
 #define _GNU_SOURCE
 
+#include <sys/time.h>
+
 #include <ell/ell.h>
 
 #include "mesh/mesh-defs.h"
@@ -132,7 +134,10 @@ struct mesh_net {
 		uint8_t count;
 	} relay;
 
-	struct mesh_net_heartbeat heartbeat;
+	/* Heartbeat info */
+	struct mesh_net_heartbeat_sub hb_sub;
+	struct mesh_net_heartbeat_pub hb_pub;
+	uint16_t features;
 
 	struct l_queue *subnets;
 	struct l_queue *msg_cache;
@@ -255,35 +260,46 @@ static bool match_friend_key_id(const void *a, const void *b)
 					(key_id == friend->net_key_upd);
 }
 
-static void idle_mesh_heartbeat_send(void *net)
+static void send_hb_publication(void *data)
 {
-	mesh_net_heartbeat_send(net);
+	struct mesh_net *net = data;
+	struct mesh_net_heartbeat_pub *pub = &net->hb_pub;
+	uint8_t msg[4];
+	int n = 0;
+
+	if (pub->dst == UNASSIGNED_ADDRESS)
+		return;
+
+	msg[n++] = NET_OP_HEARTBEAT;
+	msg[n++] = pub->ttl;
+	l_put_be16(net->features, msg + n);
+	n += 2;
+
+	mesh_net_transport_send(net, 0, 0, mesh_net_get_iv_index(net),
+					pub->ttl, 0, 0, pub->dst, msg, n);
 }
 
 static void trigger_heartbeat(struct mesh_net *net, uint16_t feature,
-								bool in_use)
+								bool enable)
 {
-	struct mesh_net_heartbeat *hb = &net->heartbeat;
+	l_debug("HB: %4.4x --> %d", feature, enable);
 
-	l_debug("%s: %4.4x --> %d", __func__, feature, in_use);
-
-	if (in_use) {
-		if (net->heartbeat.features & feature)
+	if (enable) {
+		if (net->features & feature)
 			return; /* no change */
 
-		hb->features |= feature;
+		net->features |= feature;
 	} else {
-		if (!(hb->features & feature))
+		if (!(net->features & feature))
 			return; /* no change */
 
-		hb->features &= ~feature;
+		net->features &= ~feature;
 	}
 
-	if (!(hb->pub_features & feature))
-		return; /* not interested in this feature */
+	if (!(net->hb_pub.features & feature))
+		return; /* no interest in this feature */
 
-	l_idle_oneshot(idle_mesh_heartbeat_send, net, NULL);
-
+	l_idle_oneshot(send_hb_publication, net, NULL);
 }
 
 static bool match_by_friend(const void *a, const void *b)
@@ -616,8 +632,6 @@ struct mesh_net *mesh_net_new(struct mesh_node *node)
 	net->destinations = l_queue_new();
 	net->app_keys = l_queue_new();
 
-	memset(&net->heartbeat, 0, sizeof(net->heartbeat));
-
 	if (!nets)
 		nets = l_queue_new();
 
@@ -813,8 +827,8 @@ int mesh_net_del_key(struct mesh_net *net, uint16_t idx)
 	appkey_delete_bound_keys(net, idx);
 
 	/* Disable hearbeat publication on this subnet */
-	if (idx == net->heartbeat.pub_net_idx)
-		net->heartbeat.pub_dst = UNASSIGNED_ADDRESS;
+	if (idx == net->hb_pub.net_idx)
+		net->hb_pub.dst = UNASSIGNED_ADDRESS;
 
 	/* TODO: cancel beacon_enable on this subnet */
 
@@ -2017,25 +2031,23 @@ static bool ctl_received(struct mesh_net *net, uint16_t key_id,
 		break;
 
 	case NET_OP_HEARTBEAT:
-		if (net->heartbeat.sub_enabled &&
-				src == net->heartbeat.sub_src) {
+		if (net->hb_sub.enabled && src == net->hb_sub.src) {
 			uint8_t hops = pkt[0] - ttl + 1;
 
 			print_packet("Rx-NET_OP_HEARTBEAT", pkt, len);
 
-			if (net->heartbeat.sub_count != 0xffff)
-				net->heartbeat.sub_count++;
+			if (net->hb_sub.count != 0xffff)
+				net->hb_sub.count++;
 
-			if (net->heartbeat.sub_min_hops > hops)
-				net->heartbeat.sub_min_hops = hops;
+			if (net->hb_sub.min_hops > hops)
+				net->hb_sub.min_hops = hops;
 
-			if (net->heartbeat.sub_max_hops < hops)
-				net->heartbeat.sub_max_hops = hops;
+			if (net->hb_sub.max_hops < hops)
+				net->hb_sub.max_hops = hops;
 
 			l_debug("HB: cnt:%4.4x min:%2.2x max:%2.2x",
-					net->heartbeat.sub_count,
-					net->heartbeat.sub_min_hops,
-					net->heartbeat.sub_max_hops);
+					net->hb_sub.count, net->hb_sub.min_hops,
+							net->hb_sub.max_hops);
 		}
 		break;
 	}
@@ -2433,6 +2445,10 @@ static int key_refresh_phase_two(struct mesh_net *net, uint16_t idx)
 		return MESH_STATUS_INVALID_NETKEY;
 
 	l_debug("Key refresh procedure phase 2: start using new net TX keys");
+
+	if (subnet->kr_phase == KEY_REFRESH_PHASE_TWO)
+		return MESH_STATUS_SUCCESS;
+
 	subnet->key_refresh = 1;
 	subnet->net_key_tx = subnet->net_key_upd;
 	/*
@@ -2445,8 +2461,9 @@ static int key_refresh_phase_two(struct mesh_net *net, uint16_t idx)
 
 	l_queue_foreach(net->friends, frnd_kr_phase2, net);
 
-	mesh_config_net_key_set_phase(node_config_get(net->node), idx,
-						KEY_REFRESH_PHASE_TWO);
+	if (!mesh_config_net_key_set_phase(node_config_get(net->node), idx,
+							KEY_REFRESH_PHASE_TWO))
+		return MESH_STATUS_STORAGE_FAIL;
 
 	return MESH_STATUS_SUCCESS;
 }
@@ -2479,8 +2496,9 @@ static int key_refresh_finish(struct mesh_net *net, uint16_t idx)
 
 	l_queue_foreach(net->friends, frnd_kr_phase3, net);
 
-	mesh_config_net_key_set_phase(node_config_get(net->node), idx,
-							KEY_REFRESH_PHASE_NONE);
+	if (!mesh_config_net_key_set_phase(node_config_get(net->node), idx,
+							KEY_REFRESH_PHASE_NONE))
+		return MESH_STATUS_STORAGE_FAIL;
 
 	return MESH_STATUS_SUCCESS;
 }
@@ -3168,45 +3186,22 @@ void mesh_net_transport_send(struct mesh_net *net, uint32_t key_id,
 		send_msg_pkt(net, pkt, pkt_len + 1);
 }
 
-uint8_t mesh_net_key_refresh_phase_set(struct mesh_net *net, uint16_t idx,
+int mesh_net_key_refresh_phase_set(struct mesh_net *net, uint16_t idx,
 							uint8_t transition)
 {
-	struct mesh_subnet *subnet;
-
-	if (!net)
-		return MESH_STATUS_UNSPECIFIED_ERROR;
-
-	subnet = l_queue_find(net->subnets, match_key_index,
-							L_UINT_TO_PTR(idx));
-	if (!subnet)
-		return MESH_STATUS_INVALID_NETKEY;
-
-	if (transition == subnet->kr_phase)
-		return MESH_STATUS_SUCCESS;
-
-	if ((transition != 2 && transition != 3) ||
-						transition < subnet->kr_phase)
-		return MESH_STATUS_CANNOT_SET;
-
 	switch (transition) {
-	case 2:
-		if (key_refresh_phase_two(net, idx)
-							!= MESH_STATUS_SUCCESS)
-			return MESH_STATUS_CANNOT_SET;
-		break;
-	case 3:
-		if (key_refresh_finish(net, idx)
-							!= MESH_STATUS_SUCCESS)
-			return MESH_STATUS_CANNOT_SET;
-		break;
-	default:
-		return MESH_STATUS_CANNOT_SET;
-	}
+	case KEY_REFRESH_TRANS_TWO:
+		return key_refresh_phase_two(net, idx);
 
-	return MESH_STATUS_SUCCESS;
+	case KEY_REFRESH_TRANS_THREE:
+		return key_refresh_finish(net, idx);
+
+	default:
+		return MESH_STATUS_UNSPECIFIED_ERROR;
+	}
 }
 
-uint8_t mesh_net_key_refresh_phase_get(struct mesh_net *net, uint16_t idx,
+int mesh_net_key_refresh_phase_get(struct mesh_net *net, uint16_t idx,
 								uint8_t *phase)
 {
 	struct mesh_subnet *subnet;
@@ -3276,52 +3271,14 @@ int mesh_net_update_key(struct mesh_net *net, uint16_t idx,
 	return MESH_STATUS_SUCCESS;
 }
 
-static uint16_t get_features(struct mesh_net *net)
+struct mesh_net_heartbeat_sub *mesh_net_get_heartbeat_sub(struct mesh_net *net)
 {
-	uint16_t features = 0;
-
-	if (net->relay.enable)
-		features |= FEATURE_RELAY;
-
-	if (net->proxy_enable)
-		features |= FEATURE_PROXY;
-
-	if (net->friend_enable)
-		features |= FEATURE_FRIEND;
-
-	return features;
+	return &net->hb_sub;
 }
 
-struct mesh_net_heartbeat *mesh_net_heartbeat_get(struct mesh_net *net)
+struct mesh_net_heartbeat_pub *mesh_net_get_heartbeat_pub(struct mesh_net *net)
 {
-	return &net->heartbeat;
-}
-
-void mesh_net_heartbeat_send(struct mesh_net *net)
-{
-	struct mesh_net_heartbeat *hb = &net->heartbeat;
-	uint8_t msg[4];
-	int n = 0;
-
-	if (hb->pub_dst == UNASSIGNED_ADDRESS)
-		return;
-
-	msg[n++] = NET_OP_HEARTBEAT;
-	msg[n++] = hb->pub_ttl;
-	l_put_be16(hb->features, msg + n);
-	n += 2;
-
-	mesh_net_transport_send(net, 0, 0, mesh_net_get_iv_index(net),
-					hb->pub_ttl, 0, 0, hb->pub_dst, msg, n);
-}
-
-void mesh_net_heartbeat_init(struct mesh_net *net)
-{
-	struct mesh_net_heartbeat *hb = &net->heartbeat;
-
-	memset(hb, 0, sizeof(struct mesh_net_heartbeat));
-	hb->sub_min_hops = 0xff;
-	hb->features = get_features(net);
+	return &net->hb_pub;
 }
 
 void mesh_net_set_iv_index(struct mesh_net *net, uint32_t index, bool update)
@@ -3558,4 +3515,157 @@ void net_msg_add_replay_cache(struct mesh_net *net, uint16_t src, uint32_t seq,
 
 	/* Optimize so that most recent conversations stay earliest in cache */
 	l_queue_push_head(net->replay_cache, rpe);
+}
+
+static void hb_sub_timeout_func(struct l_timeout *timeout, void *user_data)
+{
+	struct mesh_net *net = user_data;
+	struct mesh_net_heartbeat_sub *sub = &net->hb_sub;
+
+	l_debug("HB Subscription Ended");
+	l_timeout_remove(sub->timer);
+	sub->timer = NULL;
+	sub->enabled = false;
+}
+
+static uint32_t log_to_uint32(uint8_t log)
+{
+	if (!log)
+		return 0x0000;
+
+	return (1 << (log - 1));
+}
+
+int mesh_net_set_heartbeat_sub(struct mesh_net *net, uint16_t src, uint16_t dst,
+							uint8_t period_log)
+{
+	struct mesh_net_heartbeat_sub *sub = &net->hb_sub;
+	struct timeval time_now;
+
+	if (!net)
+		return MESH_STATUS_UNSPECIFIED_ERROR;
+
+	/* Check if the subscription should be disabled */
+	if (IS_UNASSIGNED(src) || IS_UNASSIGNED(dst)) {
+		if (IS_GROUP(sub->dst))
+			mesh_net_dst_unreg(net, sub->dst);
+
+		sub->enabled = false;
+		sub->dst = UNASSIGNED_ADDRESS;
+		sub->src = UNASSIGNED_ADDRESS;
+		sub->count = 0;
+		sub->period = 0;
+		sub->min_hops = 0;
+		sub->max_hops = 0;
+
+	} else if (!period_log && src == sub->src && dst == sub->dst) {
+		/* Preserve collected data, but disable */
+		sub->enabled = false;
+		sub->period = 0;
+
+	} else if (sub->dst != dst) {
+		if (IS_GROUP(sub->dst))
+			mesh_net_dst_unreg(net, sub->dst);
+
+		if (IS_GROUP(dst))
+			mesh_net_dst_reg(net, dst);
+
+		sub->enabled = !!period_log;
+		sub->src = src;
+		sub->dst = dst;
+		sub->count = 0;
+		sub->period = log_to_uint32(period_log);
+		sub->min_hops = 0x00;
+		sub->max_hops = 0x00;
+		gettimeofday(&time_now, NULL);
+		sub->start = time_now.tv_sec;
+	}
+
+	/* TODO: Save to node config */
+
+	if (!sub->enabled) {
+		l_timeout_remove(sub->timer);
+		sub->timer = NULL;
+		return MESH_STATUS_SUCCESS;
+	}
+
+	sub->min_hops = 0xff;
+
+	if (!sub->timer)
+		sub->timer = l_timeout_create(sub->period, hb_sub_timeout_func,
+								net, NULL);
+	else
+		l_timeout_modify(sub->timer, sub->period);
+
+	return MESH_STATUS_SUCCESS;
+}
+
+static void hb_pub_timeout_func(struct l_timeout *timeout, void *user_data)
+{
+	struct mesh_net *net = user_data;
+	struct mesh_net_heartbeat_pub *pub = &net->hb_pub;
+
+	send_hb_publication(net);
+
+	if (pub->count != 0xffff)
+		pub->count--;
+
+	if (pub->count > 0)
+		l_timeout_modify(pub->timer, pub->period);
+	else {
+		l_timeout_remove(pub->timer);
+		pub->timer = NULL;
+	}
+}
+
+static void update_hb_pub_timer(struct mesh_net *net,
+					struct mesh_net_heartbeat_pub *pub)
+{
+	if (IS_UNASSIGNED(pub->dst) || pub->count == 0) {
+		l_timeout_remove(pub->timer);
+		pub->timer = NULL;
+		return;
+	}
+
+	if (!pub->timer)
+		pub->timer = l_timeout_create(pub->period,
+					hb_pub_timeout_func, net, NULL);
+	else
+		l_timeout_modify(pub->timer, pub->period);
+}
+
+int mesh_net_set_heartbeat_pub(struct mesh_net *net, uint16_t dst,
+				uint16_t features, uint16_t idx, uint8_t ttl,
+				uint8_t count_log, uint8_t period_log)
+{
+	struct mesh_subnet *subnet;
+	struct mesh_net_heartbeat_pub *pub = &net->hb_pub;
+
+	if (!net)
+		return MESH_STATUS_UNSPECIFIED_ERROR;
+
+	subnet = l_queue_find(net->subnets, match_key_index,
+							L_UINT_TO_PTR(idx));
+	if (!subnet)
+		return MESH_STATUS_INVALID_NETKEY;
+
+	pub->dst = dst;
+
+	if (pub->dst == UNASSIGNED_ADDRESS) {
+		pub->count = 0;
+		pub->period = 0;
+		pub->ttl = 0;
+	} else {
+		pub->count = (count_log != 0xff) ?
+					log_to_uint32(count_log) : 0xffff;
+		pub->period = log_to_uint32(period_log);
+	}
+
+	pub->ttl = ttl;
+	pub->features = features;
+	pub->net_idx = idx;
+	update_hb_pub_timer(net, pub);
+
+	/* TODO: Save to node config */
+	return MESH_STATUS_SUCCESS;
 }

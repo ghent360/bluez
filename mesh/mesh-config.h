@@ -24,9 +24,9 @@ struct mesh_config;
 struct mesh_config_sub {
 	bool virt;
 	union {
-		uint16_t	addr;
-		uint8_t	virt_addr[16];
-	} src;
+		uint16_t grp;
+		uint8_t	label[16];
+	} addr;
 };
 
 struct mesh_config_pub {
@@ -152,10 +152,10 @@ bool mesh_config_comp_page_add(struct mesh_config *cfg, uint8_t page,
 						uint8_t *data, uint16_t size);
 bool mesh_config_comp_page_mv(struct mesh_config *cfg, uint8_t old, uint8_t nw);
 bool mesh_config_model_binding_add(struct mesh_config *cfg, uint16_t ele_addr,
-						bool vendor, uint32_t mod_id,
+						uint32_t mod_id, bool vendor,
 							uint16_t app_idx);
 bool mesh_config_model_binding_del(struct mesh_config *cfg, uint16_t ele_addr,
-						bool vendor, uint32_t mod_id,
+						uint32_t mod_id, bool vendor,
 							uint16_t app_idx);
 bool mesh_config_model_pub_add(struct mesh_config *cfg, uint16_t ele_addr,
 						uint32_t mod_id, bool vendor,
