@@ -508,10 +508,11 @@ static int virt_packet_decrypt(struct mesh_net *net, const uint8_t *data,
 	return -1;
 }
 
-static bool msg_send(struct mesh_node *node, bool credential, uint16_t src,
-		uint32_t dst, uint16_t app_idx, uint16_t net_idx,
-		uint8_t *label, uint8_t ttl, bool segmented,
-		const void *msg, uint16_t msg_len)
+static bool msg_send(struct mesh_node *node, bool cred, uint16_t src,
+			uint16_t dst, uint16_t app_idx, uint16_t net_idx,
+			uint8_t *label, uint8_t ttl, uint8_t cnt,
+			uint16_t interval, bool segmented, const void *msg,
+			uint16_t msg_len)
 {
 	uint8_t dev_key[16];
 	uint32_t iv_index, seq_num;
@@ -546,8 +547,6 @@ static bool msg_send(struct mesh_node *node, bool credential, uint16_t src,
 			l_debug("no app key for (%x)", app_idx);
 			return false;
 		}
-
-		net_idx = appkey_net_idx(node_get_net(node), app_idx);
 	}
 
 	out = l_malloc(out_len);
@@ -562,9 +561,9 @@ static bool msg_send(struct mesh_node *node, bool credential, uint16_t src,
 		goto done;
 	}
 
-	ret =  mesh_net_app_send(net, credential, src, dst, key_aid, net_idx,
-					ttl, seq_num, iv_index, segmented,
-					szmic, out, out_len);
+	ret =  mesh_net_app_send(net, cred, src, dst, key_aid, net_idx, ttl,
+					cnt, interval, seq_num, iv_index,
+					segmented, szmic, out, out_len);
 done:
 	l_free(out);
 	return ret;
@@ -705,7 +704,7 @@ static struct mesh_virtual *add_virtual(const uint8_t *v)
 
 static int set_pub(struct mesh_model *mod, uint16_t pub_addr,
 			uint16_t idx, bool cred_flag, uint8_t ttl,
-			uint8_t period, uint8_t retransmit)
+			uint8_t period, uint8_t cnt, uint16_t interval)
 {
 	if (!mod->pub)
 		mod->pub = l_new(struct mesh_model_pub, 1);
@@ -715,14 +714,15 @@ static int set_pub(struct mesh_model *mod, uint16_t pub_addr,
 	mod->pub->idx = idx;
 	mod->pub->ttl = ttl;
 	mod->pub->period = period;
-	mod->pub->retransmit = retransmit;
+	mod->pub->rtx.cnt = cnt;
+	mod->pub->rtx.interval = interval;
 
 	return MESH_STATUS_SUCCESS;
 }
 
 static int set_virt_pub(struct mesh_model *mod, const uint8_t *label,
 			uint16_t idx, bool cred_flag, uint8_t ttl,
-			uint8_t period, uint8_t retransmit)
+			uint8_t period, uint8_t cnt, uint16_t interval)
 {
 	struct mesh_virtual *virt = NULL;
 
@@ -734,8 +734,8 @@ static int set_virt_pub(struct mesh_model *mod, const uint8_t *label,
 		mod->pub = l_new(struct mesh_model_pub, 1);
 
 	mod->pub->virt = virt;
-	return set_pub(mod, virt->addr, idx, cred_flag, ttl, period,
-								retransmit);
+	return set_pub(mod, virt->addr, idx, cred_flag, ttl, period, cnt,
+								interval);
 }
 
 static int add_virt_sub(struct mesh_net *net, struct mesh_model *mod,
@@ -862,9 +862,9 @@ static void send_msg_rcvd(struct mesh_node *node, uint8_t ele_idx,
 }
 
 bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
-			uint32_t seq, uint32_t iv_index,
-			uint16_t net_idx, uint16_t src, uint16_t dst,
-			uint8_t key_aid, const uint8_t *data, uint16_t size)
+			uint32_t iv_index, uint16_t net_idx, uint16_t src,
+			uint16_t dst, uint8_t key_aid, const uint8_t *data,
+								uint16_t size)
 {
 	uint8_t *clear_text;
 	struct mod_forward forward = {
@@ -877,7 +877,7 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 	struct mesh_net *net = node_get_net(node);
 	uint8_t num_ele;
 	int decrypt_idx, i, ele_idx;
-	uint16_t addr, crpl;
+	uint16_t addr;
 	struct mesh_virtual *decrypt_virt = NULL;
 	bool result = false;
 	bool is_subscription;
@@ -890,12 +890,6 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 
 	if (dst < 0x8000 && ele_idx < 0)
 		/* Unicast and not addressed to us */
-		return false;
-
-	/* Don't process if already in RPL */
-	crpl = node_get_crpl(node);
-
-	if (net_msg_check_replay_cache(net, src, crpl, seq, iv_index))
 		return false;
 
 	clear_text = l_malloc(size);
@@ -988,10 +982,6 @@ bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
 			break;
 	}
 
-	/* If message has been handled by us, add to RPL */
-	if (result)
-		net_msg_add_replay_cache(net, src, seq, iv_index);
-
 done:
 	l_free(clear_text);
 
@@ -999,7 +989,7 @@ done:
 }
 
 int mesh_model_publish(struct mesh_node *node, uint32_t id, uint16_t src,
-					const void *msg, uint16_t msg_len)
+			bool segmented, uint16_t msg_len, const void *msg)
 {
 	struct mesh_net *net = node_get_net(node);
 	struct mesh_model *mod;
@@ -1038,9 +1028,10 @@ int mesh_model_publish(struct mesh_node *node, uint32_t id, uint16_t src,
 
 	net_idx = appkey_net_idx(net, mod->pub->idx);
 
-	result = msg_send(node, mod->pub->credential != 0, src,
-				mod->pub->addr, mod->pub->idx, net_idx,
-				label, mod->pub->ttl, false, msg, msg_len);
+	result = msg_send(node, mod->pub->credential != 0, src, mod->pub->addr,
+				mod->pub->idx, net_idx, label, mod->pub->ttl,
+				mod->pub->rtx.cnt, mod->pub->rtx.interval,
+				segmented, msg, msg_len);
 
 	return result ? MESH_ERROR_NONE : MESH_ERROR_FAILED;
 }
@@ -1048,8 +1039,12 @@ int mesh_model_publish(struct mesh_node *node, uint32_t id, uint16_t src,
 bool mesh_model_send(struct mesh_node *node, uint16_t src, uint16_t dst,
 					uint16_t app_idx, uint16_t net_idx,
 					uint8_t ttl, bool segmented,
-					const void *msg, uint16_t msg_len)
+					uint16_t msg_len, const void *msg)
 {
+	struct mesh_net *net = node_get_net(node);
+	uint8_t cnt;
+	uint16_t interval;
+
 	/* If SRC is 0, use the Primary Element */
 	if (src == 0)
 		src = node_get_primary(node);
@@ -1059,14 +1054,16 @@ bool mesh_model_send(struct mesh_node *node, uint16_t src, uint16_t dst,
 	if (IS_UNASSIGNED(dst))
 		return false;
 
-	return msg_send(node, false, src, dst, app_idx, net_idx,
-					NULL, ttl, segmented, msg, msg_len);
+	mesh_net_transmit_params_get(net, &cnt, &interval);
+
+	return msg_send(node, false, src, dst, app_idx, net_idx, NULL, ttl, cnt,
+					interval, segmented, msg, msg_len);
 }
 
 int mesh_model_pub_set(struct mesh_node *node, uint16_t addr, uint32_t id,
 			const uint8_t *pub_addr, uint16_t idx, bool cred_flag,
-			uint8_t ttl, uint8_t period, uint8_t retransmit,
-			bool is_virt, uint16_t *pub_dst)
+			uint8_t ttl, uint8_t period, uint8_t cnt,
+			uint16_t interval, bool is_virt, uint16_t *pub_dst)
 {
 	struct mesh_model *mod;
 	int status, ele_idx = node_get_element_idx(node, addr);
@@ -1104,10 +1101,10 @@ int mesh_model_pub_set(struct mesh_node *node, uint16_t addr, uint32_t id,
 
 	if (!is_virt) {
 		status = set_pub(mod, l_get_le16(pub_addr), idx, cred_flag,
-						ttl, period, retransmit);
+						ttl, period, cnt, interval);
 	} else
 		status = set_virt_pub(mod, pub_addr, idx, cred_flag, ttl,
-						period, retransmit);
+							period, cnt, interval);
 
 	*pub_dst = mod->pub->addr;
 
@@ -1683,15 +1680,13 @@ static struct mesh_model *model_setup(struct mesh_net *net, uint8_t ele_idx,
 
 	/* Add publication if enabled and present */
 	if (mod->pub_enabled && pub) {
-		uint8_t retransmit = pub->count +
-					((pub->interval / 50 - 1) << 3);
 		if (pub->virt)
 			set_virt_pub(mod, pub->virt_addr, pub->idx,
-						pub->credential, pub->ttl,
-						pub->period, retransmit);
+					pub->credential, pub->ttl, pub->period,
+					pub->cnt, pub->interval);
 		else if (!IS_UNASSIGNED(pub->addr))
 			set_pub(mod, pub->addr, pub->idx, pub->credential,
-				pub->ttl, pub->period, retransmit);
+				pub->ttl, pub->period, pub->cnt, pub->interval);
 	}
 
 	mod->sub_enabled = db_mod->sub_enabled;

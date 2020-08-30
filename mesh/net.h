@@ -300,9 +300,9 @@ void mesh_net_transport_send(struct mesh_net *net, uint32_t key_id,
 
 bool mesh_net_app_send(struct mesh_net *net, bool frnd_cred, uint16_t src,
 				uint16_t dst, uint8_t key_id, uint16_t net_idx,
-				uint8_t ttl, uint32_t seq, uint32_t iv_index,
-				bool segmented, bool szmic, const void *msg,
-				uint16_t msg_len);
+				uint8_t ttl, uint8_t cnt, uint16_t interval,
+				uint32_t seq, uint32_t iv_index, bool segmented,
+				bool szmic, const void *msg, uint16_t msg_len);
 void mesh_net_ack_send(struct mesh_net *net, uint32_t key_id,
 				uint32_t iv_index, uint8_t ttl, uint32_t seq,
 				uint16_t src, uint16_t dst, bool rly,
@@ -354,7 +354,4 @@ void mesh_net_set_prov(struct mesh_net *net, struct mesh_prov *prov);
 uint32_t mesh_net_get_instant(struct mesh_net *net);
 struct l_queue *mesh_net_get_friends(struct mesh_net *net);
 struct l_queue *mesh_net_get_negotiations(struct mesh_net *net);
-bool net_msg_check_replay_cache(struct mesh_net *net, uint16_t src,
-				uint16_t crpl, uint32_t seq, uint32_t iv_index);
-void net_msg_add_replay_cache(struct mesh_net *net, uint16_t src, uint32_t seq,
-							uint32_t iv_index);
+bool mesh_net_load_rpl(struct mesh_net *net);

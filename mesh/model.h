@@ -40,10 +40,13 @@ struct mesh_model_pub {
 	struct mesh_virtual *virt;
 	uint16_t addr;
 	uint16_t idx;
+	struct {
+		uint16_t interval;
+		uint8_t cnt;
+	} rtx;
 	uint8_t ttl;
 	uint8_t credential;
 	uint8_t period;
-	uint8_t retransmit;
 };
 
 typedef void (*mesh_model_unregister)(void *user_data);
@@ -78,8 +81,8 @@ struct mesh_model_pub *mesh_model_pub_get(struct mesh_node *node,
 						uint32_t id, int *status);
 int mesh_model_pub_set(struct mesh_node *node, uint16_t ele_addr, uint32_t id,
 			const uint8_t *addr, uint16_t idx, bool cred_flag,
-			uint8_t ttl, uint8_t period, uint8_t retransmit,
-			bool is_virt, uint16_t *dst);
+			uint8_t ttl, uint8_t period, uint8_t rtx_cnt,
+			uint16_t rtx_interval, bool is_virt, uint16_t *dst);
 
 int mesh_model_binding_add(struct mesh_node *node, uint16_t ele_addr,
 						uint32_t id, uint16_t idx);
@@ -109,19 +112,16 @@ int mesh_model_sub_get(struct mesh_node *node, uint16_t ele_addr, uint32_t id,
 			uint8_t *buf, uint16_t buf_size, uint16_t *size);
 uint16_t mesh_model_cfg_blk(uint8_t *pkt);
 bool mesh_model_send(struct mesh_node *node, uint16_t src, uint16_t dst,
-					uint16_t app_idx, uint16_t net_idx,
-					uint8_t ttl, bool segmented,
-					const void *msg, uint16_t msg_len);
+			uint16_t app_idx, uint16_t net_idx, uint8_t ttl,
+			bool segmented, uint16_t len, const void *data);
 int mesh_model_publish(struct mesh_node *node, uint32_t id, uint16_t src,
-					const void *msg, uint16_t msg_len);
+			bool segmented, uint16_t len, const void *data);
 bool mesh_model_rx(struct mesh_node *node, bool szmict, uint32_t seq0,
-			uint32_t seq, uint32_t iv_index, uint16_t net_idx,
-			uint16_t src, uint16_t dst, uint8_t key_aid,
-			const uint8_t *data, uint16_t size);
-void mesh_model_app_key_generate_new(struct mesh_node *node, uint16_t net_idx);
+			uint32_t iv_index, uint16_t net_idx, uint16_t src,
+			uint16_t dst, uint8_t key_aid, const uint8_t *data,
+								uint16_t size);
 void mesh_model_app_key_delete(struct mesh_node *node, uint16_t ele_idx,
 				struct l_queue *models, uint16_t app_idx);
-struct l_queue *mesh_model_get_appkeys(struct mesh_node *node);
 uint16_t mesh_model_opcode_set(uint32_t opcode, uint8_t *buf);
 bool mesh_model_opcode_get(const uint8_t *buf, uint16_t size, uint32_t *opcode,
 								uint16_t *n);
