@@ -26,6 +26,11 @@
 #include <dbus/dbus.h>
 #include <glib.h>
 
+#include <lib/bluetooth.h>
+#include <lib/sdp.h>
+
+#define ADAPTER_INTERFACE	"org.bluez.Adapter1"
+
 #define MAX_NAME_LENGTH		248
 
 /* Invalid SSP passkey value used to indicate negative replies */
@@ -113,6 +118,7 @@ struct btd_adapter_driver {
 	const char *name;
 	int (*probe) (struct btd_adapter *adapter);
 	void (*remove) (struct btd_adapter *adapter);
+	void (*resume) (struct btd_adapter *adapter);
 };
 
 typedef void (*service_auth_cb) (DBusError *derr, void *user_data);
@@ -233,3 +239,13 @@ void btd_adapter_for_each_device(struct btd_adapter *adapter,
 			void *data);
 
 bool btd_le_connect_before_pairing(void);
+
+enum kernel_features {
+	KERNEL_CONN_CONTROL		= 1 << 0,
+	KERNEL_BLOCKED_KEYS_SUPPORTED	= 1 << 1,
+	KERNEL_SET_SYSTEM_CONFIG	= 1 << 2,
+	KERNEL_EXP_FEATURES		= 1 << 3,
+	KERNEL_HAS_RESUME_EVT		= 1 << 4,
+};
+
+bool btd_has_kernel_features(uint32_t feature);
