@@ -1,23 +1,10 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
 /*
  *
  *  BlueZ - Bluetooth protocol stack for Linux
  *
  *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
- *
- *  This library is free software; you can redistribute it and/or
- *  modify it under the terms of the GNU Lesser General Public
- *  License as published by the Free Software Foundation; either
- *  version 2.1 of the License, or (at your option) any later version.
- *
- *  This library is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- *  Lesser General Public License for more details.
- *
- *  You should have received a copy of the GNU Lesser General Public
- *  License along with this library; if not, write to the Free Software
- *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
 
@@ -35,7 +22,47 @@
 
 struct io {
 	struct l_io *l_io;
+	io_callback_func_t read_cb;
+	io_destroy_func_t read_destroy;
+	void *read_data;
+	io_callback_func_t write_cb;
+	io_destroy_func_t write_destroy;
+	void *write_data;
 };
+
+static bool read_callback(struct l_io *l_io, void *user_data)
+{
+	struct io *io = user_data;
+	bool result = false;
+
+	if (!io)
+		return false;
+
+	if (io->read_cb)
+		result = io->read_cb(io, io->read_data);
+
+	if (io->read_destroy)
+		io->read_destroy(io->read_data);
+
+	return result;
+}
+
+static bool write_callback(struct l_io *l_io, void *user_data)
+{
+	struct io *io = user_data;
+	bool result = false;
+
+	if (!io)
+		return false;
+
+	if (io->write_cb)
+		result = io->write_cb(io, io->write_data);
+
+	if (io->write_destroy)
+		io->write_destroy(io->write_data);
+
+	return result;
+}
 
 struct io *io_new(int fd)
 {
@@ -93,8 +120,11 @@ bool io_set_read_handler(struct io *io, io_callback_func_t callback,
 	if (!io || !io->l_io)
 		return false;
 
-	return l_io_set_read_handler(io->l_io, (l_io_read_cb_t) callback,
-							user_data, destroy);
+	io->read_cb = callback;
+	io->read_data = user_data;
+	io->read_destroy = destroy;
+
+	return l_io_set_read_handler(io->l_io, read_callback, io, NULL);
 }
 
 bool io_set_write_handler(struct io *io, io_callback_func_t callback,
@@ -103,8 +133,11 @@ bool io_set_write_handler(struct io *io, io_callback_func_t callback,
 	if (!io || !io->l_io)
 		return false;
 
-	return l_io_set_write_handler(io->l_io, (l_io_write_cb_t) callback,
-							user_data, destroy);
+	io->write_cb = callback;
+	io->write_data = user_data;
+	io->write_destroy = destroy;
+
+	return l_io_set_write_handler(io->l_io, write_callback, io, NULL);
 }
 
 bool io_set_disconnect_handler(struct io *io, io_callback_func_t callback,
