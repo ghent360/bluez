@@ -5684,6 +5684,10 @@ void btd_device_set_temporary(struct btd_device *device, bool temporary)
 		if (device->bredr)
 			adapter_whitelist_remove(device->adapter, device);
 		adapter_connect_list_remove(device->adapter, device);
+		if (device->auto_connect) {
+			device->disable_auto_connect = TRUE;
+			device_set_auto_connect(device, FALSE);
+		}
 		device->temporary_timer = g_timeout_add_seconds(main_opts.tmpto,
 							device_disappeared,
 							device);
