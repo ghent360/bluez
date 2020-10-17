@@ -4441,8 +4441,16 @@ void avrcp_unregister_player(struct avrcp_player *player)
 		if (target == NULL)
 			continue;
 
-		if (target->player == player)
-			target->player = g_slist_nth_data(server->players, 0);
+		if (target->player != player)
+			continue;
+
+		target->player = g_slist_nth_data(server->players, 0);
+		if (target->player) {
+			target->player->sessions = g_slist_append(
+						target->player->sessions,
+						session);
+			notify_addressed_player_changed(player);
+		}
 	}
 
 	avrcp_player_event(player,
