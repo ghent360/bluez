@@ -32,7 +32,7 @@
 #include "src/shared/gatt-db.h"
 #include "src/shared/gatt-client.h"
 #include "attrib/att.h"
-#include "src/hcid.h"
+#include "src/btd.h"
 
 #define SCAN_INTERVAL_WIN_UUID		0x2A4F
 #define SCAN_REFRESH_UUID		0x2A31
@@ -64,12 +64,12 @@ static void write_scan_params(struct scan *scan)
 	/* Unless scan parameters are configured, use the known kernel default
 	 * parameters
 	 */
-	put_le16(main_opts.default_params.le_scan_interval_autoconnect ?
-			main_opts.default_params.le_scan_interval_autoconnect :
+	put_le16(btd_opts.defaults.le.scan_interval_autoconnect ?
+			btd_opts.defaults.le.scan_interval_autoconnect :
 			0x60, &value[0]);
 
-	put_le16(main_opts.default_params.le_scan_win_autoconnect ?
-			main_opts.default_params.le_scan_win_autoconnect :
+	put_le16(btd_opts.defaults.le.scan_win_autoconnect ?
+			btd_opts.defaults.le.scan_win_autoconnect :
 			0x30, &value[2]);
 
 	bt_gatt_client_write_without_response(scan->client, scan->iwhandle,

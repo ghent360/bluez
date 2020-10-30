@@ -29,7 +29,7 @@
 #include "lib/uuid.h"
 
 #include "btio/btio.h"
-#include "src/hcid.h"
+#include "src/btd.h"
 #include "src/log.h"
 #include "src/shared/util.h"
 #include "src/shared/queue.h"
@@ -2438,7 +2438,7 @@ static GIOChannel *l2cap_connect(struct avdtp *session)
 
 	src = btd_adapter_get_address(device_get_adapter(session->device));
 
-	if (main_opts.mps == MPS_OFF)
+	if (btd_opts.mps == MPS_OFF)
 		mode = BT_IO_MODE_BASIC;
 	else
 		mode = BT_IO_MODE_STREAMING;
