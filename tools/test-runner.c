@@ -193,10 +193,11 @@ static char *const qemu_argv[] = {
 	"-no-acpi",
 	"-no-hpet",
 	"-no-reboot",
-	"-fsdev", "local,id=fsdev-root,path=/,readonly,security_model=none",
+	"-fsdev", "local,id=fsdev-root,path=/,readonly,security_model=none,"
+	"multidevs=remap",
 	"-device", "virtio-9p-pci,fsdev=fsdev-root,mount_tag=/dev/root",
-	"-chardev", "stdio,id=chardev-serial0,signal=off",
-	"-device", "pci-serial,chardev=chardev-serial0",
+	"-chardev", "stdio,id=con,mux=on",
+	"-serial", "chardev:con",
 	NULL
 };
 
@@ -731,23 +732,23 @@ start_next:
 			monitor_pid = -1;
 		}
 
-		if (corpse == pid) {
-			if (!run_auto) {
-				if (daemon_pid > 0)
-					kill(daemon_pid, SIGTERM);
-				if (dbus_pid > 0)
-					kill(dbus_pid, SIGTERM);
-				if (monitor_pid > 0)
-					kill(monitor_pid, SIGTERM);
-			}
+		if (corpse == pid)
 			break;
-		}
 	}
 
 	if (run_auto) {
 		idx++;
 		goto start_next;
 	}
+
+	if (daemon_pid > 0)
+		kill(daemon_pid, SIGTERM);
+
+	if (dbus_pid > 0)
+		kill(dbus_pid, SIGTERM);
+
+	if (monitor_pid > 0)
+		kill(monitor_pid, SIGTERM);
 
 	if (serial_fd >= 0) {
 		close(serial_fd);
