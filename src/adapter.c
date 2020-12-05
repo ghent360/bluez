@@ -66,6 +66,7 @@
 #include "advertising.h"
 #include "adv_monitor.h"
 #include "eir.h"
+#include "battery.h"
 
 #define MODE_OFF		0x00
 #define MODE_CONNECTABLE	0x01
@@ -253,6 +254,8 @@ struct btd_adapter {
 	struct btd_adv_manager *adv_manager;
 
 	struct btd_adv_monitor_manager *adv_monitor_manager;
+
+	struct btd_battery_provider_manager *battery_provider_manager;
 
 	gboolean initialized;
 
@@ -870,6 +873,30 @@ struct btd_device *btd_adapter_find_device(struct btd_adapter *adapter,
 		device_set_le_support(device, bdaddr_type);
 
 	return device;
+}
+
+static int device_path_cmp(gconstpointer a, gconstpointer b)
+{
+	const struct btd_device *device = a;
+	const char *path = b;
+	const char *dev_path = device_get_path(device);
+
+	return strcasecmp(dev_path, path);
+}
+
+struct btd_device *btd_adapter_find_device_by_path(struct btd_adapter *adapter,
+						   const char *path)
+{
+	GSList *list;
+
+	if (!adapter)
+		return NULL;
+
+	list = g_slist_find_custom(adapter->devices, path, device_path_cmp);
+	if (!list)
+		return NULL;
+
+	return list->data;
 }
 
 static void uuid_to_uuid128(uuid_t *uuid128, const uuid_t *uuid)
@@ -3190,15 +3217,6 @@ static gboolean property_get_roles(const GDBusPropertyTable *property,
 	dbus_message_iter_close_container(iter, &entry);
 
 	return TRUE;
-}
-
-static int device_path_cmp(gconstpointer a, gconstpointer b)
-{
-	const struct btd_device *device = a;
-	const char *path = b;
-	const char *dev_path = device_get_path(device);
-
-	return strcasecmp(dev_path, path);
 }
 
 static DBusMessage *remove_device(DBusConnection *conn,
@@ -6324,6 +6342,9 @@ static void adapter_remove(struct btd_adapter *adapter)
 	btd_adv_monitor_manager_destroy(adapter->adv_monitor_manager);
 	adapter->adv_monitor_manager = NULL;
 
+	btd_battery_provider_manager_destroy(adapter->battery_provider_manager);
+	adapter->battery_provider_manager = NULL;
+
 	g_slist_free(adapter->pin_callbacks);
 	adapter->pin_callbacks = NULL;
 
@@ -8642,6 +8663,11 @@ static int adapter_register(struct btd_adapter *adapter)
 			btd_info(adapter->dev_id, "Adv Monitor Manager "
 					"skipped, LE unavailable");
 		}
+	}
+
+	if (g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL) {
+		adapter->battery_provider_manager =
+			btd_battery_provider_manager_create(adapter);
 	}
 
 	db = btd_gatt_database_get_db(adapter->database);

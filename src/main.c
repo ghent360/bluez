@@ -394,7 +394,7 @@ static void parse_br_config(GKeyFile *config)
 		  0xFFFF},
 		{ "PageTimeout",
 		  &btd_opts.defaults.br.page_timeout,
-		  sizeof(btd_opts.defaults.br.page_scan_win),
+		  sizeof(btd_opts.defaults.br.page_timeout),
 		  0x0001,
 		  0xFFFF},
 		{ "MinSniffInterval",
@@ -412,7 +412,7 @@ static void parse_br_config(GKeyFile *config)
 	if (btd_opts.mode == BT_MODE_LE)
 		return;
 
-	parse_mode_config(config, "BREDR", params, ARRAY_SIZE(params));
+	parse_mode_config(config, "BR", params, ARRAY_SIZE(params));
 }
 
 static void parse_le_config(GKeyFile *config)
