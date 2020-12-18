@@ -508,7 +508,8 @@ static void pairing_cfm(struct smp_conn *conn, const void *data, uint16_t len)
 
 	if (conn->out) {
 		memset(rsp, 0, sizeof(rsp));
-		smp_send(conn, BT_L2CAP_SMP_PAIRING_RANDOM, rsp, sizeof(rsp));
+		smp_send(conn, BT_L2CAP_SMP_PAIRING_RANDOM, conn->prnd,
+					sizeof(conn->prnd));
 	} else {
 		bt_crypto_c1(conn->smp->crypto, conn->tk, conn->prnd,
 				conn->prsp, conn->preq, conn->ia_type,
@@ -545,8 +546,6 @@ static uint8_t sc_random(struct smp_conn *conn)
 
 static void pairing_rnd(struct smp_conn *conn, const void *data, uint16_t len)
 {
-	uint8_t rsp[16];
-
 	memcpy(conn->rrnd, data + 1, 16);
 
 	if (conn->sc) {
@@ -563,8 +562,8 @@ static void pairing_rnd(struct smp_conn *conn, const void *data, uint16_t len)
 	if (conn->out)
 		return;
 
-	memset(rsp, 0, sizeof(rsp));
-	smp_send(conn, BT_L2CAP_SMP_PAIRING_RANDOM, rsp, sizeof(rsp));
+	smp_send(conn, BT_L2CAP_SMP_PAIRING_RANDOM, conn->prnd,
+				sizeof(conn->prnd));
 }
 
 static void encrypt_info(struct smp_conn *conn, const void *data, uint16_t len)
@@ -856,6 +855,8 @@ void *smp_conn_add(void *smp_data, uint16_t handle, const uint8_t *ia,
 	conn->ra_type = LE_PUBLIC_ADDRESS;
 	memcpy(conn->ia, ia, 6);
 	memcpy(conn->ra, ra, 6);
+
+	bt_crypto_random_bytes(smp->crypto, conn->prnd, sizeof(conn->prnd));
 
 	return conn;
 }
