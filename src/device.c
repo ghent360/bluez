@@ -5336,6 +5336,8 @@ bool device_attach_att(struct btd_device *dev, GIOChannel *io)
 
 	bt_att_ref(dev->att);
 
+	bt_att_set_debug(dev->att, BT_ATT_DEBUG, gatt_debug, NULL, NULL);
+
 	dev->att_disconn_id = bt_att_register_disconnect(dev->att,
 						att_disconnected_cb, dev, NULL);
 	bt_att_set_close_on_unref(dev->att, true);
@@ -5829,18 +5831,11 @@ void device_load_svc_chng_ccc(struct btd_device *device, uint16_t *ccc_le,
 	key_file = g_key_file_new();
 	g_key_file_load_from_file(key_file, filename, 0, NULL);
 
-	/*
-	 * If there is no "ServiceChanged" section we may be loading data from
-	 * old version which did not persist Service Changed CCC values. Let's
-	 * check if we are bonded and assume indications were enabled by peer
-	 * in such case - it should have done this anyway.
-	 */
 	if (!g_key_file_has_group(key_file, "ServiceChanged")) {
 		if (ccc_le)
-			*ccc_le = device->le_state.bonded ? 0x0002 : 0x0000;
+			*ccc_le = 0x0000;
 		if (ccc_bredr)
-			*ccc_bredr = device->bredr_state.bonded ?
-							0x0002 : 0x0000;
+			*ccc_bredr = 0x0000;
 		g_key_file_free(key_file);
 		return;
 	}
