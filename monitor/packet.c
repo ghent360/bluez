@@ -1305,7 +1305,7 @@ static void print_air_mode(uint8_t mode)
 	print_field("Air mode: %s (0x%2.2x)", str, mode);
 }
 
-static void print_codec(const char *label, uint8_t codec)
+static void print_codec_id(const char *label, uint8_t codec)
 {
 	const char *str;
 
@@ -1337,6 +1337,26 @@ static void print_codec(const char *label, uint8_t codec)
 	}
 
 	print_field("%s: %s (0x%2.2x)", label, str, codec);
+}
+
+static const struct bitfield_data codec_transport_table[] = {
+	{  0, "Codec supported over BR/EDR ACL"		},
+	{  1, "Codec supported over BR/EDR SCO and eSCO"},
+	{  2, "Codec supported over LE CIS"		},
+	{  3, "Codec supported over LE BIS"		},
+	{ }
+};
+
+static void print_codec(const char *label, const struct bt_hci_codec *codec)
+{
+	uint8_t mask;
+
+	print_codec_id(label, codec->id);
+	print_field("  Logical Transport Type: 0x%02x", codec->transport);
+	mask = print_bitfield(4, codec->transport, codec_transport_table);
+	if (mask)
+		print_text(COLOR_UNKNOWN_SERVICE_CLASS,
+				"  Unknown transport (0x%2.2x)", mask);
 }
 
 static void print_inquiry_mode(uint8_t mode)
@@ -5886,7 +5906,7 @@ static void read_local_codecs_rsp(const void *data, uint8_t size)
 	print_field("Number of supported codecs: %d", rsp->num_codecs);
 
 	for (i = 0; i < rsp->num_codecs; i++)
-		print_codec("  Codec", rsp->codec[i]);
+		print_codec_id("  Codec", rsp->codec[i]);
 
 	num_vnd_codecs = rsp->codec[rsp->num_codecs];
 
@@ -5894,6 +5914,180 @@ static void read_local_codecs_rsp(const void *data, uint8_t size)
 
 	packet_hexdump(data + rsp->num_codecs + 3,
 					size - rsp->num_codecs - 3);
+}
+
+static void print_codecs(const void *data, int i)
+{
+	const struct bt_hci_codec *codec = data;
+
+	print_codec("  Codec", codec);
+}
+
+typedef void (*print_list_func_t)(const void *data, int i);
+
+static void print_list(const void *data, uint8_t size, int num_items,
+				size_t item_size, print_list_func_t func)
+{
+	int i;
+
+	for (i = 0; size >= item_size && num_items; i++) {
+		if (func)
+			func(data, i);
+		data += item_size;
+		size -= item_size;
+		num_items--;
+	}
+
+	if (num_items)
+		print_hex_field("", data, size);
+}
+
+static void read_local_codecs_rsp_v2(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_local_codecs_v2 *rsp = data;
+	uint8_t num_vnd_codecs;
+
+	if (rsp->num_codecs + 3 > size) {
+		print_field("Invalid number of codecs.");
+		return;
+	}
+
+	print_status(rsp->status);
+	print_field("Number of supported codecs: %d", rsp->num_codecs);
+
+	size -= sizeof(*rsp);
+
+	if (size < rsp->num_codecs * sizeof(*rsp->codec)) {
+		print_field("Invalid number of codecs.");
+		return;
+	}
+
+	print_list(rsp->codec, size, rsp->num_codecs, sizeof(*rsp->codec),
+							print_codecs);
+
+	size -= rsp->num_codecs * sizeof(*rsp->codec);
+
+	if (size < sizeof(uint8_t)) {
+		print_field("Invalid number of vendor codecs.");
+		return;
+	}
+
+	num_vnd_codecs = rsp->codec[rsp->num_codecs].id;
+
+	print_field("Number of vendor codecs: %d", num_vnd_codecs);
+}
+
+static void print_path_direction(const char *prefix, uint8_t dir)
+{
+	const char *str;
+
+	switch (dir) {
+	case 0x00:
+		str = "Input (Host to Controller)";
+		break;
+	case 0x01:
+		str = "Output (Controller to Host)";
+		break;
+	default:
+		str = "Reserved";
+		break;
+	}
+
+	print_field("%s: %s (0x%2.2x)", prefix, str, dir);
+}
+
+static void print_vnd_codec(const char *label,
+				const struct bt_hci_vnd_codec *codec)
+{
+	uint8_t mask;
+
+	print_codec_id(label, codec->id);
+
+	if (codec->id == 0xff) {
+		packet_print_company("Company Codec ID",
+					le16_to_cpu(codec->cid));
+		print_field("Vendor Codec ID: %d", le16_to_cpu(codec->vid));
+	}
+
+	print_field("Logical Transport Type: 0x%02x", codec->transport);
+	mask = print_bitfield(2, codec->transport, codec_transport_table);
+	if (mask)
+		print_text(COLOR_UNKNOWN_SERVICE_CLASS,
+				"  Unknown transport (0x%2.2x)", mask);
+}
+
+static void read_local_codec_caps_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_read_local_codec_caps *cmd = data;
+
+	print_vnd_codec("Codec", &cmd->codec);
+	print_path_direction("Direction", cmd->dir);
+}
+
+static void read_local_codec_caps_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_local_codec_caps *rsp = data;
+	uint8_t i;
+
+	print_status(rsp->status);
+	print_field("Number of codec capabilities: %d", rsp->num);
+
+	data += sizeof(rsp);
+	size -= sizeof(rsp);
+
+	for (i = 0; i < rsp->num; i++) {
+		const struct bt_hci_codec_caps *caps = data;
+
+		if (size < sizeof(caps)) {
+			print_field("Invalid capabilities: %u < %zu",
+						size, sizeof(caps));
+			return;
+		}
+
+		print_field(" Capabilities #%u:", i);
+		packet_hexdump(caps->data, caps->len);
+
+		data += caps->len;
+		size -= caps->len;
+	}
+}
+
+static void read_local_ctrl_delay_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_read_local_ctrl_delay *cmd = data;
+
+	print_vnd_codec("Codec", &cmd->codec);
+	print_path_direction("Direction", cmd->dir);
+	print_field("Length Codec Configuration: %u", cmd->codec_cfg_len);
+}
+
+static void config_data_path_cmd(const void *data, uint8_t size)
+{
+	const struct bt_hci_cmd_config_data_path *cmd = data;
+
+	print_path_direction("Direction", cmd->dir);
+	print_field("ID: %u", cmd->id);
+	print_field("Vendor Specific Config Length: %u", cmd->vnd_config_len);
+	print_hex_field("Vendor Specific Config", cmd->vnd_config,
+						cmd->vnd_config_len);
+}
+
+static void print_usec_interval(const char *prefix, const uint8_t interval[3])
+{
+	uint32_t u24 = 0;
+
+	memcpy(&u24, interval, 3);
+	print_field("%s: %u us (0x%6.6x)", prefix, le32_to_cpu(u24),
+						le32_to_cpu(u24));
+}
+
+static void read_local_ctrl_delay_rsp(const void *data, uint8_t size)
+{
+	const struct bt_hci_rsp_read_local_ctrl_delay *rsp = data;
+
+	print_status(rsp->status);
+	print_usec_interval("Minimum Controller delay", rsp->min_delay);
+	print_usec_interval("Maximum Controller delay", rsp->max_delay);
 }
 
 static void read_local_pairing_options_rsp(const void *data, uint8_t size)
@@ -6884,7 +7078,7 @@ static void le_set_adv_set_rand_addr(const void *data, uint8_t size)
 	const struct bt_hci_cmd_le_set_adv_set_rand_addr *cmd = data;
 
 	print_field("Advertising handle: 0x%2.2x", cmd->handle);
-	print_addr("Advertising random address", cmd->bdaddr, 0x00);
+	print_addr("Advertising random address", cmd->bdaddr, 0x01);
 }
 
 static const struct bitfield_data ext_adv_properties_table[] = {
@@ -7795,7 +7989,7 @@ static void le_read_iso_tx_sync_rsp(const void *data, uint8_t size)
 	print_field("Offset: %d", le32_to_cpu(offset));
 }
 
-static void print_cis_params(const void *data)
+static void print_cis_params(const void *data, int i)
 {
 	const struct bt_hci_cis_params *cis = data;
 
@@ -7810,29 +8004,6 @@ static void print_cis_params(const void *data)
 							cis->m_rtn);
 	print_field("Slave to Master Retransmission attempts: 0x%2.2x",
 							cis->s_rtn);
-}
-
-static void print_list(const void *data, uint8_t size, int num_items,
-			size_t item_size, void (*callback)(const void *data))
-{
-	while (size >= item_size && num_items) {
-		callback(data);
-		data += item_size;
-		size -= item_size;
-		num_items--;
-	}
-
-	if (num_items)
-		print_hex_field("", data, size);
-}
-
-static void print_usec_interval(const char *prefix, const uint8_t interval[3])
-{
-	uint32_t u24 = 0;
-
-	memcpy(&u24, interval, 3);
-	print_field("%s: %u us (0x%6.6x)", prefix, le32_to_cpu(u24),
-						le32_to_cpu(u24));
 }
 
 static void le_set_cig_params_cmd(const void *data, uint8_t size)
@@ -7857,7 +8028,7 @@ static void le_set_cig_params_cmd(const void *data, uint8_t size)
 						print_cis_params);
 }
 
-static void print_cis_params_test(const void *data)
+static void print_cis_params_test(const void *data, int i)
 {
 	const struct bt_hci_cis_params_test *cis = data;
 
@@ -7898,7 +8069,7 @@ static void le_set_cig_params_test_cmd(const void *data, uint8_t size)
 						print_cis_params_test);
 }
 
-static void print_cig_handle(const void *data)
+static void print_cig_handle(const void *data, int i)
 {
 	const uint16_t *handle = data;
 
@@ -7923,7 +8094,7 @@ static void le_set_cig_params_rsp(const void *data, uint8_t size)
 						print_cig_handle);
 }
 
-static void print_cis(const void *data)
+static void print_cis(const void *data, int i)
 {
 	const struct bt_hci_cis *cis = data;
 
@@ -7976,7 +8147,7 @@ static void le_reject_cis_req_cmd(const void *data, uint8_t size)
 	print_reason(cmd->reason);
 }
 
-static void print_bis(const void *data)
+static void print_bis(const void *data, int i)
 {
 	const struct bt_hci_bis *bis = data;
 
@@ -7996,7 +8167,7 @@ static void le_create_big_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_le_create_big *cmd = data;
 
-	print_field("BIG ID: 0x%2.2x", cmd->big_id);
+	print_field("Handle: 0x%2.2x", cmd->handle);
 	print_field("Advertising Handle: 0x%2.2x", cmd->adv_handle);
 	print_field("Number of BIS: %u", cmd->num_bis);
 
@@ -8005,7 +8176,7 @@ static void le_create_big_cmd(const void *data, uint8_t size)
 	print_list(cmd->bis, size, cmd->num_bis, sizeof(*cmd->bis), print_bis);
 }
 
-static void print_bis_test(const void *data)
+static void print_bis_test(const void *data, int i)
 {
 	const struct bt_hci_bis_test *bis = data;
 
@@ -8044,11 +8215,11 @@ static void le_terminate_big_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_le_term_big *cmd = data;
 
-	print_field("BIG ID: 0x%2.2x", cmd->big_id);
+	print_field("BIG Handle: 0x%2.2x", cmd->handle);
 	print_reason(cmd->reason);
 }
 
-static void print_bis_sync(const void *data)
+static void print_bis_sync(const void *data, int i)
 {
 	const uint8_t *bis_id = data;
 
@@ -8059,13 +8230,16 @@ static void le_big_create_sync_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_le_big_create_sync *cmd = data;
 
-	print_field("BIG ID: 0x%2.2x", cmd->big_id);
-	print_field("Number of BIS: %u", cmd->num_bis);
-	print_field("Encryption: 0x%2.2x", cmd->encryption);
+	print_field("BIG Handle: 0x%2.2x", cmd->handle);
+	print_field("BIG Sync Handle: 0x%4.4x", le16_to_cpu(cmd->sync_handle));
+	print_field("Encryption: %s (0x%2.2x)",
+			cmd->encryption ? "Unencrypted" : "Encrypted",
+			cmd->encryption);
 	print_hex_field("Broadcast Code", cmd->bcode, 16);
-	print_field("Number Subevents: 0x%2.2x", cmd->mse);
+	print_field("Maximum Number Subevents: 0x%2.2x", cmd->mse);
 	print_field("Timeout: %d ms (0x%4.4x)", le16_to_cpu(cmd->timeout) * 10,
 						le16_to_cpu(cmd->timeout));
+	print_field("Number of BIS: %u", cmd->num_bis);
 
 	size -= sizeof(*cmd);
 
@@ -8077,23 +8251,7 @@ static void le_big_term_sync_cmd(const void *data, uint8_t size)
 {
 	const struct bt_hci_cmd_le_big_term_sync *cmd = data;
 
-	print_field("BIG ID: 0x%2.2x", cmd->big_id);
-}
-
-static void print_iso_dir(const char *prefix, uint8_t dir)
-{
-	switch (dir) {
-	case 0x00:
-		print_field("%s: Input (Host to Controller) (0x%2.2x)",
-							prefix, dir);
-		return;
-	case 0x01:
-		print_field("%s: Output (Controller to Host) (0x%2.2x)",
-							prefix, dir);
-		return;
-	default:
-		print_field("%s: Unknown (0x%2.2x)", prefix, dir);
-	}
+	print_field("BIG Handle: 0x%2.2x", cmd->handle);
 }
 
 static void print_iso_path(const char *prefix, uint8_t path)
@@ -8115,9 +8273,9 @@ static void le_setup_iso_path_cmd(const void *data, uint8_t size)
 	const struct bt_hci_cmd_le_setup_iso_path *cmd = data;
 
 	print_field("Handle: %d", le16_to_cpu(cmd->handle));
-	print_iso_dir("Data Path Direction", cmd->direction);
+	print_path_direction("Data Path Direction", cmd->direction);
 	print_iso_path("Data Path", cmd->path);
-	print_codec("Coding Format", cmd->codec);
+	print_codec_id("Coding Format", cmd->codec);
 	packet_print_company("Company Codec ID", le16_to_cpu(cmd->codec_cid));
 	print_field("Vendor Codec ID: %d", le16_to_cpu(cmd->codec_vid));
 	print_usec_interval("Controller Delay", cmd->delay);
@@ -8143,7 +8301,7 @@ static void le_remove_iso_path_cmd(const void *data, uint8_t size)
 	const struct bt_hci_cmd_le_remove_iso_path *cmd = data;
 
 	print_field("Connection Handle: %d", le16_to_cpu(cmd->handle));
-	print_iso_dir("Data Path Direction", cmd->direction);
+	print_path_direction("Data Path Direction", cmd->direction);
 }
 
 static void le_req_peer_sca_cmd(const void *data, uint8_t size)
@@ -8677,6 +8835,32 @@ static const struct opcode_data opcode_table[] = {
 	{ 0x100c, 331, "Read Local Simple Pairing Options",
 				null_cmd, 0, true,
 				read_local_pairing_options_rsp, 3, true },
+	{ BT_HCI_CMD_READ_LOCAL_CODECS_V2, BT_HCI_BIT_READ_LOCAL_CODECS_V2,
+		"Read Local Supported Codecs V2",
+		null_cmd, 0, true,
+		read_local_codecs_rsp_v2,
+		sizeof(struct bt_hci_rsp_read_local_codecs_v2), false
+	},
+	{ BT_HCI_CMD_READ_LOCAL_CODEC_CAPS, BT_HCI_BIT_READ_LOCAL_CODEC_CAPS,
+		"Read Local Supported Codec Capabilities",
+		read_local_codec_caps_cmd,
+		sizeof(struct bt_hci_cmd_read_local_codec_caps), true,
+		read_local_codec_caps_rsp,
+		sizeof(struct bt_hci_rsp_read_local_codec_caps), false
+	},
+	{ BT_HCI_CMD_READ_LOCAL_CTRL_DELAY, BT_HCI_BIT_READ_LOCAL_CTRL_DELAY,
+		"Read Local Supported Controller Delay",
+		read_local_ctrl_delay_cmd,
+		sizeof(struct bt_hci_cmd_read_local_ctrl_delay), false,
+		read_local_ctrl_delay_rsp,
+		sizeof(struct bt_hci_rsp_read_local_ctrl_delay), true
+	},
+	{ BT_HCI_CMD_CONFIG_DATA_PATH, BT_HCI_BIT_CONFIG_DATA_PATH,
+		"Configure Data Path",
+		config_data_path_cmd,
+		sizeof(struct bt_hci_cmd_config_data_path), false,
+		status_rsp, 1, true
+	},
 
 	/* OGF 5 - Status Parameter */
 	{ 0x1401, 122, "Read Failed Contact Counter",
@@ -9051,7 +9235,7 @@ static const struct opcode_data opcode_table[] = {
 				"LE Broadcast Isochronous Group Create Sync",
 				le_big_create_sync_cmd,
 				sizeof(struct bt_hci_cmd_le_big_create_sync),
-				true },
+				false },
 	{ BT_HCI_CMD_LE_BIG_TERM_SYNC, BT_HCI_BIT_LE_BIG_TERM_SYNC,
 				"LE Broadcast Isochronous Group Terminate Sync",
 				le_big_term_sync_cmd,
@@ -10559,7 +10743,7 @@ static void le_req_cis_evt(const void *data, uint8_t size)
 	print_field("CIS ID: 0x%2.2x", evt->cis_id);
 }
 
-static void print_bis_handle(const void *data)
+static void print_bis_handle(const void *data, int i)
 {
 	const uint16_t *handle = data;
 
@@ -10571,7 +10755,7 @@ static void le_big_complete_evt(const void *data, uint8_t size)
 	const struct bt_hci_evt_le_big_complete *evt = data;
 
 	print_status(evt->status);
-	print_field("BIG ID: 0x%2.2x", evt->big_id);
+	print_field("Handle: 0x%2.2x", evt->handle);
 	print_usec_interval("BIG Synchronization Delay", evt->sync_delay);
 	print_usec_interval("Transport Latency", evt->latency);
 	print_le_phy("PHY", evt->phy);
@@ -10581,16 +10765,16 @@ static void le_big_complete_evt(const void *data, uint8_t size)
 	print_field("IRC: %u", evt->irc);
 	print_field("Maximum PDU: %u", evt->max_pdu);
 	print_slot_125("ISO Interval", evt->interval);
-	print_list(evt->handle, size, evt->num_bis, sizeof(*evt->handle),
-						print_bis_handle);
+	print_list(evt->bis_handle, size, evt->num_bis,
+				sizeof(*evt->bis_handle), print_bis_handle);
 }
 
 static void le_big_terminate_evt(const void *data, uint8_t size)
 {
 	const struct bt_hci_evt_le_big_terminate *evt = data;
 
+	print_field("BIG Handle: 0x%2.2x", evt->handle);
 	print_reason(evt->reason);
-	print_field("BIG ID: 0x%2.2x", evt->big_id);
 }
 
 static void le_big_sync_estabilished_evt(const void *data, uint8_t size)
@@ -10598,7 +10782,7 @@ static void le_big_sync_estabilished_evt(const void *data, uint8_t size)
 	const struct bt_hci_evt_le_big_sync_estabilished *evt = data;
 
 	print_status(evt->status);
-	print_field("BIG ID: 0x%2.2x", evt->big_id);
+	print_field("BIG Handle: 0x%2.2x", evt->handle);
 	print_usec_interval("Transport Latency", evt->latency);
 	print_field("NSE: %u", evt->nse);
 	print_field("BN: %u", evt->bn);
@@ -10606,7 +10790,7 @@ static void le_big_sync_estabilished_evt(const void *data, uint8_t size)
 	print_field("IRC: %u", evt->irc);
 	print_field("Maximum PDU: %u", evt->max_pdu);
 	print_slot_125("ISO Interval", evt->interval);
-	print_list(evt->handle, size, evt->num_bis, sizeof(*evt->handle),
+	print_list(evt->bis, size, evt->num_bis, sizeof(*evt->bis),
 						print_bis_handle);
 }
 
@@ -11122,7 +11306,7 @@ void packet_user_logging(struct timeval *tv, struct ucred *cred,
 			label = "Message";
 	}
 
-	if (ident[0] == '<' || ident[0] == '>') {
+	if (ident && (ident[0] == '<' || ident[0] == '>')) {
 		packet_decode(tv, cred, ident[0], index, color,
 				label == ident ? &ident[2] : label,
 				data, size);
@@ -13569,12 +13753,19 @@ static const struct mgmt_data mgmt_command_table[] = {
 	{ 0x0045, "Set PHY Configuration",
 				mgmt_set_phy_cmd, 4, true,
 				mgmt_null_rsp, 0, true },
+	{ 0x0046, "Load Blocked Keys" },
+	{ 0x0047, "Set Wideband Speech" },
+	{ 0x0048, "Read Controller Capabilities" },
 	{ 0x0049, "Read Experimental Features Information",
 				mgmt_null_cmd, 0, true,
 				mgmt_read_exp_features_info_rsp, 2, false },
 	{ 0x004a, "Set Experimental Feature",
 				mgmt_set_exp_feature_cmd, 17, true,
 				mgmt_set_exp_feature_rsp, 20, true },
+	{ 0x004b, "Read Default System Configuration" },
+	{ 0x004c, "Set Default System Configuration" },
+	{ 0x004d, "Read Default Runtime Configuration" },
+	{ 0x004e, "Set Default Runtime Configuration" },
 	{ 0x004f, "Get Device Flags",
 				mgmt_get_device_flags_cmd, 7, true,
 				mgmt_get_device_flags_rsp, 15, true},
@@ -13584,19 +13775,19 @@ static const struct mgmt_data mgmt_command_table[] = {
 	{ 0x0051, "Read Advertisement Monitor Features",
 				mgmt_null_cmd, 0, true,
 				mgmt_read_adv_monitor_features_rsp, 13, false},
-	{ 0x0052, "Add Advertisement Monitor",
+	{ 0x0052, "Add Advertisement Patterns Monitor",
 				mgmt_add_adv_monitor_patterns_cmd, 1, false,
 				mgmt_add_adv_monitor_patterns_rsp, 2, true},
 	{ 0x0053, "Remove Advertisement Monitor",
 				mgmt_remove_adv_monitor_patterns_cmd, 2, true,
 				mgmt_remove_adv_monitor_patterns_rsp, 2, true},
-	{ 0x0054, "Add Ext Adv Params",
+	{ 0x0054, "Add Extended Advertising Parameters",
 				mgmt_add_ext_adv_params_cmd, 18, false,
 				mgmt_add_ext_adv_params_rsp, 4, true },
-	{ 0x0055, "Add Ext Adv Data",
+	{ 0x0055, "Add Extended Advertising Data",
 				mgmt_add_ext_adv_data_cmd, 3, false,
 				mgmt_add_ext_adv_data_rsp, 1, true },
-	{ 0x0056, "Add Advertisement Monitor With RSSI",
+	{ 0x0056, "Add Advertisement Patterns Monitor With RSSI Threshold",
 				mgmt_add_adv_monitor_patterns_rssi_cmd, 8,
 									false,
 				mgmt_add_adv_monitor_patterns_rsp, 2, true},
@@ -14149,7 +14340,7 @@ static const struct mgmt_data mgmt_event_table[] = {
 			mgmt_device_flags_changed_evt, 15, true },
 	{ 0x002b, "Advertisement Monitor Added",
 			mgmt_adv_monitor_added_evt, 2, true },
-	{ 0x002c, "Advertisement Monitor Added",
+	{ 0x002c, "Advertisement Monitor Removed",
 			mgmt_adv_monitor_removed_evt, 2, true },
 	{ 0x002d, "Controller Suspended",
 			mgmt_controller_suspend_evt, 1, true },
