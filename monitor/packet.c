@@ -41,6 +41,7 @@
 #include "l2cap.h"
 #include "control.h"
 #include "vendor.h"
+#include "msft.h"
 #include "intel.h"
 #include "broadcom.h"
 #include "packet.h"
@@ -2637,6 +2638,16 @@ static const struct bitfield_data features_le[] = {
 	{ }
 };
 
+static const struct bitfield_data features_msft[] = {
+	{  0, "RSSI Monitoring feature for BR/EDR"		},
+	{  1, "RSSI Monitoring feature for LE connections"	},
+	{  2, "RSSI Monitoring of LE advertisements"		},
+	{  3, "Advertising Monitoring of LE advertisements"	},
+	{  4, "Verifying the validity of P-192 and P-256 keys"	},
+	{  5, "Continuous Advertising Monitoring"		},
+	{ }
+};
+
 static void print_features(uint8_t page, const uint8_t *features_array,
 								uint8_t type)
 {
@@ -2673,6 +2684,13 @@ static void print_features(uint8_t page, const uint8_t *features_array,
 			break;
 		}
 		break;
+	case 0xf0:
+		switch (page) {
+		case 0:
+			features_table = features_msft;
+			break;
+		}
+		break;
 	}
 
 	if (!features_table)
@@ -2692,6 +2710,11 @@ void packet_print_features_lmp(const uint8_t *features, uint8_t page)
 void packet_print_features_ll(const uint8_t *features)
 {
 	print_features(0, features, 0x01);
+}
+
+void packet_print_features_msft(const uint8_t *features)
+{
+	print_features(0, features, 0xf0);
 }
 
 #define LE_STATE_SCAN_ADV		0x0001
@@ -3977,13 +4000,23 @@ void packet_monitor(struct timeval *tv, struct ucred *cred,
 			memcpy(index_list[index].bdaddr, ii->bdaddr, 6);
 			index_list[index].manufacturer = manufacturer;
 
-			if (manufacturer == 2) {
+			switch (manufacturer) {
+			case 2:
 				/*
-				 * All Intel controllers that support the
+				 * Intel controllers that support the
 				 * Microsoft vendor extension are using
 				 * 0xFC1E for VsMsftOpCode.
 				 */
 				index_list[index].msft_opcode = 0xFC1E;
+				break;
+			case 93:
+				/*
+				 * Realtek controllers that support the
+				 * Microsoft vendor extenions are using
+				 * 0xFCF0 for VsMsftOpCode.
+				 */
+				index_list[index].msft_opcode = 0xFCF0;
+				break;
 			}
 		}
 
@@ -6032,23 +6065,23 @@ static void read_local_codec_caps_rsp(const void *data, uint8_t size)
 	print_status(rsp->status);
 	print_field("Number of codec capabilities: %d", rsp->num);
 
-	data += sizeof(rsp);
-	size -= sizeof(rsp);
+	data += sizeof(*rsp);
+	size -= sizeof(*rsp);
 
 	for (i = 0; i < rsp->num; i++) {
 		const struct bt_hci_codec_caps *caps = data;
 
-		if (size < sizeof(caps)) {
+		if (size < sizeof(*caps)) {
 			print_field("Invalid capabilities: %u < %zu",
-						size, sizeof(caps));
+						size, sizeof(*caps));
 			return;
 		}
 
 		print_field(" Capabilities #%u:", i);
 		packet_hexdump(caps->data, caps->len);
 
-		data += caps->len;
-		size -= caps->len;
+		data += 1 + caps->len;
+		size -= 1 + caps->len;
 	}
 }
 
@@ -9291,18 +9324,26 @@ static const char *get_supported_command(int bit)
 
 static const char *current_vendor_str(void)
 {
-	uint16_t manufacturer;
+	uint16_t manufacturer, msft_opcode;
 
-	if (index_current < MAX_INDEX)
+	if (index_current < MAX_INDEX) {
 		manufacturer = index_list[index_current].manufacturer;
-	else
+		msft_opcode = index_list[index_current].msft_opcode;
+	} else {
 		manufacturer = fallback_manufacturer;
+		msft_opcode = BT_HCI_CMD_NOP;
+	}
+
+	if (msft_opcode != BT_HCI_CMD_NOP)
+		return "Microsoft";
 
 	switch (manufacturer) {
 	case 2:
 		return "Intel";
 	case 15:
 		return "Broadcom";
+	case 93:
+		return "Realtek";
 	}
 
 	return NULL;
@@ -9310,12 +9351,19 @@ static const char *current_vendor_str(void)
 
 static const struct vendor_ocf *current_vendor_ocf(uint16_t ocf)
 {
-	uint16_t manufacturer;
+	uint16_t manufacturer, msft_opcode;
 
-	if (index_current < MAX_INDEX)
+	if (index_current < MAX_INDEX) {
 		manufacturer = index_list[index_current].manufacturer;
-	else
+		msft_opcode = index_list[index_current].msft_opcode;
+	} else {
 		manufacturer = fallback_manufacturer;
+		msft_opcode = BT_HCI_CMD_NOP;
+	}
+
+	if (msft_opcode != BT_HCI_CMD_NOP &&
+				cmd_opcode_ocf(msft_opcode) == ocf)
+		return msft_vendor_ocf();
 
 	switch (manufacturer) {
 	case 2:
@@ -9329,12 +9377,18 @@ static const struct vendor_ocf *current_vendor_ocf(uint16_t ocf)
 
 static const struct vendor_evt *current_vendor_evt(uint8_t evt)
 {
-	uint16_t manufacturer;
+	uint16_t manufacturer, msft_opcode;
 
-	if (index_current < MAX_INDEX)
+	if (index_current < MAX_INDEX) {
 		manufacturer = index_list[index_current].manufacturer;
-	else
+		msft_opcode = index_list[index_current].msft_opcode;
+	} else {
 		manufacturer = fallback_manufacturer;
+		msft_opcode = BT_HCI_CMD_NOP;
+	}
+
+	if (msft_opcode != BT_HCI_CMD_NOP)
+		return NULL;
 
 	switch (manufacturer) {
 	case 2:
