@@ -4381,11 +4381,11 @@ static void le_cis_estabilished(struct btdev *dev, struct btdev_conn *conn,
 	memset(&evt, 0, sizeof(evt));
 
 	evt.status = status;
+	evt.conn_handle = cpu_to_le16(conn->handle);
 
 	if (!evt.status) {
 		struct btdev *remote = conn->link->dev;
 
-		evt.conn_handle = cpu_to_le16(conn->handle);
 		/* TODO: Figure out if these values makes sense */
 		memcpy(evt.cig_sync_delay, remote->le_cig.params.m_interval,
 				sizeof(remote->le_cig.params.m_interval));
@@ -4447,8 +4447,8 @@ static int cmd_create_cis_complete(struct btdev *dev, const void *data,
 
 		evt.acl_handle = cpu_to_le16(acl->handle);
 		evt.cis_handle = cpu_to_le16(iso->handle);
-		evt.cig_id = 0x00;
-		evt.cis_id = 0x00;
+		evt.cig_id = iso->dev->le_cig.params.cig_id;
+		evt.cis_id = iso->dev->le_cig.cis.cis_id;
 
 		le_meta_event(iso->link->dev, BT_HCI_EVT_LE_CIS_REQ, &evt,
 					sizeof(evt));
