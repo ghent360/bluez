@@ -982,9 +982,14 @@ static struct btdev_conn *conn_add_sco(struct btdev_conn *acl)
 	return conn_link(acl->dev, acl->link->dev, SCO_HANDLE, HCI_SCODATA_PKT);
 }
 
-static struct btdev_conn *conn_add_iso(struct btdev_conn *acl, uint16_t handle)
+static struct btdev_conn *conn_add_cis(struct btdev_conn *acl, uint16_t handle)
 {
 	return conn_link(acl->dev, acl->link->dev, handle, HCI_ISODATA_PKT);
+}
+
+static struct btdev_conn *conn_add_bis(struct btdev *dev, uint16_t handle)
+{
+	return conn_new(dev, handle, HCI_ISODATA_PKT);
 }
 
 static void conn_complete(struct btdev *btdev,
@@ -4437,7 +4442,7 @@ static int cmd_create_cis_complete(struct btdev *dev, const void *data,
 		iso = queue_find(dev->conns, match_handle,
 				UINT_TO_PTR(cpu_to_le16(cis->cis_handle)));
 		if (!iso) {
-			iso = conn_add_iso(acl, cpu_to_le16(cis->cis_handle));
+			iso = conn_add_cis(acl, cpu_to_le16(cis->cis_handle));
 			if (!iso) {
 				le_cis_estabilished(dev, NULL,
 						BT_HCI_ERR_UNKNOWN_CONN_ID);
@@ -4511,10 +4516,49 @@ static int cmd_reject_cis(struct btdev *dev, const void *data, uint8_t len)
 
 static int cmd_create_big(struct btdev *dev, const void *data, uint8_t len)
 {
-	/* TODO */
-	return -ENOTSUP;
+	cmd_status(dev, BT_HCI_ERR_SUCCESS, BT_HCI_CMD_LE_CREATE_BIG);
+
+	return 0;
 }
 
+static int cmd_create_big_complete(struct btdev *dev, const void *data,
+							uint8_t len)
+{
+	const struct bt_hci_cmd_le_create_big *cmd = data;
+	int i;
+
+	for (i = 0; i < cmd->num_bis; i++) {
+		const struct bt_hci_bis *bis = &cmd->bis[i];
+		struct btdev_conn *conn;
+		struct {
+			struct bt_hci_evt_le_big_complete evt;
+			uint16_t handle;
+		} pdu;
+
+		memset(&pdu, 0, sizeof(pdu));
+
+		conn = conn_add_bis(dev, ISO_HANDLE);
+		if (!conn) {
+			pdu.evt.status = BT_HCI_ERR_MEM_CAPACITY_EXCEEDED;
+			goto done;
+		}
+
+		pdu.evt.handle = cmd->handle;
+		pdu.evt.num_bis = 0x01;
+		pdu.evt.phy = bis->phy;
+		pdu.evt.max_pdu = bis->sdu;
+		memcpy(pdu.evt.sync_delay, bis->sdu_interval, 3);
+		memcpy(pdu.evt.latency, bis->sdu_interval, 3);
+		pdu.evt.interval = bis->latency / 1.25;
+		pdu.handle = cpu_to_le16(conn->handle);
+
+done:
+		le_meta_event(dev, BT_HCI_EVT_LE_BIG_COMPLETE, &pdu,
+					sizeof(pdu));
+	}
+
+	return 0;
+}
 static int cmd_create_big_test(struct btdev *dev, const void *data, uint8_t len)
 {
 	/* TODO */
@@ -4740,7 +4784,8 @@ static int cmd_config_data_path(struct btdev *dev, const void *data,
 	CMD(BT_HCI_CMD_LE_REMOVE_CIG, cmd_remove_cig, NULL), \
 	CMD(BT_HCI_CMD_LE_ACCEPT_CIS, cmd_accept_cis, NULL), \
 	CMD(BT_HCI_CMD_LE_REJECT_CIS, cmd_reject_cis, NULL), \
-	CMD(BT_HCI_CMD_LE_CREATE_BIG, cmd_create_big, NULL), \
+	CMD(BT_HCI_CMD_LE_CREATE_BIG, cmd_create_big, \
+			cmd_create_big_complete), \
 	CMD(BT_HCI_CMD_LE_CREATE_BIG_TEST, cmd_create_big_test, NULL), \
 	CMD(BT_HCI_CMD_LE_TERM_BIG, cmd_term_big, NULL), \
 	CMD(BT_HCI_CMD_LE_BIG_CREATE_SYNC, cmd_big_create_sync, NULL), \
