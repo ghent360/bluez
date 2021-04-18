@@ -280,6 +280,7 @@ struct generic_data {
 	uint16_t expect_alt_ev_len;
 	uint16_t expect_hci_command;
 	const void *expect_hci_param;
+	int (*expect_hci_param_check_func)(const void *param, uint16_t length);
 	uint8_t expect_hci_len;
 	const void * (*expect_hci_func)(uint8_t *len);
 	bool expect_pin;
@@ -909,6 +910,20 @@ static uint8_t set_connectable_off_scan_adv_param[] = {
 		0x00,					/* filter_policy */
 };
 
+static int set_connectable_off_scan_adv_check_func(const void *param,
+								uint16_t length)
+{
+	const uint8_t *received = param;
+	uint8_t *expected = set_connectable_off_scan_adv_param;
+
+	/* Compare the received param with expected param, but ignore the
+	 * min_internal and max_interval since these values are turned often
+	 * in the kernel and we don't want to update the expected value every
+	 * time.
+	 */
+	return memcmp(&received[4], &expected[4], length - 4);
+}
+
 static const struct generic_data set_connectable_off_le_test_2 = {
 	.setup_settings = settings_powered_le_connectable_advertising,
 	.send_opcode = MGMT_OP_SET_CONNECTABLE,
@@ -921,6 +936,7 @@ static const struct generic_data set_connectable_off_le_test_2 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_scan_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_scan_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_scan_adv_check_func
 };
 
 static uint16_t settings_powered_le_discoverable[] = {
@@ -948,6 +964,7 @@ static const struct generic_data set_connectable_off_le_test_3 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_scan_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_scan_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_scan_adv_check_func
 };
 
 static const struct generic_data set_connectable_off_le_test_4 = {
@@ -963,6 +980,7 @@ static const struct generic_data set_connectable_off_le_test_4 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_scan_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_scan_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_scan_adv_check_func
 };
 
 static const char set_fast_conn_on_param[] = { 0x01 };
@@ -4749,6 +4767,7 @@ static const struct generic_data add_advertising_success_13 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_scan_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_scan_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_scan_adv_check_func
 };
 
 static uint8_t set_connectable_off_adv_param[] = {
@@ -4762,6 +4781,20 @@ static uint8_t set_connectable_off_adv_param[] = {
 		0x00,					/* filter_policy */
 };
 
+static int set_connectable_off_adv_check_func(const void *param,
+								uint16_t length)
+{
+	const uint8_t *received = param;
+	uint8_t *expected = set_connectable_off_adv_param;
+
+	/* Compare the received param with expected param, but ignore the
+	 * min_internal and max_interval since these values are turned often
+	 * in the kernel and we don't want to update the expected value every
+	 * time.
+	 */
+	return memcmp(&received[4], &expected[4], length - 4);
+}
+
 static const struct generic_data add_advertising_success_14 = {
 	.setup_settings = settings_powered_le,
 	.send_opcode = MGMT_OP_ADD_ADVERTISING,
@@ -4773,6 +4806,7 @@ static const struct generic_data add_advertising_success_14 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_adv_check_func
 };
 
 static const struct generic_data add_advertising_success_15 = {
@@ -4813,6 +4847,7 @@ static const struct generic_data add_advertising_success_17 = {
 	.expect_hci_command = BT_HCI_CMD_LE_SET_ADV_PARAMETERS,
 	.expect_hci_param = set_connectable_off_adv_param,
 	.expect_hci_len = sizeof(set_connectable_off_adv_param),
+	.expect_hci_param_check_func = set_connectable_off_adv_check_func
 };
 
 static const char set_powered_off_le_settings_param[] = {
@@ -6632,6 +6667,7 @@ static void command_hci_callback(uint16_t opcode, const void *param,
 	const struct generic_data *test = data->test_data;
 	const void *expect_hci_param = test->expect_hci_param;
 	uint8_t expect_hci_len = test->expect_hci_len;
+	int ret;
 
 	tester_print("HCI Command 0x%04x length %u", opcode, length);
 
@@ -6647,7 +6683,11 @@ static void command_hci_callback(uint16_t opcode, const void *param,
 		return;
 	}
 
-	if (memcmp(param, expect_hci_param, length) != 0) {
+	if (test->expect_hci_param_check_func)
+		ret = test->expect_hci_param_check_func(param, length);
+	else
+		ret = memcmp(param, expect_hci_param, length);
+	if (ret != 0) {
 		tester_warn("Unexpected HCI command parameter value:");
 		util_hexdump('>', param, length, print_debug, "");
 		util_hexdump('!', expect_hci_param, length, print_debug, "");
