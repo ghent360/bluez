@@ -140,7 +140,12 @@ ell_headers = ell/util.h \
 			ell/uuid.h \
 			ell/useful.h \
 			ell/main-private.h \
-			ell/tester.h
+			ell/tester.h \
+			ell/tls.h \
+			ell/tls-private.h \
+			ell/ecc.h \
+			ell/ecc-private.h \
+			ell/ecdh.h
 
 ell_sources = ell/private.h ell/missing.h \
 			ell/util.c \
@@ -178,7 +183,14 @@ ell_sources = ell/private.h ell/missing.h \
 			ell/siphash-private.h \
 			ell/siphash.c \
 			ell/uuid.c \
-			ell/tester.c
+			ell/tester.c \
+			ell/tls.c \
+			ell/tls-extensions.c \
+			ell/tls-suites.c \
+			ell/tls-record.c \
+			ell/ecc.c \
+			ell/ecc-external.c \
+			ell/ecdh.c
 
 ell_shared = ell/useful.h
 
@@ -627,6 +639,7 @@ lib/bluetooth/%.h: lib/%.h
 	$(AM_V_GEN)$(LN_S) -f $(abspath $<) $@
 
 ell/shared: Makefile
+	$(AM_V_at)$(MKDIR_P) ell
 	$(AM_V_GEN)for f in $(ell_shared) ; do \
 		if [ ! -f $$f ] ; then \
 			$(LN_S) -t ell -f $(abs_srcdir)/../ell/$$f ; \
