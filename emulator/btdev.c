@@ -5122,6 +5122,7 @@ static void set_bredrle_features(struct btdev *btdev)
 	}
 
 	if (btdev->type >= BTDEV_TYPE_BREDRLE52) {
+		btdev->le_features[1] |= 0x20;  /* LE PER ADV */
 		btdev->le_features[3] |= 0x10;  /* LE CIS Master */
 		btdev->le_features[3] |= 0x20;  /* LE CIS Slave */
 		btdev->le_features[3] |= 0x40;  /* LE ISO Broadcaster */
@@ -5578,7 +5579,8 @@ static void send_iso(struct btdev *dev, const void *data, uint16_t len)
 
 	num_completed_packets(dev, conn->handle);
 
-	send_packet(conn->link->dev, iov, 2);
+	if (conn->link)
+		send_packet(conn->link->dev, iov, 2);
 }
 
 void btdev_receive_h4(struct btdev *btdev, const void *data, uint16_t len)
