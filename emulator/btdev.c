@@ -33,6 +33,9 @@
 #include "monitor/bt.h"
 #include "btdev.h"
 
+#define WL_SIZE			16
+#define RL_SIZE			16
+
 #define has_bredr(btdev)	(!((btdev)->features[4] & 0x20))
 #define has_le(btdev)		(!!((btdev)->features[4] & 0x40))
 
@@ -153,6 +156,11 @@ struct btdev {
 		struct bt_hci_cis_params cis;
 	} __attribute__ ((packed)) le_cig;
 	uint8_t  le_iso_path[2];
+
+	uint8_t  le_wl[WL_SIZE][7];
+	uint8_t  le_rl[RL_SIZE][39];
+	uint8_t  le_rl_enable;
+	uint16_t le_rl_timeout;
 
 	uint8_t le_local_sk256[32];
 
@@ -383,6 +391,16 @@ static int cmd_set_event_mask(struct btdev *dev, const void *data, uint8_t len)
 	return 0;
 }
 
+static void wl_clear(struct btdev *dev)
+{
+	int i;
+
+	for (i = 0; i < WL_SIZE; i++) {
+		dev->le_wl[i][0] = 0xff;
+		memset(&dev->le_wl[i][1], 0, 6);
+	}
+}
+
 static void btdev_reset(struct btdev *btdev)
 {
 	/* FIXME: include here clearing of all states that should be
@@ -391,6 +409,8 @@ static void btdev_reset(struct btdev *btdev)
 
 	btdev->le_scan_enable		= 0x00;
 	btdev->le_adv_enable		= 0x00;
+
+	wl_clear(btdev);
 }
 
 static int cmd_reset(struct btdev *dev, const void *data, uint8_t len)
@@ -3333,20 +3353,278 @@ static int cmd_read_wl_size(struct btdev *dev, const void *data, uint8_t len)
 	struct bt_hci_rsp_le_read_white_list_size rsp;
 
 	rsp.status = BT_HCI_ERR_SUCCESS;
-	rsp.size = 0;
+	rsp.size = WL_SIZE;
 	cmd_complete(dev, BT_HCI_CMD_LE_READ_WHITE_LIST_SIZE, &rsp,
 						sizeof(rsp));
 
 	return 0;
 }
 
-static int cmd_clear_wl(struct btdev *dev, const void *data, uint8_t len)
+static int cmd_wl_clear(struct btdev *dev, const void *data, uint8_t len)
 {
 	uint8_t status;
+
+	wl_clear(dev);
 
 	status = BT_HCI_ERR_SUCCESS;
 	cmd_complete(dev, BT_HCI_CMD_LE_CLEAR_WHITE_LIST, &status,
 						sizeof(status));
+
+	return 0;
+}
+
+static int cmd_add_wl(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_add_to_white_list *cmd = data;
+	uint8_t status;
+	bool exists = false;
+	int i, pos = -1;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	for (i = 0; i < WL_SIZE; i++) {
+		if (dev->le_wl[i][0] == cmd->addr_type &&
+				!memcmp(&dev->le_wl[i][1],
+							cmd->addr, 6)) {
+			exists = true;
+			break;
+		} else if (pos < 0 && dev->le_wl[i][0] == 0xff)
+			pos = i;
+	}
+
+	if (exists)
+		return -EALREADY;
+
+	if (pos < 0) {
+		cmd_status(dev, BT_HCI_ERR_MEM_CAPACITY_EXCEEDED,
+					BT_HCI_CMD_LE_ADD_TO_WHITE_LIST);
+		return 0;
+	}
+
+	dev->le_wl[pos][0] = cmd->addr_type;
+	memcpy(&dev->le_wl[pos][1], cmd->addr, 6);
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_ADD_TO_WHITE_LIST,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static int cmd_remove_wl(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_remove_from_white_list *cmd = data;
+	uint8_t status;
+	int i, pos = -1;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	for (i = 0; i < WL_SIZE; i++) {
+		if (dev->le_wl[i][0] == cmd->addr_type &&
+			    !memcmp(&dev->le_wl[i][1], cmd->addr, 6)) {
+			pos = i;
+			break;
+		}
+	}
+
+	if (pos < 0)
+		return -EINVAL;
+
+	dev->le_wl[pos][0] = 0xff;
+	memset(&dev->le_wl[pos][1], 0, 6);
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_REMOVE_FROM_WHITE_LIST,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static int cmd_add_rl(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_add_to_resolv_list *cmd = data;
+	uint8_t status;
+	bool exists = false;
+	int i, pos = -1;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	for (i = 0; i < RL_SIZE; i++) {
+		if (dev->le_rl[i][0] == cmd->addr_type &&
+				!memcmp(&dev->le_rl[i][1], cmd->addr, 6)) {
+			exists = true;
+			break;
+		} else if (pos < 0 && dev->le_rl[i][0] == 0xff)
+			pos = i;
+	}
+
+	if (exists)
+		return -EALREADY;
+
+	if (pos < 0) {
+		cmd_status(dev, BT_HCI_ERR_MEM_CAPACITY_EXCEEDED,
+					BT_HCI_CMD_LE_ADD_TO_RESOLV_LIST);
+		return 0;
+	}
+
+	dev->le_rl[pos][0] = cmd->addr_type;
+	memcpy(&dev->le_rl[pos][1], cmd->addr, 6);
+	memcpy(&dev->le_rl[pos][7], cmd->peer_irk, 16);
+	memcpy(&dev->le_rl[pos][23], cmd->local_irk, 16);
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_ADD_TO_RESOLV_LIST,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static int cmd_remove_rl(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_remove_from_resolv_list *cmd = data;
+	uint8_t status;
+	int i, pos = -1;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	for (i = 0; i < RL_SIZE; i++) {
+		if (dev->le_rl[i][0] == cmd->addr_type &&
+				!memcmp(&dev->le_rl[i][1], cmd->addr, 6)) {
+			pos = i;
+			break;
+		}
+	}
+
+	if (pos < 0)
+		return -EINVAL;
+
+	dev->le_rl[pos][0] = 0xff;
+	memset(&dev->le_rl[pos][1], 0, 38);
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_REMOVE_FROM_RESOLV_LIST,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static void rl_clear(struct btdev *dev)
+{
+	int i;
+
+	for (i = 0; i < RL_SIZE; i++) {
+		dev->le_rl[i][0] = 0xff;
+		memset(&dev->le_rl[i][1], 0, 38);
+	}
+}
+
+static int cmd_clear_rl(struct btdev *dev, const void *data, uint8_t len)
+{
+	uint8_t status;
+
+	rl_clear(dev);
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_CLEAR_RESOLV_LIST,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static int cmd_read_rl_size(struct btdev *dev, const void *data, uint8_t len)
+{
+	struct bt_hci_rsp_le_read_resolv_list_size rsp;
+
+	rsp.status = BT_HCI_ERR_SUCCESS;
+	rsp.size = RL_SIZE;
+
+	cmd_complete(dev, BT_HCI_CMD_LE_READ_RESOLV_LIST_SIZE,
+							&rsp, sizeof(rsp));
+
+	return 0;
+}
+
+static int cmd_read_peer_rl_addr(struct btdev *dev, const void *data,
+							uint8_t size)
+{
+	const struct bt_hci_cmd_le_read_peer_resolv_addr *cmd = data;
+	struct bt_hci_rsp_le_read_peer_resolv_addr rsp;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	rsp.status = BT_HCI_ERR_UNKNOWN_CONN_ID;
+	memset(rsp.addr, 0, 6);
+
+	cmd_complete(dev, BT_HCI_CMD_LE_READ_PEER_RESOLV_ADDR,
+							&rsp, sizeof(rsp));
+
+	return 0;
+}
+
+static int cmd_read_local_rl_addr(struct btdev *dev, const void *data,
+							uint8_t size)
+{
+	const struct bt_hci_cmd_le_read_local_resolv_addr *cmd = data;
+	struct bt_hci_rsp_le_read_local_resolv_addr rsp;
+
+	/* Valid range for address type is 0x00 to 0x01 */
+	if (cmd->addr_type > 0x01)
+		return -EINVAL;
+
+	rsp.status = BT_HCI_ERR_UNKNOWN_CONN_ID;
+	memset(rsp.addr, 0, 6);
+
+	cmd_complete(dev, BT_HCI_CMD_LE_READ_LOCAL_RESOLV_ADDR,
+							&rsp, sizeof(rsp));
+
+	return 0;
+}
+
+static int cmd_set_rl_enable(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_set_resolv_enable *cmd = data;
+	uint8_t status;
+
+	/* Valid range for address resolution enable is 0x00 to 0x01 */
+	if (cmd->enable > 0x01)
+		return -EINVAL;
+
+	dev->le_rl_enable = cmd->enable;
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_SET_RESOLV_ENABLE,
+						&status, sizeof(status));
+
+	return 0;
+}
+
+static int cmd_set_rl_timeout(struct btdev *dev, const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_le_set_resolv_timeout *cmd = data;
+	uint16_t timeout;
+	uint8_t status;
+
+	timeout = le16_to_cpu(cmd->timeout);
+
+	/* Valid range for RPA timeout is 0x0001 to 0xa1b8 */
+	if (timeout < 0x0001 || timeout > 0xa1b8)
+		return -EINVAL;
+
+	dev->le_rl_timeout = timeout;
+
+	status = BT_HCI_ERR_SUCCESS;
+	cmd_complete(dev, BT_HCI_CMD_LE_SET_RESOLV_TIMEOUT,
+						&status, sizeof(status));
 
 	return 0;
 }
@@ -3717,7 +3995,9 @@ static int cmd_gen_dhkey(struct btdev *dev, const void *data, uint8_t len)
 	CMD(BT_HCI_CMD_LE_CREATE_CONN, cmd_le_create_conn, \
 					cmd_le_create_conn_complete), \
 	CMD(BT_HCI_CMD_LE_READ_WHITE_LIST_SIZE, cmd_read_wl_size, NULL), \
-	CMD(BT_HCI_CMD_LE_CLEAR_WHITE_LIST, cmd_clear_wl, NULL), \
+	CMD(BT_HCI_CMD_LE_CLEAR_WHITE_LIST, cmd_wl_clear, NULL), \
+	CMD(BT_HCI_CMD_LE_ADD_TO_WHITE_LIST, cmd_add_wl, NULL), \
+	CMD(BT_HCI_CMD_LE_REMOVE_FROM_WHITE_LIST, cmd_remove_wl, NULL), \
 	CMD(BT_HCI_CMD_LE_CONN_UPDATE, cmd_conn_update, \
 					cmd_conn_update_complete), \
 	CMD(BT_HCI_CMD_LE_READ_REMOTE_FEATURES, cmd_le_read_remote_features, \
@@ -3737,7 +4017,16 @@ static int cmd_gen_dhkey(struct btdev *dev, const void *data, uint8_t len)
 	CMD(BT_HCI_CMD_LE_CONN_PARAM_REQ_NEG_REPLY, cmd_conn_param_neg_reply, \
 					cmd_conn_param_neg_reply_complete), \
 	CMD(BT_HCI_CMD_LE_READ_LOCAL_PK256, cmd_read_local_pk256, NULL), \
-	CMD(BT_HCI_CMD_LE_GENERATE_DHKEY, cmd_gen_dhkey, NULL)
+	CMD(BT_HCI_CMD_LE_GENERATE_DHKEY, cmd_gen_dhkey, NULL), \
+	CMD(BT_HCI_CMD_LE_ADD_TO_RESOLV_LIST, cmd_add_rl,  NULL), \
+	CMD(BT_HCI_CMD_LE_REMOVE_FROM_RESOLV_LIST, cmd_remove_rl, NULL), \
+	CMD(BT_HCI_CMD_LE_CLEAR_RESOLV_LIST, cmd_clear_rl, NULL), \
+	CMD(BT_HCI_CMD_LE_READ_RESOLV_LIST_SIZE, cmd_read_rl_size, NULL), \
+	CMD(BT_HCI_CMD_LE_READ_PEER_RESOLV_ADDR, cmd_read_peer_rl_addr, NULL), \
+	CMD(BT_HCI_CMD_LE_READ_LOCAL_RESOLV_ADDR, cmd_read_local_rl_addr, \
+					NULL), \
+	CMD(BT_HCI_CMD_LE_SET_RESOLV_ENABLE, cmd_set_rl_enable, NULL), \
+	CMD(BT_HCI_CMD_LE_SET_RESOLV_TIMEOUT, cmd_set_rl_timeout, NULL)
 
 static int cmd_set_default_phy(struct btdev *dev, const void *data,
 							uint8_t len)
@@ -4910,6 +5199,8 @@ static void set_le_commands(struct btdev *btdev)
 	btdev->commands[26] |= 0x10;	/* LE Create Connection */
 	btdev->commands[26] |= 0x40;	/* LE Read White List Size */
 	btdev->commands[26] |= 0x80;	/* LE Clear White List */
+	btdev->commands[27] |= 0x01;	/* LE Add Device to White List */
+	btdev->commands[27] |= 0x02;	/* LE Remove Device from White List */
 	btdev->commands[27] |= 0x04;	/* LE Connection Update */
 	btdev->commands[27] |= 0x20;	/* LE Read Remote Used Features */
 	btdev->commands[27] |= 0x40;	/* LE Encrypt */
@@ -4929,6 +5220,14 @@ static void set_le_commands(struct btdev *btdev)
 	/* Extra LE commands for >= 4.2 adapters */
 	btdev->commands[34] |= 0x02;	/* LE Read Local P-256 Public Key */
 	btdev->commands[34] |= 0x04;	/* LE Generate DHKey */
+	btdev->commands[34] |= 0x08;	/* LE Add Device To Resolving List */
+	btdev->commands[34] |= 0x10;	/* LE Remove Dev From Resolving List */
+	btdev->commands[34] |= 0x20;	/* LE Clear Resolving List */
+	btdev->commands[34] |= 0x40;	/* LE Read Resolving List Size */
+	btdev->commands[34] |= 0x80;	/* LE Read Peer Resolvable Address */
+	btdev->commands[35] |= 0x01;	/* LE Read Local Resolvable Address */
+	btdev->commands[35] |= 0x02;	/* LE Set Address Resolution Enable */
+	btdev->commands[35] |= 0x04;	/* LE Set RPA Timeout */
 
 	btdev->cmds = cmd_le;
 
@@ -5207,6 +5506,11 @@ static void set_le_states(struct btdev *btdev)
 	btdev->le_states[3] = 0xff;
 	btdev->le_states[4] = 0xff;
 	btdev->le_states[5] = 0x03;
+
+	wl_clear(btdev);
+	rl_clear(btdev);
+	btdev->le_rl_enable = 0x00;
+	btdev->le_rl_timeout = 0x0384;	/* 900 secs or 15 minutes */
 }
 
 static void set_amp_features(struct btdev *btdev)
@@ -5421,9 +5725,10 @@ static const struct btdev_cmd *default_cmd(struct btdev *btdev, uint16_t opcode,
 		}
 	}
 
-failed:
 	util_debug(btdev->debug_callback, btdev->debug_data,
 			"Unsupported command 0x%4.4x\n", opcode);
+
+failed:
 	cmd_status(btdev, status, opcode);
 
 	return NULL;
