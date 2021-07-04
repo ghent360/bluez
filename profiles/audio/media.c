@@ -2383,6 +2383,8 @@ static void path_free(void *data)
 {
 	struct media_adapter *adapter = data;
 
+	queue_destroy(adapter->apps, app_free);
+
 	while (adapter->endpoints)
 		release_endpoint(adapter->endpoints->data);
 
@@ -2401,6 +2403,7 @@ int media_register(struct btd_adapter *btd_adapter)
 
 	adapter = g_new0(struct media_adapter, 1);
 	adapter->btd_adapter = btd_adapter_ref(btd_adapter);
+	adapter->apps = queue_new();
 
 	if (!g_dbus_register_interface(btd_get_dbus_connection(),
 					adapter_get_path(btd_adapter),
