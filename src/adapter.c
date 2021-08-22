@@ -5555,7 +5555,10 @@ static void adapter_free(gpointer user_data)
 	g_free(adapter->stored_alias);
 	g_free(adapter->current_alias);
 	free(adapter->modalias);
-	g_hash_table_destroy(adapter->allowed_uuid_set);
+
+	if (adapter->allowed_uuid_set)
+		g_hash_table_destroy(adapter->allowed_uuid_set);
+
 	g_free(adapter);
 }
 
@@ -9436,7 +9439,7 @@ static void exp_debug_func(struct btd_adapter *adapter, uint32_t flags)
 
 	memset(&cp, 0, sizeof(cp));
 	memcpy(cp.uuid, debug_uuid, 16);
-	cp.action = btd_opts.experimental ? 0x01 : 0x00;
+	cp.action = action;
 
 	if (mgmt_send(adapter->mgmt, MGMT_OP_SET_EXP_FEATURE,
 			adapter->dev_id, sizeof(cp), &cp,

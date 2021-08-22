@@ -2488,6 +2488,59 @@ static void set_common_commands_bredr20(struct btdev *btdev)
 	btdev->commands[16] |= 0x04;	/* Enable Device Under Test Mode */
 }
 
+static int cmd_enhanced_setup_sync_conn(struct btdev *dev, const void *data,
+					uint8_t len)
+{
+	const struct bt_hci_cmd_enhanced_setup_sync_conn *cmd = data;
+	uint8_t status =  BT_HCI_ERR_SUCCESS;
+
+	if (cmd->tx_coding_format[0] > 5)
+		status = BT_HCI_ERR_INVALID_PARAMETERS;
+
+	cmd_status(dev, status, BT_HCI_EVT_SYNC_CONN_COMPLETE);
+
+	return 0;
+}
+
+static int cmd_enhanced_setup_sync_conn_complete(struct btdev *dev,
+						 const void *data, uint8_t len)
+{
+	const struct bt_hci_cmd_enhanced_setup_sync_conn *cmd = data;
+	struct bt_hci_evt_sync_conn_complete cc;
+	struct btdev_conn *conn;
+
+	memset(&cc, 0, sizeof(cc));
+
+	conn = queue_find(dev->conns, match_handle,
+				UINT_TO_PTR(le16_to_cpu(cmd->handle)));
+	if (!conn) {
+		cc.status = BT_HCI_ERR_UNKNOWN_CONN_ID;
+		goto done;
+	}
+
+	conn = conn_add_sco(conn);
+	if (!conn) {
+		cc.status = BT_HCI_ERR_MEM_CAPACITY_EXCEEDED;
+		goto done;
+	}
+
+	cc.status = BT_HCI_ERR_SUCCESS;
+	memcpy(cc.bdaddr, conn->link->dev->bdaddr, 6);
+
+	cc.handle = cpu_to_le16(conn->handle);
+	cc.link_type = 0x02;
+	cc.tx_interval = 0x000c;
+	cc.retrans_window = 0x06;
+	cc.rx_pkt_len = 60;
+	cc.tx_pkt_len = 60;
+	cc.air_mode = cmd->tx_coding_format[0];
+
+done:
+	send_event(dev, BT_HCI_EVT_SYNC_CONN_COMPLETE, &cc, sizeof(cc));
+
+	return 0;
+}
+
 static int cmd_setup_sync_conn(struct btdev *dev, const void *data, uint8_t len)
 {
 	cmd_status(dev, BT_HCI_ERR_SUCCESS, BT_HCI_EVT_SYNC_CONN_COMPLETE);
@@ -2886,7 +2939,9 @@ static int cmd_get_mws_transport_config(struct btdev *dev, const void *data,
 	CMD(BT_HCI_CMD_READ_DATA_BLOCK_SIZE, cmd_read_data_block_size, NULL), \
 	CMD(BT_HCI_CMD_READ_LOCAL_CODECS, cmd_read_local_codecs, NULL), \
 	CMD(BT_HCI_CMD_GET_MWS_TRANSPORT_CONFIG, cmd_get_mws_transport_config, \
-					NULL)
+					NULL), \
+	CMD(BT_HCI_CMD_ENHANCED_SETUP_SYNC_CONN, cmd_enhanced_setup_sync_conn, \
+					cmd_enhanced_setup_sync_conn_complete)
 
 static const struct btdev_cmd cmd_bredr[] = {
 	CMD_COMMON_ALL,
@@ -2919,6 +2974,7 @@ static void set_bredr_commands(struct btdev *btdev)
 	btdev->commands[20] |= 0x10;	/* Read Encryption Key Size */
 	btdev->commands[23] |= 0x04;	/* Read Data Block Size */
 	btdev->commands[29] |= 0x20;	/* Read Local Supported Codecs */
+	btdev->commands[29] |= 0x08;	/* Enhanced Setup Synchronous Conn */
 	btdev->commands[30] |= 0x08;	/* Get MWS Transport Layer Config */
 	btdev->cmds = cmd_bredr;
 }
@@ -5037,9 +5093,9 @@ static void ext_adv_term(void *data, void *user_data)
 
 	/* if connectable bit is set the send adv terminate */
 	if (conn && adv->type & 0x01) {
-		adv_set_terminate(conn->dev, 0x00, adv->handle, conn->handle,
+		adv_set_terminate(adv->dev, 0x00, adv->handle, conn->handle,
 									0x00);
-		le_ext_adv_free(adv);
+		ext_adv_disable(adv, NULL);
 	}
 }
 
@@ -5048,21 +5104,16 @@ static void le_ext_conn_complete(struct btdev *btdev,
 			struct le_ext_adv *ext_adv,
 			uint8_t status)
 {
+	struct btdev_conn *conn = NULL;
 	struct bt_hci_evt_le_enhanced_conn_complete ev;
 	struct bt_hci_le_ext_create_conn *lecc = (void *)cmd->data;
 
 	memset(&ev, 0, sizeof(ev));
 
 	if (!status) {
-		struct btdev_conn *conn;
-
 		conn = conn_add_acl(btdev, cmd->peer_addr, cmd->peer_addr_type);
 		if (!conn)
 			return;
-
-		/* Disable EXT ADV */
-		queue_foreach(btdev->le_ext_adv, ext_adv_term, conn);
-		queue_foreach(conn->link->dev->le_ext_adv, ext_adv_term, conn);
 
 		ev.status = status;
 		ev.peer_addr_type = btdev->le_scan_own_addr_type;
@@ -5080,6 +5131,9 @@ static void le_ext_conn_complete(struct btdev *btdev,
 		le_meta_event(conn->link->dev,
 				BT_HCI_EVT_LE_ENHANCED_CONN_COMPLETE, &ev,
 				sizeof(ev));
+
+		/* Disable EXT ADV */
+		queue_foreach(conn->link->dev->le_ext_adv, ext_adv_term, conn);
 	}
 
 	ev.status = status;
@@ -5094,6 +5148,10 @@ static void le_ext_conn_complete(struct btdev *btdev,
 
 	le_meta_event(btdev, BT_HCI_EVT_LE_ENHANCED_CONN_COMPLETE, &ev,
 						sizeof(ev));
+
+	/* Disable EXT ADV */
+	if (conn)
+		queue_foreach(btdev->le_ext_adv, ext_adv_term, conn);
 }
 
 static int cmd_ext_create_conn_complete(struct btdev *dev, const void *data,
