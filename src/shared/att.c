@@ -411,10 +411,17 @@ static struct att_send_op *pick_next_send_op(struct bt_att_chan *chan)
 	 */
 	if (!chan->pending_req) {
 		op = queue_peek_head(att->req_queue);
-		if (op && op->len <= chan->mtu)
+		if (op && op->len <= chan->mtu) {
+			/* Don't send Exchange MTU over EATT */
+			if (op->opcode == BT_ATT_OP_MTU_REQ &&
+					chan->type == BT_ATT_EATT)
+				goto indicate;
+
 			return queue_pop_head(att->req_queue);
+		}
 	}
 
+indicate:
 	/* There is either a request pending or no requests queued. If there is
 	 * no pending indication, pick an operation from the indication queue.
 	 */
@@ -962,7 +969,8 @@ static void handle_notify(struct bt_att_chan *chan, uint8_t *pdu,
 		 * link since the MTU size is negotiated using L2CAP channel
 		 * configuration procedures.
 		 */
-		if (bt_att_get_link_type(att) == BT_ATT_BREDR) {
+		if (bt_att_get_link_type(att) == BT_ATT_BREDR ||
+				chan->type == BT_ATT_EATT) {
 			switch (opcode) {
 			case BT_ATT_OP_MTU_REQ:
 				goto not_supported;
