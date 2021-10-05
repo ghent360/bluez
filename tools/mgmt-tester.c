@@ -15,6 +15,9 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <unistd.h>
 
@@ -308,6 +311,34 @@ struct generic_data {
 	const uint8_t *adv_data;
 	uint8_t adv_data_len;
 };
+
+static int set_debugfs_force_suspend(int index, bool enable)
+{
+	int fd, n, err;
+	char val, path[64];
+
+	err = 0;
+
+	/* path for the debugfs file
+	 * /sys/kernel/debug/bluetooth/hciX/force_suspend
+	 */
+	memset(path, 0, sizeof(path));
+	sprintf(path, "/sys/kernel/debug/bluetooth/hci%d/force_suspend", index);
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		return -errno;
+
+	val = (enable) ? 'Y' : 'N';
+
+	n = write(fd, &val, sizeof(val));
+	if (n < (ssize_t) sizeof(val))
+		err = -errno;
+
+	close(fd);
+
+	return err;
+}
 
 static const uint8_t set_exp_feat_param_debug[] = {
 	0x1c, 0xda, 0x47, 0x1c, 0x48, 0x6c, 0x01, 0xab, /* UUID - Debug */
@@ -2690,6 +2721,224 @@ static const struct generic_data load_link_keys_invalid_params_test_3 = {
 };
 
 static const char load_ltks_valid_param_1[] = { 0x00, 0x00 };
+
+static const char load_ltks_valid_param_2[] = {
+	0x01, 0x00,					/* count */
+	0x00, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+};
+
+/* 20 keys at once */
+static const char load_ltks_valid_param_20[] = {
+	0x14, 0x00,					/* count */
+	0x00, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x01, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x02, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x03, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x04, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x05, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x06, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x07, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x08, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x09, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0a, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0b, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0c, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0d, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0e, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x0f, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x10, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x11, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x12, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+
+	0x13, 0x01, 0x02, 0x03, 0x04, 0x05,		/* bdaddr */
+	0x01,						/* addr type */
+	0x00,						/* authenticated */
+	0x00,						/* master */
+	0x00,						/* encryption size */
+	0x00, 0x00,					/* diversifier */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* rand */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (1/2) */
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,	/* value (2/2) */
+};
+
 /* Invalid key count */
 static const char load_ltks_invalid_param_1[] = { 0x01, 0x00 };
 /* Invalid addr type */
@@ -2723,6 +2972,35 @@ static const struct generic_data load_ltks_success_test_1 = {
 	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
 	.send_param = load_ltks_valid_param_1,
 	.send_len = sizeof(load_ltks_valid_param_1),
+	.expect_status = MGMT_STATUS_SUCCESS,
+};
+
+static const struct generic_data load_ltks_success_test_2 = {
+	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
+	.send_param = load_ltks_valid_param_2,
+	.send_len = sizeof(load_ltks_valid_param_2),
+	.expect_status = MGMT_STATUS_SUCCESS,
+};
+
+static const struct generic_data load_ltks_success_test_3 = {
+	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
+	.send_param = load_ltks_valid_param_2,
+	.send_len = sizeof(load_ltks_valid_param_2),
+	.expect_status = MGMT_STATUS_SUCCESS,
+};
+
+static const struct generic_data load_ltks_success_test_4 = {
+	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
+	.send_param = load_ltks_valid_param_20,
+	.send_len = sizeof(load_ltks_valid_param_20),
+	.expect_status = MGMT_STATUS_SUCCESS,
+};
+
+static const struct generic_data load_ltks_success_test_5 = {
+	.setup_settings = settings_powered_le,
+	.send_opcode = MGMT_OP_LOAD_LONG_TERM_KEYS,
+	.send_param = load_ltks_valid_param_20,
+	.send_len = sizeof(load_ltks_valid_param_20),
 	.expect_status = MGMT_STATUS_SUCCESS,
 };
 
@@ -6312,6 +6590,46 @@ static void setup_uuid_mix(const void *test_data)
 					setup_powered_callback, NULL, NULL);
 }
 
+static void setup_load_ltks_callback(uint8_t status, uint16_t length,
+					const void *param, void *user_data)
+{
+	if (status != MGMT_STATUS_SUCCESS) {
+		tester_setup_failed();
+		return;
+	}
+
+	tester_print("Loaded Long Term Key");
+}
+
+static void setup_load_ltks_20_by_1(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+	struct mgmt_cp_load_long_term_keys *cp;
+	struct mgmt_ltk_info *info;
+	unsigned char param[sizeof(*cp) + sizeof(*info)] = { 0x00 };
+	unsigned char param_on[] = { 0x01 };
+	int i;
+
+	cp = (struct mgmt_cp_load_long_term_keys *)param;
+	cp->key_count = 1;
+
+	info = (struct mgmt_ltk_info *)cp->keys;
+	info->addr.type = 0x01;		/* LE Public */
+
+	for (i = 0; i < 20; i++) {
+		/* Update BDADDR */
+		info->addr.bdaddr.b[0] = i + 1;
+
+		mgmt_send(data->mgmt, MGMT_OP_LOAD_LONG_TERM_KEYS,
+			  data->mgmt_index, sizeof(param), param,
+			  setup_load_ltks_callback, NULL, NULL);
+	}
+
+	mgmt_send(data->mgmt, MGMT_OP_SET_POWERED, data->mgmt_index,
+					sizeof(param_on), param_on,
+					setup_powered_callback, NULL, NULL);
+}
+
 static void setup_add_device(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
@@ -9334,7 +9652,7 @@ static const struct generic_data set_dev_flags_fail_3 = {
 };
 
 static const uint8_t read_exp_feat_param_success[] = {
-	0x04, 0x00,				/* Feature Count */
+	0x03, 0x00,				/* Feature Count */
 	0xd6, 0x49, 0xb0, 0xd1, 0x28, 0xeb,	/* UUID - Simultaneous */
 	0x27, 0x92, 0x96, 0x46, 0xc0, 0x42,	/* Central Peripheral */
 	0xb5, 0x10, 0x1b, 0x67,
@@ -9343,14 +9661,10 @@ static const uint8_t read_exp_feat_param_success[] = {
 	0xde, 0xb3, 0xea, 0x11, 0x73, 0xc2,
 	0x48, 0xa1, 0xc0, 0x15,
 	0x02, 0x00, 0x00, 0x00,			/* Flags */
-	0x7f, 0x03, 0x14, 0x06, 0x6f, 0x9a,	/* UUID - Quality Report */
-	0x70, 0x93, 0x2d, 0x49, 0x06, 0x75,
-	0xbc, 0x59, 0x08, 0x33,
-	0x00, 0x00, 0x00, 0x00,			/* Flags */
 	0xaf, 0x29, 0xc6, 0x66, 0xac, 0x5f,	/* UUID - Codec Offload */
 	0x1a, 0x88, 0xb9, 0x4f, 0x7f, 0xee,
 	0xce, 0x5a, 0x69, 0xa6,
-	0x01, 0x00, 0x00, 0x00			/* Flags */
+	0x00, 0x00, 0x00, 0x00			/* Flags */
 };
 
 static const struct generic_data read_exp_feat_success = {
@@ -10072,6 +10386,213 @@ static void test_50_controller_cap_response(const void *test_data)
 						data, NULL);
 }
 
+static const uint8_t suspend_state_param_running[] = {
+	0x00,
+};
+
+static const uint8_t suspend_state_param_page_scan[] = {
+	0x02,
+};
+
+static const uint8_t resume_state_param_non_bt_wake[] = {
+	0x00,
+	0x00, 0x00, 0x0, 0x00, 0x00, 0x00,
+	0x00
+};
+
+static const struct generic_data suspend_resume_success_1 = {
+	.setup_settings = settings_powered,
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_page_scan,
+	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+};
+
+static void test_suspend_resume_success_1(const void *test_data)
+{
+	bool suspend;
+	int err;
+
+	/* Triggers the suspend */
+	suspend = true;
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+	test_command_generic(test_data);
+}
+
+static const struct generic_data suspend_resume_success_2 = {
+	.setup_settings = settings_powered,
+	.expect_alt_ev = MGMT_EV_CONTROLLER_RESUME,
+	.expect_alt_ev_param = resume_state_param_non_bt_wake,
+	.expect_alt_ev_len = sizeof(resume_state_param_non_bt_wake),
+};
+
+static void test_suspend_resume_success_2(const void *test_data)
+{
+	bool suspend;
+	int err;
+
+	/* Triggers the suspend */
+	suspend = true;
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+
+	/* Triggers the resume */
+	suspend = false;
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+	test_command_generic(test_data);
+}
+
+static const struct generic_data suspend_resume_success_3 = {
+	.setup_expect_hci_command = BT_HCI_CMD_LE_ADD_TO_ACCEPT_LIST,
+	.setup_expect_hci_param = le_add_to_accept_list_param,
+	.setup_expect_hci_len = sizeof(le_add_to_accept_list_param),
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_page_scan,
+	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+};
+
+static void setup_suspend_resume_success_3(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+	unsigned char param[] = { 0x01 };
+
+	/* Add Device 1 */
+	mgmt_send(data->mgmt, MGMT_OP_ADD_DEVICE, data->mgmt_index,
+					sizeof(add_device_success_param_3),
+					add_device_success_param_3,
+					setup_add_device_callback,
+					NULL, NULL);
+
+	mgmt_send(data->mgmt, MGMT_OP_SET_POWERED, data->mgmt_index,
+					sizeof(param), param,
+					setup_powered_callback, NULL, NULL);
+}
+
+static void test_suspend_resume_success_3(const void *test_data)
+{
+	bool suspend;
+	int err;
+
+	/* Triggers the suspend */
+	suspend = true;
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+	test_command_generic(test_data);
+}
+
+static const struct generic_data suspend_resume_success_4 = {
+	.setup_expect_hci_command = BT_HCI_CMD_LE_SET_EXT_ADV_ENABLE,
+	.setup_expect_hci_param = set_ext_adv_on_set_adv_enable_param,
+	.setup_expect_hci_len = sizeof(set_ext_adv_on_set_adv_enable_param),
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_page_scan,
+	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+};
+
+static void setup_suspend_resume_success_4(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+	struct mgmt_cp_add_advertising *cp;
+	unsigned char adv_param[sizeof(*cp) + TESTER_ADD_ADV_DATA_LEN];
+	unsigned char param[] = { 0x01 };
+
+	cp = (struct mgmt_cp_add_advertising *) adv_param;
+	setup_add_adv_param(cp, 1);
+
+	mgmt_send(data->mgmt, MGMT_OP_SET_LE, data->mgmt_index,
+					sizeof(param), &param,
+					NULL, NULL, NULL);
+
+	mgmt_send(data->mgmt, MGMT_OP_SET_POWERED, data->mgmt_index,
+					sizeof(param), param,
+					NULL, NULL, NULL);
+
+	mgmt_send(data->mgmt, MGMT_OP_ADD_ADVERTISING, data->mgmt_index,
+					sizeof(adv_param), adv_param,
+					setup_add_advertising_callback,
+					NULL, NULL);
+}
+
+static void test_suspend_resume_success_4(const void *test_data)
+{
+	bool suspend;
+	int err;
+
+	test_command_generic(test_data);
+
+	/* Triggers the suspend */
+	suspend = true;
+	tester_print("Set the system into Suspend via force_suspend");
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+}
+
+static const struct generic_data suspend_resume_success_5 = {
+	.setup_settings = settings_powered_connectable_bondable,
+	.pin = pair_device_pin,
+	.pin_len = sizeof(pair_device_pin),
+	.client_pin = pair_device_pin,
+	.client_pin_len = sizeof(pair_device_pin),
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_running,
+	.expect_alt_ev_len = sizeof(suspend_state_param_running),
+};
+
+static void trigger_force_suspend(void *user_data)
+{
+	bool suspend;
+	int err;
+
+	/* Triggers the suspend */
+	suspend = true;
+	tester_print("Set the system into Suspend via force_suspend");
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		return;
+	}
+}
+
+static void test_suspend_resume_success_5(const void *test_data)
+{
+	test_pairing_acceptor(test_data);
+	tester_wait(1, trigger_force_suspend, NULL);
+}
+
+static const struct generic_data suspend_resume_success_6 = {
+	.setup_settings = settings_powered_connectable_bondable_ssp,
+	.client_enable_ssp = true,
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_running,
+	.expect_alt_ev_len = sizeof(suspend_state_param_running),
+	.expect_hci_command = BT_HCI_CMD_USER_CONFIRM_REQUEST_REPLY,
+	.expect_hci_func = client_bdaddr_param_func,
+	.io_cap = 0x03, /* NoInputNoOutput */
+	.client_io_cap = 0x03, /* NoInputNoOutput */
+	.just_works = true,
+};
+
 int main(int argc, char *argv[])
 {
 	tester_init(&argc, &argv);
@@ -10636,6 +11157,18 @@ int main(int argc, char *argv[])
 
 	test_bredrle("Load Long Term Keys - Success 1",
 				&load_ltks_success_test_1,
+				NULL, test_command_generic);
+	test_bredrle("Load Long Term Keys - Success 2",
+				&load_ltks_success_test_2,
+				NULL, test_command_generic);
+	test_bredrle("Load Long Term Keys - Success 3 (20 with count 1)",
+				&load_ltks_success_test_3,
+				setup_load_ltks_20_by_1, test_command_generic);
+	test_bredrle("Load Long Term Keys - Success 4 (20 with count 20)",
+				&load_ltks_success_test_4,
+				NULL, test_command_generic);
+	test_bredrle("Load Long Term Keys - Success 5 (Power On and 20 keys)",
+				&load_ltks_success_test_5,
 				NULL, test_command_generic);
 	test_bredrle("Load Long Term Keys - Invalid Parameters 1",
 				&load_ltks_invalid_params_test_1,
@@ -11767,6 +12300,63 @@ int main(int argc, char *argv[])
 				&set_dev_flags_fail_3,
 				setup_get_dev_flags,
 				test_command_generic);
+
+	/* Suspend/Resume
+	 * Setup : Power on and register Suspend Event
+	 * Run: Enable suspend via force_suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle50("Suspend/Resume - Success 1 (Suspend)",
+				&suspend_resume_success_1,
+				NULL, test_suspend_resume_success_1);
+
+	/* Suspend/Resume
+	 * Setup : Power on and register Suspend Event
+	 * Run: Enable suspend, and then resume via force_suspend
+	 * Expect: Receive the Resume Event
+	 */
+	test_bredrle50("Suspend/Resume - Success 2 (Resume)",
+				&suspend_resume_success_2,
+				NULL, test_suspend_resume_success_2);
+
+	/* Suspend/Resume
+	 * Setup: Enable LL Privacy and power on
+	 * Run: Add new device, and enable suspend.
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle50("Suspend/Resume - Success 3 (Device in WL)",
+				&suspend_resume_success_3,
+				setup_suspend_resume_success_3,
+				test_suspend_resume_success_3);
+
+	/* Suspend/Resume
+	 * Setup: Start advertising and power on.
+	 * Run: Enable suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle50("Suspend/Resume - Success 4 (Advertising)",
+				&suspend_resume_success_4,
+				setup_suspend_resume_success_4,
+				test_suspend_resume_success_4);
+
+	/* Suspend/Resume
+	 * Setup: Pair.
+	 * Run: Enable suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle("Suspend/Resume - Success 5 (Pairing - Legacy)",
+				&suspend_resume_success_5, NULL,
+				test_suspend_resume_success_5);
+
+	/* Suspend/Resume
+	 * Setup: Pair.
+	 * Run: Enable suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle("Suspend/Resume - Success 6 (Pairing - SSP)",
+				&suspend_resume_success_6,
+				setup_pairing_acceptor,
+				test_suspend_resume_success_5);
 
 	/* MGMT_OP_READ_EXP_FEATURE
 	 * Read Experimental features - success

@@ -104,6 +104,7 @@ struct characteristic {
 	char *path;
 
 	unsigned int ready_id;
+	unsigned int exchange_id;
 	struct sock_io *write_io;
 	struct sock_io *notify_io;
 
@@ -871,6 +872,25 @@ characteristic_notify_acquired_exists(const GDBusPropertyTable *property,
 	struct characteristic *chrc = data;
 
 	return (chrc->props & BT_GATT_CHRC_PROP_NOTIFY);
+}
+
+static gboolean characteristic_get_mtu(const GDBusPropertyTable *property,
+				       DBusMessageIter *iter, void *data)
+{
+	struct characteristic *chrc = data;
+	struct bt_gatt_client *gatt = chrc->service->client->gatt;
+	struct bt_att *att;
+	uint16_t mtu;
+
+	att = bt_gatt_client_get_att(gatt);
+	if (!att)
+		return FALSE;
+
+	mtu = bt_att_get_mtu(att);
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16, &mtu);
+
+	return TRUE;
 }
 
 static void write_characteristic_cb(struct gatt_db_attribute *attr, int err,
@@ -1646,6 +1666,7 @@ static const GDBusPropertyTable characteristic_properties[] = {
 				characteristic_write_acquired_exists },
 	{ "NotifyAcquired", "b", characteristic_get_notify_acquired, NULL,
 				characteristic_notify_acquired_exists },
+	{ "MTU", "q", characteristic_get_mtu, NULL, NULL },
 	{ }
 };
 
@@ -1687,6 +1708,8 @@ static void remove_client(void *data)
 static void characteristic_free(void *data)
 {
 	struct characteristic *chrc = data;
+	struct bt_gatt_client *gatt = chrc->service->client->gatt;
+	struct bt_att *att;
 
 	/* List should be empty here */
 	queue_destroy(chrc->descs, NULL);
@@ -1703,8 +1726,20 @@ static void characteristic_free(void *data)
 
 	queue_destroy(chrc->notify_clients, remove_client);
 
+	att = bt_gatt_client_get_att(gatt);
+	if (att)
+		bt_att_unregister_exchange(att, chrc->exchange_id);
+
 	g_free(chrc->path);
 	free(chrc);
+}
+
+static void att_exchange(uint16_t mtu, void *user_data)
+{
+	struct characteristic *chrc = user_data;
+
+	g_dbus_emit_property_changed(btd_get_dbus_connection(), chrc->path,
+					GATT_CHARACTERISTIC_IFACE, "MTU");
 }
 
 static struct characteristic *characteristic_create(
@@ -1712,6 +1747,8 @@ static struct characteristic *characteristic_create(
 						struct service *service)
 {
 	struct characteristic *chrc;
+	struct bt_gatt_client *gatt = service->client->gatt;
+	struct bt_att *att;
 	bt_uuid_t uuid;
 
 	chrc = new0(struct characteristic, 1);
@@ -1749,6 +1786,11 @@ static struct characteristic *characteristic_create(
 
 		return NULL;
 	}
+
+	att = bt_gatt_client_get_att(gatt);
+	if (att)
+		chrc->exchange_id = bt_att_register_exchange(att, att_exchange,
+								chrc, NULL);
 
 	DBG("Exported GATT characteristic: %s", chrc->path);
 

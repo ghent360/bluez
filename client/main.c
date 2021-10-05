@@ -2044,7 +2044,8 @@ static void connect_reply(DBusMessage *message, void *user_data)
 	dbus_error_init(&error);
 
 	if (dbus_set_error_from_message(&error, message) == TRUE) {
-		bt_shell_printf("Failed to connect: %s\n", error.name);
+		bt_shell_printf("Failed to connect: %s %s\n", error.name,
+				error.message);
 		dbus_error_free(&error);
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
@@ -2232,6 +2233,7 @@ static void cmd_attribute_info(int argc, char *argv[])
 		print_property(proxy, "Value");
 		print_property(proxy, "Notifying");
 		print_property(proxy, "Flags");
+		print_property(proxy, "MTU");
 		print_property(proxy, "Descriptors");
 	} else if (!strcmp(iface, "org.bluez.GattDescriptor1")) {
 		bt_shell_printf("Descriptor - %s\n", text);
