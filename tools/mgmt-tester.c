@@ -267,6 +267,7 @@ struct generic_data {
 	uint16_t setup_send_len;
 	const struct setup_mgmt_cmd *setup_mgmt_cmd_arr;
 	bool send_index_none;
+	const void *setup_discovery_param;
 	uint16_t send_opcode;
 	const void *send_param;
 	uint16_t send_len;
@@ -340,6 +341,34 @@ static int set_debugfs_force_suspend(int index, bool enable)
 	return err;
 }
 
+static int set_debugfs_force_wakeup(int index, bool enable)
+{
+	int fd, n, err;
+	char val, path[64];
+
+	err = 0;
+
+	/* path for the debugfs file
+	 * /sys/kernel/debug/bluetooth/hciX/force_suspend
+	 */
+	memset(path, 0, sizeof(path));
+	sprintf(path, "/sys/kernel/debug/bluetooth/hci%d/force_wakeup", index);
+
+	fd = open(path, O_RDWR);
+	if (fd < 0)
+		return -errno;
+
+	val = (enable) ? 'Y' : 'N';
+
+	n = write(fd, &val, sizeof(val));
+	if (n < (ssize_t) sizeof(val))
+		err = -errno;
+
+	close(fd);
+
+	return err;
+}
+
 static const uint8_t set_exp_feat_param_debug[] = {
 	0x1c, 0xda, 0x47, 0x1c, 0x48, 0x6c, 0x01, 0xab, /* UUID - Debug */
 	0x9f, 0x46, 0xec, 0xb9, 0x30, 0x25, 0x99, 0xd4,
@@ -362,8 +391,8 @@ static void debug_exp_feature(struct test_data *data)
 	tester_print("Enabling Debug feature");
 
 	mgmt_send(data->mgmt, MGMT_OP_SET_EXP_FEATURE, MGMT_INDEX_NONE,
-		sizeof(set_exp_feat_param_debug), set_exp_feat_param_debug,
-		debug_exp_callback, NULL, NULL);
+		  sizeof(set_exp_feat_param_debug), set_exp_feat_param_debug,
+		  debug_exp_callback, NULL, NULL);
 }
 
 static void read_index_list_callback(uint8_t status, uint16_t length,
@@ -7271,6 +7300,11 @@ proceed:
 			param = privacy_param;
 		}
 
+		if (*cmd == MGMT_OP_START_DISCOVERY) {
+			if (test->setup_discovery_param)
+				memcpy(param, test->setup_discovery_param, 1);
+		}
+
 		if (*cmd == MGMT_OP_SET_LE && test->setup_nobredr) {
 			unsigned char off[] = { 0x00 };
 			mgmt_send(data->mgmt, *cmd, data->mgmt_index,
@@ -9674,6 +9708,23 @@ static const struct generic_data read_exp_feat_success = {
 	.expect_len = sizeof(read_exp_feat_param_success),
 };
 
+
+static const uint8_t read_exp_feat_param_success_index_none[] = {
+	0x01, 0x00,				/* Feature Count */
+	0x1c, 0xda, 0x47, 0x1c, 0x48, 0x6c,	/* UUID - Debug */
+	0x01, 0xab, 0x9f, 0x46, 0xec, 0xb9,
+	0x30, 0x25, 0x99, 0xd4,
+	0x00, 0x00, 0x00, 0x00,			/* Flags */
+};
+
+static const struct generic_data read_exp_feat_success_index_none = {
+	.send_index_none = true,
+	.send_opcode = MGMT_OP_READ_EXP_FEATURES_INFO,
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_param = read_exp_feat_param_success_index_none,
+	.expect_len = sizeof(read_exp_feat_param_success_index_none),
+};
+
 static uint16_t settings_powered_le_privacy[] = { MGMT_OP_SET_LE,
 						MGMT_OP_SET_PRIVACY,
 						MGMT_OP_SET_POWERED, 0 };
@@ -9692,6 +9743,20 @@ static const uint8_t set_exp_feat_rsp_param_ll_privacy[] = {
 	0x03, 0x00, 0x00, 0x00,			/* Action - enable */
 };
 
+static const uint8_t set_exp_feat_param_offload_codec[] = {
+	0xaf, 0x29, 0xc6, 0x66, 0xac, 0x5f,	/* UUID - Codec Offload */
+	0x1a, 0x88, 0xb9, 0x4f, 0x7f, 0xee,
+	0xce, 0x5a, 0x69, 0xa6,
+	0x01,					/* Action - enable */
+};
+
+static const uint8_t set_exp_feat_rsp_param_offload_codec[] = {
+	0xaf, 0x29, 0xc6, 0x66, 0xac, 0x5f,	/* UUID - Codec Offload */
+	0x1a, 0x88, 0xb9, 0x4f, 0x7f, 0xee,
+	0xce, 0x5a, 0x69, 0xa6,
+	0x01, 0x00, 0x00, 0x00,			/* Action - enable */
+};
+
 static const struct generic_data set_exp_feat_enable_ll_privacy = {
 	.send_opcode = MGMT_OP_SET_EXP_FEATURE,
 	.send_param = set_exp_feat_param_ll_privacy,
@@ -9699,6 +9764,44 @@ static const struct generic_data set_exp_feat_enable_ll_privacy = {
 	.expect_status = MGMT_STATUS_SUCCESS,
 	.expect_param = set_exp_feat_rsp_param_ll_privacy,
 	.expect_len = sizeof(set_exp_feat_rsp_param_ll_privacy),
+	.expect_alt_ev = MGMT_EV_EXP_FEATURE_CHANGE,
+	.expect_alt_ev_len = sizeof(struct mgmt_ev_exp_feature_changed),
+};
+
+static void read_exp_feature_callback(uint8_t status, uint16_t length,
+					const void *param, void *user_data)
+{
+	if (status != MGMT_STATUS_SUCCESS) {
+		tester_setup_failed();
+		return;
+	}
+
+	tester_print("Received Read Experimental Features Info");
+
+	tester_setup_complete();
+}
+
+static void setup_set_exp_feature_alt(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+
+	/* Send the Read Experiemental Features Information command to receive
+	 * the Experiemental Feature Changed event
+	 */
+	mgmt_send(data->mgmt_alt, MGMT_OP_READ_EXP_FEATURES_INFO,
+			data->mgmt_index, 0, NULL,
+			read_exp_feature_callback, NULL, NULL);
+}
+
+static const struct generic_data set_exp_feat_offload_codec = {
+	.send_opcode = MGMT_OP_SET_EXP_FEATURE,
+	.send_param = set_exp_feat_param_offload_codec,
+	.send_len = sizeof(set_exp_feat_param_offload_codec),
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_param = set_exp_feat_rsp_param_offload_codec,
+	.expect_len = sizeof(set_exp_feat_rsp_param_offload_codec),
+	.expect_alt_ev = MGMT_EV_EXP_FEATURE_CHANGE,
+	.expect_alt_ev_len = sizeof(struct mgmt_ev_exp_feature_changed),
 };
 
 static const uint8_t set_exp_feat_param_disable[17] = { 0x00 };
@@ -10386,8 +10489,8 @@ static void test_50_controller_cap_response(const void *test_data)
 						data, NULL);
 }
 
-static const uint8_t suspend_state_param_running[] = {
-	0x00,
+static const uint8_t suspend_state_param_disconnect[] = {
+	0x01,
 };
 
 static const uint8_t suspend_state_param_page_scan[] = {
@@ -10403,8 +10506,8 @@ static const uint8_t resume_state_param_non_bt_wake[] = {
 static const struct generic_data suspend_resume_success_1 = {
 	.setup_settings = settings_powered,
 	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
-	.expect_alt_ev_param = suspend_state_param_page_scan,
-	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
 };
 
 static void test_suspend_resume_success_1(const void *test_data)
@@ -10460,8 +10563,8 @@ static const struct generic_data suspend_resume_success_3 = {
 	.setup_expect_hci_param = le_add_to_accept_list_param,
 	.setup_expect_hci_len = sizeof(le_add_to_accept_list_param),
 	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
-	.expect_alt_ev_param = suspend_state_param_page_scan,
-	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
 };
 
 static void setup_suspend_resume_success_3(const void *test_data)
@@ -10502,8 +10605,8 @@ static const struct generic_data suspend_resume_success_4 = {
 	.setup_expect_hci_param = set_ext_adv_on_set_adv_enable_param,
 	.setup_expect_hci_len = sizeof(set_ext_adv_on_set_adv_enable_param),
 	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
-	.expect_alt_ev_param = suspend_state_param_page_scan,
-	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
 };
 
 static void setup_suspend_resume_success_4(const void *test_data)
@@ -10555,8 +10658,8 @@ static const struct generic_data suspend_resume_success_5 = {
 	.client_pin = pair_device_pin,
 	.client_pin_len = sizeof(pair_device_pin),
 	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
-	.expect_alt_ev_param = suspend_state_param_running,
-	.expect_alt_ev_len = sizeof(suspend_state_param_running),
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
 };
 
 static void trigger_force_suspend(void *user_data)
@@ -10574,6 +10677,21 @@ static void trigger_force_suspend(void *user_data)
 	}
 }
 
+static void trigger_force_resume(void *user_data)
+{
+	bool suspend;
+	int err;
+
+	/* Triggers the suspend */
+	suspend = false;
+	tester_print("Set the system into Resume via force_suspend");
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to disable the force_suspend");
+		return;
+	}
+}
+
 static void test_suspend_resume_success_5(const void *test_data)
 {
 	test_pairing_acceptor(test_data);
@@ -10584,14 +10702,154 @@ static const struct generic_data suspend_resume_success_6 = {
 	.setup_settings = settings_powered_connectable_bondable_ssp,
 	.client_enable_ssp = true,
 	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
-	.expect_alt_ev_param = suspend_state_param_running,
-	.expect_alt_ev_len = sizeof(suspend_state_param_running),
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
 	.expect_hci_command = BT_HCI_CMD_USER_CONFIRM_REQUEST_REPLY,
 	.expect_hci_func = client_bdaddr_param_func,
 	.io_cap = 0x03, /* NoInputNoOutput */
 	.client_io_cap = 0x03, /* NoInputNoOutput */
 	.just_works = true,
 };
+
+static const struct generic_data suspend_resume_success_7 = {
+	.setup_settings = settings_powered,
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_page_scan,
+	.expect_alt_ev_len = sizeof(suspend_state_param_page_scan),
+};
+
+static void test_suspend_resume_success_7(const void *test_data)
+{
+	bool suspend;
+	int err;
+
+	/* Set Force Wakeup */
+	suspend = true;
+	err = set_debugfs_force_wakeup(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_wakeup");
+		tester_test_failed();
+		return;
+	}
+
+	/* Triggers the suspend */
+	suspend = true;
+	err = set_debugfs_force_suspend(0, suspend);
+	if (err) {
+		tester_warn("Unable to enable the force_suspend");
+		tester_test_failed();
+		return;
+	}
+	test_command_generic(test_data);
+}
+
+static const struct generic_data suspend_resume_success_8 = {
+	.setup_settings = settings_powered_le,
+	.send_opcode = MGMT_OP_START_DISCOVERY,
+	.send_param = start_discovery_le_param,
+	.send_len = sizeof(start_discovery_le_param),
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_param = start_discovery_le_param,
+	.expect_len = sizeof(start_discovery_le_param),
+	.expect_hci_command = BT_HCI_CMD_LE_SET_EXT_SCAN_ENABLE,
+	.expect_hci_param = start_discovery_valid_ext_scan_enable,
+	.expect_hci_len = sizeof(start_discovery_valid_ext_scan_enable),
+	.expect_alt_ev = MGMT_EV_CONTROLLER_SUSPEND,
+	.expect_alt_ev_param = suspend_state_param_disconnect,
+	.expect_alt_ev_len = sizeof(suspend_state_param_disconnect),
+};
+
+static void test_suspend_resume_success_8(const void *test_data)
+{
+	test_command_generic(test_data);
+	tester_wait(1, trigger_force_suspend, NULL);
+}
+
+static uint16_t settings_powered_le_discovery[] = { MGMT_OP_SET_LE,
+						    MGMT_OP_SET_POWERED,
+						    MGMT_OP_START_DISCOVERY,
+						    0 };
+
+static const struct generic_data suspend_resume_success_9 = {
+	.setup_settings = settings_powered_le_discovery,
+	.setup_discovery_param = start_discovery_bredrle_param,
+	.setup_expect_hci_command = BT_HCI_CMD_LE_SET_EXT_SCAN_ENABLE,
+	.setup_expect_hci_param = stop_discovery_valid_ext_scan_disable,
+	.setup_expect_hci_len = sizeof(stop_discovery_valid_ext_scan_disable),
+	.expect_hci_command = BT_HCI_CMD_LE_SET_EXT_SCAN_ENABLE,
+	.expect_hci_param = start_discovery_valid_ext_scan_enable,
+	.expect_hci_len = sizeof(start_discovery_valid_ext_scan_enable),
+	.expect_alt_ev = MGMT_EV_CONTROLLER_RESUME,
+	.expect_alt_ev_param = resume_state_param_non_bt_wake,
+	.expect_alt_ev_len = sizeof(resume_state_param_non_bt_wake),
+};
+
+static void trigger_force_suspend_9(void *user_data)
+{
+	trigger_force_suspend(user_data);
+}
+
+static void setup_suspend_resume_success_9(const void *test_data)
+{
+	setup_command_generic(test_data);
+	tester_wait(1, trigger_force_suspend_9, NULL);
+}
+
+static void test_suspend_resume_success_9(const void *test_data)
+{
+	test_command_generic(test_data);
+	tester_wait(2, trigger_force_resume, NULL);
+}
+
+static const struct generic_data suspend_resume_success_10 = {
+	.setup_settings = settings_powered_le,
+	.expect_alt_ev = MGMT_EV_CONTROLLER_RESUME,
+	.expect_alt_ev_param = resume_state_param_non_bt_wake,
+	.expect_alt_ev_len = sizeof(resume_state_param_non_bt_wake),
+};
+
+static void resume_event(uint16_t index, uint16_t length,
+					const void *param, void *user_data)
+{
+	struct test_data *data = tester_get_data();
+	const struct mgmt_ev_controller_resume *ev = param;
+
+	mgmt_unregister(data->mgmt, data->mgmt_discov_ev_id);
+
+	if (length != sizeof(*ev)) {
+		tester_warn("Incorrect resume event length");
+		tester_setup_failed();
+		return;
+	}
+
+	tester_print("New Controller Resume event received");
+	test_condition_complete(data);
+	tester_setup_complete();
+}
+
+
+static void setup_suspend_resume_success_10(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+	unsigned int id;
+
+	tester_print("Registering Controller Resume notification");
+	id = mgmt_register(data->mgmt, MGMT_EV_CONTROLLER_RESUME,
+			   data->mgmt_index, resume_event, NULL, NULL);
+	/* Reuse the variable */
+	data->mgmt_discov_ev_id = id;
+	test_add_condition(data);
+
+	tester_wait(1, trigger_force_suspend, NULL);
+	tester_wait(2, trigger_force_resume, NULL);
+}
+
+static void test_suspend_resume_success_10(const void *test_data)
+{
+	test_command_generic(test_data);
+	tester_wait(1, trigger_force_suspend, NULL);
+	tester_wait(2, trigger_force_resume, NULL);
+}
 
 int main(int argc, char *argv[])
 {
@@ -12306,7 +12564,7 @@ int main(int argc, char *argv[])
 	 * Run: Enable suspend via force_suspend
 	 * Expect: Receive the Suspend Event
 	 */
-	test_bredrle50("Suspend/Resume - Success 1 (Suspend)",
+	test_bredrle50("Suspend - Success 1",
 				&suspend_resume_success_1,
 				NULL, test_suspend_resume_success_1);
 
@@ -12315,7 +12573,7 @@ int main(int argc, char *argv[])
 	 * Run: Enable suspend, and then resume via force_suspend
 	 * Expect: Receive the Resume Event
 	 */
-	test_bredrle50("Suspend/Resume - Success 2 (Resume)",
+	test_bredrle50("Resume - Success 2",
 				&suspend_resume_success_2,
 				NULL, test_suspend_resume_success_2);
 
@@ -12324,7 +12582,7 @@ int main(int argc, char *argv[])
 	 * Run: Add new device, and enable suspend.
 	 * Expect: Receive the Suspend Event
 	 */
-	test_bredrle50("Suspend/Resume - Success 3 (Device in WL)",
+	test_bredrle50("Suspend - Success 3 (Device in WL)",
 				&suspend_resume_success_3,
 				setup_suspend_resume_success_3,
 				test_suspend_resume_success_3);
@@ -12334,7 +12592,7 @@ int main(int argc, char *argv[])
 	 * Run: Enable suspend
 	 * Expect: Receive the Suspend Event
 	 */
-	test_bredrle50("Suspend/Resume - Success 4 (Advertising)",
+	test_bredrle50("Suspend - Success 4 (Advertising)",
 				&suspend_resume_success_4,
 				setup_suspend_resume_success_4,
 				test_suspend_resume_success_4);
@@ -12344,7 +12602,7 @@ int main(int argc, char *argv[])
 	 * Run: Enable suspend
 	 * Expect: Receive the Suspend Event
 	 */
-	test_bredrle("Suspend/Resume - Success 5 (Pairing - Legacy)",
+	test_bredrle("Suspend - Success 5 (Pairing - Legacy)",
 				&suspend_resume_success_5, NULL,
 				test_suspend_resume_success_5);
 
@@ -12353,10 +12611,48 @@ int main(int argc, char *argv[])
 	 * Run: Enable suspend
 	 * Expect: Receive the Suspend Event
 	 */
-	test_bredrle("Suspend/Resume - Success 6 (Pairing - SSP)",
+	test_bredrle("Suspend - Success 6 (Pairing - SSP)",
 				&suspend_resume_success_6,
 				setup_pairing_acceptor,
 				test_suspend_resume_success_5);
+
+	/* Suspend/Resume
+	 * Setup : Power on and register Suspend Event
+	 * Run: Enable suspend via force_suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle50("Suspend - Success 7 (Suspend/Force Wakeup)",
+				&suspend_resume_success_7,
+				NULL, test_suspend_resume_success_7);
+
+	/* Suspend/Resume
+	 * Setup : Power on
+	 * Run: Start discover and enable suspend
+	 * Expect: Receive the Suspend Event
+	 */
+	test_bredrle50_full("Suspend - Success 8 (Discovery/Suspend)",
+				&suspend_resume_success_8,
+				NULL, test_suspend_resume_success_8, 4);
+
+	/* Suspend/Resume
+	 * Setup : Power on, start discovery
+	 * Run: Start discover, enable suspend and resume.
+	 * Expect: Receive the Resume Event
+	 */
+	test_bredrle50_full("Resume - Success 9 (Discovery/Suspend/Resume)",
+				&suspend_resume_success_9,
+				setup_suspend_resume_success_9,
+				test_suspend_resume_success_9, 4);
+
+	/* Suspend/Resume
+	 * Setup : Power on
+	 * Run: Suspend, Resume, Suspend, and Resume
+	 * Expect:
+	 */
+	test_bredrle50_full("Resume - Success 10 (Multiple Suspend/Resume)",
+				&suspend_resume_success_10,
+				setup_suspend_resume_success_10,
+				test_suspend_resume_success_10, 6);
 
 	/* MGMT_OP_READ_EXP_FEATURE
 	 * Read Experimental features - success
@@ -12364,12 +12660,29 @@ int main(int argc, char *argv[])
 	test_bredrle50("Read Exp Feature - Success",
 				&read_exp_feat_success,
 				NULL, test_command_generic);
+
+	/* MGMT_OP_READ_EXP_FEATURE
+	 * Read Experimental features - success (Index None)
+	 */
+	test_bredrle50("Read Exp Feature - Success (Index None)",
+				&read_exp_feat_success_index_none,
+				NULL, test_command_generic);
+
 	/* MGMT_OP_SET_EXP_FEATURE
 	 * Enable LL Privacy
 	 */
 	test_bredrle50("Set Exp Feature - Enable LL Privacy",
 				&set_exp_feat_enable_ll_privacy,
-				NULL, test_command_generic);
+				setup_set_exp_feature_alt,
+				test_command_generic);
+
+	/* MGMT_OP_SET_EXP_FEATURE
+	 * Offload Codec
+	 */
+	test_bredrle50("Set Exp Feature - Offload Codec",
+				&set_exp_feat_offload_codec,
+				setup_set_exp_feature_alt,
+				test_command_generic);
 
 	/* MGMT_OP_SET_EXP_FEATURE
 	 * Disable all features by sending zero UUID
