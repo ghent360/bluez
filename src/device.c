@@ -393,12 +393,15 @@ static gboolean store_device_info_cb(gpointer user_data)
 	snprintf(filename, PATH_MAX, STORAGEDIR "/%s/%s/info",
 				btd_adapter_get_storage_dir(device->adapter),
 				device_addr);
+	create_file(filename, 0600);
 
 	key_file = g_key_file_new();
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
 		g_error_free(gerr);
+		g_key_file_free(key_file);
+		return FALSE;
 	}
 
 	g_key_file_set_string(key_file, "General", "Name", device->name);
@@ -468,8 +471,6 @@ static gboolean store_device_info_cb(gpointer user_data)
 
 	if (device->remote_csrk)
 		store_csrk(device->remote_csrk, key_file, "RemoteSignatureKey");
-
-	create_file(filename, 0600);
 
 	str = g_key_file_to_data(key_file, &length, NULL);
 	if (!g_file_set_contents(filename, str, length, &gerr)) {
@@ -4594,9 +4595,9 @@ static void device_remove_stored(struct btd_device *device)
 
 	key_file = g_key_file_new();
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
-		error("Unable to load key file from %s: (%s)", filename,
-								gerr->message);
 		g_error_free(gerr);
+		g_key_file_free(key_file);
+		return;
 	}
 	g_key_file_remove_group(key_file, "ServiceRecords", NULL);
 	g_key_file_remove_group(key_file, "Attributes", NULL);
@@ -4997,22 +4998,28 @@ static void update_bredr_services(struct browse_req *req, sdp_list_t *recs)
 
 	snprintf(sdp_file, PATH_MAX, STORAGEDIR "/%s/cache/%s", srcaddr,
 								dstaddr);
+	create_file(sdp_file, 0600);
 
 	sdp_key_file = g_key_file_new();
 	if (!g_key_file_load_from_file(sdp_key_file, sdp_file, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", sdp_file,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
+		g_key_file_free(sdp_key_file);
+		sdp_key_file = NULL;
 	}
 
 	snprintf(att_file, PATH_MAX, STORAGEDIR "/%s/%s/attributes", srcaddr,
 								dstaddr);
+	create_file(att_file, 0600);
 
 	att_key_file = g_key_file_new();
 	if (!g_key_file_load_from_file(att_key_file, att_file, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", att_file,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
+		g_key_file_free(att_key_file);
+		att_key_file = NULL;
 	}
 
 	for (seq = recs; seq; seq = seq->next) {
@@ -5067,12 +5074,11 @@ next:
 	if (sdp_key_file) {
 		data = g_key_file_to_data(sdp_key_file, &length, NULL);
 		if (length > 0) {
-			create_file(sdp_file, 0600);
 			if (!g_file_set_contents(sdp_file, data, length,
 								&gerr)) {
 				error("Unable set contents for %s: (%s)",
 						sdp_file, gerr->message);
-				g_error_free(gerr);
+				g_clear_error(&gerr);
 			}
 		}
 
@@ -5083,12 +5089,11 @@ next:
 	if (att_key_file) {
 		data = g_key_file_to_data(att_key_file, &length, NULL);
 		if (length > 0) {
-			create_file(att_file, 0600);
 			if (!g_file_set_contents(att_file, data, length,
 								&gerr)) {
 				error("Unable set contents for %s: (%s)",
 						att_file, gerr->message);
-				g_error_free(gerr);
+				g_clear_error(&gerr);
 			}
 		}
 
