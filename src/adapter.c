@@ -3779,8 +3779,6 @@ static struct smp_ltk_info *get_ltk(GKeyFile *key_file, const char *peer,
 					uint8_t peer_type, const char *group)
 {
 	struct smp_ltk_info *ltk = NULL;
-	GError *gerr = NULL;
-	bool central;
 	char *key;
 	char *rand = NULL;
 
@@ -3836,12 +3834,6 @@ static struct smp_ltk_info *get_ltk(GKeyFile *key_file, const char *peer,
 									NULL);
 	ltk->ediv = g_key_file_get_integer(key_file, group, "EDiv", NULL);
 
-	central = g_key_file_get_boolean(key_file, group, "Master", &gerr);
-	if (gerr)
-		g_error_free(gerr);
-	else
-		ltk->central = central;
-
 	ltk->is_blocked = is_blocked_key(HCI_BLOCKED_KEY_TYPE_LTK,
 								ltk->val);
 
@@ -3868,7 +3860,14 @@ static struct smp_ltk_info *get_peripheral_ltk_info(GKeyFile *key_file,
 
 	DBG("%s", peer);
 
-	ltk = get_ltk(key_file, peer, bdaddr_type, "SlaveLongTermKey");
+	/* Peripheral* is the proper term, but for now read both entries
+	 * so it won't break when user up/downgrades. Remove the other
+	 * term after a few releases.
+	 */
+	ltk = get_ltk(key_file, peer, bdaddr_type, "PeripheralLongTermKey");
+	if (!ltk)
+		ltk = get_ltk(key_file, peer, bdaddr_type, "SlaveLongTermKey");
+
 	if (ltk)
 		ltk->central = false;
 
@@ -5900,7 +5899,6 @@ static void convert_ltk_entry(GKeyFile *key_file, void *value)
 	g_free(str);
 
 	g_key_file_set_integer(key_file, "LongTermKey", "Authenticated", auth);
-	g_key_file_set_integer(key_file, "LongTermKey", "Master", central);
 	g_key_file_set_integer(key_file, "LongTermKey", "EncSize", enc_size);
 	g_key_file_set_integer(key_file, "LongTermKey", "EDiv", ediv);
 
@@ -8415,13 +8413,12 @@ static void new_link_key_callback(uint16_t index, uint16_t length,
 	bonding_complete(adapter, &addr->bdaddr, addr->type, 0);
 }
 
-static void store_longtermkey(struct btd_adapter *adapter, const bdaddr_t *peer,
+static void store_ltk_group(struct btd_adapter *adapter, const bdaddr_t *peer,
 				uint8_t bdaddr_type, const unsigned char *key,
-				uint8_t central, uint8_t authenticated,
+				const char *group, uint8_t authenticated,
 				uint8_t enc_size, uint16_t ediv,
 				uint64_t rand)
 {
-	const char *group = central ? "LongTermKey" : "SlaveLongTermKey";
 	char device_addr[18];
 	char filename[PATH_MAX];
 	GKeyFile *key_file;
@@ -8430,11 +8427,6 @@ static void store_longtermkey(struct btd_adapter *adapter, const bdaddr_t *peer,
 	gsize length = 0;
 	char *str;
 	int i;
-
-	if (central != 0x00 && central != 0x01) {
-		error("Unsupported LTK type %u", central);
-		return;
-	}
 
 	ba2str(peer, device_addr);
 
@@ -8446,9 +8438,6 @@ static void store_longtermkey(struct btd_adapter *adapter, const bdaddr_t *peer,
 								gerr->message);
 		g_error_free(gerr);
 	}
-
-	/* Old files may contain this so remove it in case it exists */
-	g_key_file_remove_key(key_file, "LongTermKey", "Master", NULL);
 
 	for (i = 0; i < 16; i++)
 		sprintf(key_str + (i * 2), "%2.2X", key[i]);
@@ -8473,6 +8462,34 @@ static void store_longtermkey(struct btd_adapter *adapter, const bdaddr_t *peer,
 	g_free(str);
 
 	g_key_file_free(key_file);
+}
+
+static void store_longtermkey(struct btd_adapter *adapter, const bdaddr_t *peer,
+				uint8_t bdaddr_type, const unsigned char *key,
+				uint8_t central, uint8_t authenticated,
+				uint8_t enc_size, uint16_t ediv,
+				uint64_t rand)
+{
+	if (central != 0x00 && central != 0x01) {
+		error("Unsupported LTK type %u", central);
+		return;
+	}
+
+	if (central) {
+		store_ltk_group(adapter, peer, bdaddr_type, key, "LongTermKey",
+				authenticated, enc_size, ediv, rand);
+	} else {
+		/* Peripheral* is the proper term, but for now keep duplicates
+		 * so it won't break when user up/downgrades. Remove the other
+		 * term after a few releases.
+		 */
+		store_ltk_group(adapter, peer, bdaddr_type, key,
+				"PeripheralLongTermKey", authenticated,
+				enc_size, ediv, rand);
+		store_ltk_group(adapter, peer, bdaddr_type, key,
+				"SlaveLongTermKey", authenticated,
+				enc_size, ediv, rand);
+	}
 }
 
 static void new_long_term_key_callback(uint16_t index, uint16_t length,
