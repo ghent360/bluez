@@ -5630,13 +5630,14 @@ static int cmd_create_cis_complete(struct btdev *dev, const void *data,
 
 static int cmd_remove_cig(struct btdev *dev, const void *data, uint8_t len)
 {
+	const struct bt_hci_cmd_le_remove_cig *cmd = data;
 	struct bt_hci_rsp_le_remove_cig rsp;
 
 	memset(&dev->le_cig, 0, sizeof(dev->le_cig));
 	memset(&rsp, 0, sizeof(rsp));
 
 	rsp.status = BT_HCI_ERR_SUCCESS;
-	rsp.cig_id = 0x00;
+	rsp.cig_id = cmd->cig_id;
 	cmd_complete(dev, BT_HCI_CMD_LE_REMOVE_CIG, &rsp, sizeof(rsp));
 
 	return 0;
@@ -5733,7 +5734,7 @@ static int cmd_create_big_test(struct btdev *dev, const void *data, uint8_t len)
 
 static int cmd_term_big(struct btdev *dev, const void *data, uint8_t len)
 {
-	cmd_status(dev, BT_HCI_ERR_SUCCESS, BT_HCI_CMD_DISCONNECT);
+	cmd_status(dev, BT_HCI_ERR_SUCCESS, BT_HCI_CMD_LE_TERM_BIG);
 
 	return 0;
 }
