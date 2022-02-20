@@ -77,6 +77,7 @@ static const char *supported_options[] = {
 	"NameResolving",
 	"DebugKeys",
 	"ControllerMode",
+	"MaxControllers"
 	"MultiProfile",
 	"FastConnectable",
 	"Privacy",
@@ -353,13 +354,22 @@ static void parse_mode_config(GKeyFile *config, const char *group,
 
 	for (i = 0; i < params_len; ++i) {
 		GError *err = NULL;
-		int val = g_key_file_get_integer(config, group,
-						params[i].val_name, &err);
+		char *str;
+
+		str = g_key_file_get_string(config, group, params[i].val_name,
+									&err);
 		if (err) {
 			DBG("%s", err->message);
 			g_clear_error(&err);
 		} else {
-			info("%s=%d", params[i].val_name, val);
+			char *endptr = NULL;
+			int val;
+
+			val = strtol(str, &endptr, 0);
+			if (!endptr || *endptr != '\0')
+				continue;
+
+			info("%s=%s(%d)", params[i].val_name, str, val);
 
 			val = MAX(val, params[i].min);
 			val = MIN(val, params[i].max);
@@ -777,6 +787,14 @@ static void parse_config(GKeyFile *config)
 		DBG("ControllerMode=%s", str);
 		btd_opts.mode = get_mode(str);
 		g_free(str);
+	}
+
+	val = g_key_file_get_integer(config, "General", "MaxControllers", &err);
+	if (err) {
+		g_clear_error(&err);
+	} else {
+		DBG("MaxControllers=%d", val);
+		btd_opts.max_adapters = val;
 	}
 
 	str = g_key_file_get_string(config, "General", "MultiProfile", &err);

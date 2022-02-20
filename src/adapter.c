@@ -4676,7 +4676,7 @@ static void load_devices(struct btd_adapter *adapter)
 		if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 			error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-			g_error_free(gerr);
+			g_clear_error(&gerr);
 		}
 
 		key_info = get_key_info(key_file, entry->d_name);
@@ -5662,7 +5662,7 @@ static void convert_names_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 	g_key_file_set_string(key_file, "General", "Name", value);
 
@@ -5895,7 +5895,7 @@ static void convert_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	set_device_type(key_file, type);
@@ -6001,7 +6001,7 @@ static void store_sdp_record(char *local, char *peer, int handle, char *value)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	sprintf(handle_str, "0x%8.8X", handle);
@@ -6085,7 +6085,7 @@ static void convert_sdp_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	store_attribute_uuid(key_file, start, end, prim_uuid, uuid);
@@ -6145,7 +6145,7 @@ static void convert_primaries_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	for (service = services; *service; service++) {
@@ -6170,7 +6170,7 @@ static void convert_primaries_entry(char *key, char *value, void *user_data)
 	if (!g_file_set_contents(filename, data, length, &gerr)) {
 		error("Unable set contents for %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	if (device_type < 0)
@@ -6185,7 +6185,7 @@ static void convert_primaries_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 	set_device_type(key_file, device_type);
 
@@ -6241,7 +6241,7 @@ static void convert_ccc_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	sprintf(group, "%hu", handle);
@@ -6297,7 +6297,7 @@ static void convert_gatt_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	sprintf(group, "%hu", handle);
@@ -6352,7 +6352,7 @@ static void convert_proximity_entry(char *key, char *value, void *user_data)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	g_key_file_set_string(key_file, alert, "Level", value);
@@ -6556,7 +6556,7 @@ static void load_config(struct btd_adapter *adapter)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	/* Get alias */
@@ -8214,11 +8214,15 @@ static void store_link_key(struct btd_adapter *adapter,
 
 	snprintf(filename, PATH_MAX, STORAGEDIR "/%s/%s/info",
 			btd_adapter_get_storage_dir(adapter), device_addr);
+	create_file(filename, 0600);
+
 	key_file = g_key_file_new();
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
 		g_error_free(gerr);
+		g_key_file_free(key_file);
+		return;
 	}
 
 	for (i = 0; i < 16; i++)
@@ -8228,8 +8232,6 @@ static void store_link_key(struct btd_adapter *adapter,
 
 	g_key_file_set_integer(key_file, "LinkKey", "Type", type);
 	g_key_file_set_integer(key_file, "LinkKey", "PINLength", pin_length);
-
-	create_file(filename, 0600);
 
 	str = g_key_file_to_data(key_file, &length, NULL);
 	if (!g_file_set_contents(filename, str, length, &gerr)) {
@@ -8311,7 +8313,7 @@ static void store_ltk_group(struct btd_adapter *adapter, const bdaddr_t *peer,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	for (i = 0; i < 16; i++)
@@ -8477,7 +8479,7 @@ static void store_csrk(struct btd_adapter *adapter, const bdaddr_t *peer,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	for (i = 0; i < 16; i++)
@@ -8655,7 +8657,7 @@ static void store_conn_param(struct btd_adapter *adapter, const bdaddr_t *peer,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	g_key_file_set_integer(key_file, "ConnectionParameters",
@@ -8974,6 +8976,11 @@ static int adapter_register(struct btd_adapter *adapter)
 		agent_unref(agent);
 	}
 
+	if (g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL) {
+		adapter->battery_provider_manager =
+			btd_battery_provider_manager_create(adapter);
+	}
+
 	/* Don't start GATT database and advertising managers on
 	 * non-LE controllers.
 	 */
@@ -9006,11 +9013,6 @@ static int adapter_register(struct btd_adapter *adapter)
 			btd_info(adapter->dev_id, "Adv Monitor Manager "
 					"skipped, LE unavailable");
 		}
-	}
-
-	if (g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL) {
-		adapter->battery_provider_manager =
-			btd_battery_provider_manager_create(adapter);
 	}
 
 	db = btd_gatt_database_get_db(adapter->database);
@@ -9314,7 +9316,7 @@ static void remove_keys(struct btd_adapter *adapter,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	if (type == BDADDR_BREDR) {
@@ -9416,7 +9418,7 @@ static bool get_static_addr(struct btd_adapter *adapter)
 								&gerr)) {
 		error("Unable to load key file from %s: (%s)",
 					STORAGEDIR "/addresses", gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 	addrs = g_key_file_get_string_list(file, "Static", mfg, &len, NULL);
 	if (addrs) {
@@ -9805,6 +9807,16 @@ static void read_info_complete(uint8_t status, uint16_t length,
 			goto failed;
 		}
 	} else {
+		struct btd_adapter *tmp;
+
+		tmp = adapter_find(&rp->bdaddr);
+		if (tmp) {
+			btd_error(adapter->dev_id,
+				"Bluetooth address for index %u match index %u",
+				adapter->dev_id, tmp->dev_id);
+			goto failed;
+		}
+
 		bacpy(&adapter->bdaddr, &rp->bdaddr);
 		if (!(adapter->supported_settings & MGMT_SETTING_LE))
 			adapter->bdaddr_type = BDADDR_BREDR;
@@ -10075,6 +10087,13 @@ static void index_added(uint16_t index, uint16_t length, const void *param,
 			"Ignoring index added for an already existing adapter");
 		return;
 	}
+
+	/* Check if at maximum adapters allowed in the system then ignore the
+	 * adapter.
+	 */
+	if (btd_opts.max_adapters &&
+			btd_opts.max_adapters == g_slist_length(adapters))
+		return;
 
 	reset_adv_monitors(index);
 

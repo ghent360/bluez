@@ -543,7 +543,7 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	data_old = g_key_file_to_data(key_file, &length_old, NULL);
@@ -556,7 +556,7 @@ void device_store_cached_name(struct btd_device *dev, const char *name)
 		if (!g_file_set_contents(filename, data, length, &gerr)) {
 			error("Unable set contents for %s: (%s)", filename,
 								gerr->message);
-			g_error_free(gerr);
+			g_clear_error(&gerr);
 		}
 	}
 	g_free(data);
@@ -592,7 +592,7 @@ static void device_store_cached_name_resolve(struct btd_device *dev)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	failed_time = (uint64_t) dev->name_resolve_failed_time;
@@ -2666,7 +2666,7 @@ static void store_gatt_db(struct btd_device *device)
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	/* Remove current attributes since it might have changed */
@@ -3200,6 +3200,28 @@ void device_add_connection(struct btd_device *dev, uint8_t bdaddr_type)
 								"Connected");
 }
 
+static bool device_disappeared(gpointer user_data)
+{
+	struct btd_device *dev = user_data;
+
+	dev->temporary_timer = 0;
+
+	btd_adapter_remove_device(dev->adapter, dev);
+
+	return FALSE;
+}
+
+static void set_temporary_timer(struct btd_device *dev, unsigned int timeout)
+{
+	clear_temporary_timer(dev);
+
+	if (!timeout)
+		return;
+
+	dev->temporary_timer = timeout_add_seconds(timeout, device_disappeared,
+								dev, NULL);
+}
+
 void device_remove_connection(struct btd_device *device, uint8_t bdaddr_type)
 {
 	struct bearer_state *state = get_state(device, bdaddr_type);
@@ -3285,7 +3307,7 @@ void device_remove_connection(struct btd_device *device, uint8_t bdaddr_type)
 						DEVICE_INTERFACE, "Connected");
 
 	if (remove_device)
-		btd_adapter_remove_device(device->adapter, device);
+		set_temporary_timer(device, 0);
 }
 
 guint device_add_disconnect_watch(struct btd_device *device,
@@ -3635,7 +3657,7 @@ static void load_att_info(struct btd_device *device, const char *local,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 	groups = g_key_file_get_groups(key_file, NULL);
 
@@ -4588,28 +4610,6 @@ void device_set_le_support(struct btd_device *device, uint8_t bdaddr_type)
 	device->bdaddr_type = bdaddr_type;
 
 	store_device_info(device);
-}
-
-static bool device_disappeared(gpointer user_data)
-{
-	struct btd_device *dev = user_data;
-
-	dev->temporary_timer = 0;
-
-	btd_adapter_remove_device(dev->adapter, dev);
-
-	return FALSE;
-}
-
-static void set_temporary_timer(struct btd_device *dev, unsigned int timeout)
-{
-	clear_temporary_timer(dev);
-
-	if (!timeout)
-		return;
-
-	dev->temporary_timer = timeout_add_seconds(timeout, device_disappeared,
-								dev, NULL);
 }
 
 void device_update_last_seen(struct btd_device *device, uint8_t bdaddr_type)
@@ -6163,7 +6163,7 @@ void device_store_svc_chng_ccc(struct btd_device *device, uint8_t bdaddr_type,
 	if (!g_key_file_load_from_file(key_file, filename, 0, &gerr)) {
 		error("Unable to load key file from %s: (%s)", filename,
 								gerr->message);
-		g_error_free(gerr);
+		g_clear_error(&gerr);
 	}
 
 	/* for bonded devices this is done on every connection so limit writes
