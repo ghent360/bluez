@@ -27,6 +27,9 @@
 #include "src/shared/mgmt.h"
 #include "src/shared/timeout.h"
 
+#define DBG(_mgmt, _format, arg...) \
+	mgmt_log(_mgmt, "%s:%s() " _format, __FILE__, __func__, ## arg)
+
 struct mgmt {
 	int ref_count;
 	int fd;
@@ -47,6 +50,7 @@ struct mgmt {
 	mgmt_debug_func_t debug_callback;
 	mgmt_destroy_func_t debug_destroy;
 	void *debug_data;
+	bool verbose;
 };
 
 struct mgmt_request {
@@ -177,6 +181,27 @@ static bool request_timeout(void *data)
 	return false;
 }
 
+static void mgmt_log(struct mgmt *mgmt, const char *format, ...)
+{
+	va_list ap;
+
+	if (!mgmt || !format || !mgmt->debug_callback)
+		return;
+
+	va_start(ap, format);
+	util_debug_va(mgmt->debug_callback, mgmt->debug_data, format, ap);
+	va_end(ap);
+}
+
+static void mgmt_hexdump(struct mgmt *mgmt, char dir, const void *data,
+							size_t len)
+{
+	if (!mgmt->verbose)
+		return;
+
+	util_hexdump(dir, data, len, mgmt->debug_callback, mgmt->debug_data);
+}
+
 static bool send_request(struct mgmt *mgmt, struct mgmt_request *request)
 {
 	struct iovec iov;
@@ -187,8 +212,8 @@ static bool send_request(struct mgmt *mgmt, struct mgmt_request *request)
 
 	ret = io_send(mgmt->io, &iov, 1);
 	if (ret < 0) {
-		util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"write failed: %s", strerror(-ret));
+		DBG(mgmt, "write failed: %s", strerror(-ret));
+
 		if (request->callback)
 			request->callback(MGMT_STATUS_FAILED, 0, NULL,
 							request->user_data);
@@ -202,12 +227,9 @@ static bool send_request(struct mgmt *mgmt, struct mgmt_request *request)
 							request,
 							NULL);
 
-	util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"[0x%04x] command 0x%04x",
-				request->index, request->opcode);
+	DBG(mgmt, "[0x%04x] command 0x%04x", request->index, request->opcode);
 
-	util_hexdump('<', request->buf, ret, mgmt->debug_callback,
-							mgmt->debug_data);
+	mgmt_hexdump(mgmt, '<', request->buf, ret);
 
 	queue_push_tail(mgmt->pending_list, request);
 
@@ -283,9 +305,7 @@ static void request_complete(struct mgmt *mgmt, uint8_t status,
 	request = queue_remove_if(mgmt->pending_list,
 					match_request_opcode_index, &match);
 	if (!request) {
-		util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"Unable to find request for opcode 0x%04x",
-				opcode);
+		DBG(mgmt, "Unable to find request for opcode 0x%04x", opcode);
 
 		/* Attempt to remove with no opcode */
 		request = queue_remove_if(mgmt->pending_list,
@@ -362,8 +382,7 @@ static bool can_read_data(struct io *io, void *user_data)
 	if (bytes_read < 0)
 		return false;
 
-	util_hexdump('>', mgmt->buf, bytes_read,
-				mgmt->debug_callback, mgmt->debug_data);
+	mgmt_hexdump(mgmt, '>', mgmt->buf, bytes_read);
 
 	if (bytes_read < MGMT_HDR_SIZE)
 		return true;
@@ -383,8 +402,7 @@ static bool can_read_data(struct io *io, void *user_data)
 		cc = mgmt->buf + MGMT_HDR_SIZE;
 		opcode = btohs(cc->opcode);
 
-		util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"[0x%04x] command 0x%04x complete: 0x%02x",
+		DBG(mgmt, "[0x%04x] command 0x%04x complete: 0x%02x",
 						index, opcode, cc->status);
 
 		request_complete(mgmt, cc->status, opcode, index, length - 3,
@@ -394,15 +412,13 @@ static bool can_read_data(struct io *io, void *user_data)
 		cs = mgmt->buf + MGMT_HDR_SIZE;
 		opcode = btohs(cs->opcode);
 
-		util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"[0x%04x] command 0x%02x status: 0x%02x",
+		DBG(mgmt, "[0x%04x] command 0x%02x status: 0x%02x",
 						index, opcode, cs->status);
 
 		request_complete(mgmt, cs->status, opcode, index, 0, NULL);
 		break;
 	default:
-		util_debug(mgmt->debug_callback, mgmt->debug_data,
-				"[0x%04x] event 0x%04x", index, event);
+		DBG(mgmt, "[0x%04x] event 0x%04x", index, event);
 
 		process_notify(mgmt, event, index, length,
 						mgmt->buf + MGMT_HDR_SIZE);
@@ -584,6 +600,14 @@ bool mgmt_set_debug(struct mgmt *mgmt, mgmt_debug_func_t callback,
 	mgmt->debug_data = user_data;
 
 	return true;
+}
+
+void mgmt_set_verbose(struct mgmt *mgmt, bool value)
+{
+	if (!mgmt)
+		return;
+
+	mgmt->verbose = value;
 }
 
 bool mgmt_set_close_on_unref(struct mgmt *mgmt, bool do_close)
