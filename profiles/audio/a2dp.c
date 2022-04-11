@@ -829,9 +829,6 @@ static void store_remote_seps(struct a2dp_channel *chan)
 	char *data;
 	gsize length = 0;
 
-	if (queue_isempty(chan->seps))
-		return;
-
 	ba2str(device_get_address(device), dst_addr);
 
 	snprintf(filename, PATH_MAX, STORAGEDIR "/%s/cache/%s",
@@ -872,12 +869,10 @@ static void store_remote_seps(struct a2dp_channel *chan)
 static void invalidate_remote_cache(struct a2dp_setup *setup,
 						struct avdtp_error *err)
 {
-	if (err->category == AVDTP_ERRNO ||
-			err->err.error_code != AVDTP_UNSUPPORTED_CONFIGURATION)
+	if (err->category == AVDTP_ERRNO)
 		return;
 
-	/* Attempt to unregister Remote SEP if configuration
-	 * fails with Unsupported Configuration and it was
+	/* Attempt to unregister Remote SEP if configuration fails and it was
 	 * loaded from cache.
 	 */
 	if (setup->rsep && setup->rsep->from_cache) {
@@ -2076,6 +2071,11 @@ static struct a2dp_remote_sep *register_remote_sep(void *data, void *user_data)
 	if (sep)
 		return sep;
 
+	if (!avdtp_get_codec(rsep)) {
+		error("Unable to get remote sep codec");
+		return NULL;
+	}
+
 	sep = new0(struct a2dp_remote_sep, 1);
 	sep->chan = chan;
 	sep->sep = rsep;
@@ -2150,6 +2150,7 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 	struct avdtp_remote_sep *rsep;
 	uint8_t lseid, rseid;
 	char *value;
+	bool update = false;
 
 	if (!seids)
 		return;
@@ -2208,9 +2209,18 @@ static void load_remote_sep(struct a2dp_channel *chan, GKeyFile *key_file,
 		}
 
 		sep = register_remote_sep(rsep, chan);
-		if (sep)
-			sep->from_cache = true;
+		if (!sep) {
+			avdtp_unregister_remote_sep(chan->session, rsep);
+			update = true;
+			continue;
+		}
+
+		sep->from_cache = true;
 	}
+
+	/* Update cache */
+	if (update)
+		store_remote_seps(chan);
 
 	value = g_key_file_get_string(key_file, "Endpoints", "LastUsed", NULL);
 	if (!value)
@@ -2668,8 +2678,6 @@ struct a2dp_sep *a2dp_add_sep(struct btd_adapter *adapter, uint8_t type,
 	sep->codec = codec;
 	sep->type = type;
 	sep->delay_reporting = delay_reporting;
-	sep->user_data = user_data;
-	sep->destroy = destroy;
 
 	if (type == AVDTP_SEP_TYPE_SOURCE) {
 		l = &server->sources;
@@ -2712,6 +2720,9 @@ struct a2dp_sep *a2dp_add_sep(struct btd_adapter *adapter, uint8_t type,
 
 add:
 	*l = g_slist_append(*l, sep);
+
+	sep->user_data = user_data;
+	sep->destroy = destroy;
 
 	if (err)
 		*err = 0;

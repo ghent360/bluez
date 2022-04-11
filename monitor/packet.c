@@ -2816,7 +2816,8 @@ static const struct {
 static void print_le_states(const uint8_t *states_array)
 {
 	uint64_t mask, states = 0;
-	int i, n;
+	int i = 0;
+	size_t n = 0;
 
 	for (i = 0; i < 8; i++)
 		states |= ((uint64_t) states_array[i]) << (i * 8);
@@ -2828,12 +2829,12 @@ static void print_le_states(const uint8_t *states_array)
 	for (i = 0; le_states_comb_table[i].states; i++) {
 		uint64_t val = (((uint64_t) 1) << le_states_comb_table[i].bit);
 		const char *str[3] = { NULL, };
-		int num = 0;
+		size_t num = 0;
 
 		if (!(states & val))
 			continue;
 
-		for (n = 0; n < 16; n++) {
+		for (n = 0; n < ARRAY_SIZE(le_states_desc_table); n++) {
 			if (le_states_comb_table[i].states & (1 << n))
 				str[num++] = le_states_desc_table[n].str;
 		}
@@ -10886,6 +10887,25 @@ static void le_req_sca_complete_evt(const void *data, uint8_t size)
 	print_sca(evt->sca);
 }
 
+static void le_big_info_evt(const void *data, uint8_t size)
+{
+	const struct bt_hci_evt_le_big_info_adv_report *evt = data;
+
+	print_field("Sync Handle: 0x%4.4x", evt->sync_handle);
+	print_field("Number BIS: %u", evt->num_bis);
+	print_field("NSE: %u", evt->nse);
+	print_slot_125("ISO Interval", evt->iso_interval);
+	print_field("BN: %u", evt->bn);
+	print_field("PTO: %u", evt->bn);
+	print_field("IRC: %u", evt->irc);
+	print_field("Maximum PDU: %u", evt->max_pdu);
+	print_usec_interval("SDU Interval", evt->sdu_interval);
+	print_field("Maximum SDU: %u", evt->max_sdu);
+	print_le_phy("PHY", evt->phy);
+	print_framing(evt->framing);
+	print_field("Encryption: 0x%02x", evt->encryption);
+}
+
 struct subevent_data {
 	uint8_t subevent;
 	const char *str;
@@ -11004,6 +11024,10 @@ static const struct subevent_data le_meta_event_table[] = {
 				le_req_sca_complete_evt,
 				sizeof(
 				struct bt_hci_evt_le_req_peer_sca_complete)},
+	{ BT_HCI_EVT_LE_BIG_INFO_ADV_REPORT,
+		"LE Broadcast Isochronous Group Info Advertising Report",
+		le_big_info_evt,
+		sizeof(struct bt_hci_evt_le_big_info_adv_report) },
 	{ }
 };
 
