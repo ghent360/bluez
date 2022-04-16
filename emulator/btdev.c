@@ -1366,6 +1366,11 @@ static void auth_complete(struct btdev_conn *conn, uint8_t status)
 	ev.status = status;
 
 	send_event(conn->dev, BT_HCI_EVT_AUTH_COMPLETE, &ev, sizeof(ev));
+
+	conn->dev->ssp_status = 0;
+	conn->dev->ssp_auth_complete = false;
+	conn->link->dev->ssp_status = 0;
+	conn->link->dev->ssp_auth_complete = false;
 }
 
 static int cmd_link_key_reply_complete(struct btdev *dev, const void *data,
@@ -5855,7 +5860,7 @@ static void le_cis_estabilished(struct btdev *dev, struct btdev_conn *conn,
 	memset(&evt, 0, sizeof(evt));
 
 	evt.status = status;
-	evt.conn_handle = cpu_to_le16(conn->handle);
+	evt.conn_handle = conn ? cpu_to_le16(conn->handle) : 0x0000;
 
 	if (!evt.status) {
 		struct btdev *remote = conn->link->dev;
@@ -5865,10 +5870,10 @@ static void le_cis_estabilished(struct btdev *dev, struct btdev_conn *conn,
 				sizeof(remote->le_cig.params.c_interval));
 		memcpy(evt.cis_sync_delay, remote->le_cig.params.p_interval,
 				sizeof(remote->le_cig.params.p_interval));
-		memcpy(evt.c_latency, &remote->le_cig.params.c_latency,
-				sizeof(remote->le_cig.params.c_latency));
-		memcpy(evt.p_latency, &remote->le_cig.params.p_latency,
-				sizeof(remote->le_cig.params.p_latency));
+		memcpy(evt.c_latency, &remote->le_cig.params.c_interval,
+				sizeof(remote->le_cig.params.c_interval));
+		memcpy(evt.p_latency, &remote->le_cig.params.p_interval,
+				sizeof(remote->le_cig.params.p_interval));
 		evt.c_phy = remote->le_cig.cis[0].c_phy;
 		evt.p_phy = remote->le_cig.cis[0].p_phy;
 		evt.nse = 0x01;
