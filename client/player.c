@@ -81,10 +81,13 @@ static GList *transports = NULL;
 struct transport {
 	int sk;
 	int mtu[2];
+	char *filename;
+	int fd;
 	struct io *io;
 	uint32_t seq;
 } transport = {
 	.sk = -1,
+	.fd = -1,
 };
 
 static void endpoint_unregister(void *data)
@@ -572,11 +575,13 @@ static void print_iter(const char *label, const char *name,
 		break;
 	case DBUS_TYPE_UINT32:
 		dbus_message_iter_get_basic(iter, &valu32);
-		bt_shell_printf("%s%s: 0x%06x\n", label, name, valu32);
+		bt_shell_printf("%s%s: 0x%08x (%u)\n", label, name, valu32,
+								valu32);
 		break;
 	case DBUS_TYPE_UINT16:
 		dbus_message_iter_get_basic(iter, &valu16);
-		bt_shell_printf("%s%s: 0x%04x\n", label, name, valu16);
+		bt_shell_printf("%s%s: 0x%04x (%u)\n", label, name, valu16,
+								valu16);
 		break;
 	case DBUS_TYPE_INT16:
 		dbus_message_iter_get_basic(iter, &vals16);
@@ -2217,7 +2222,7 @@ static bool transport_disconnected(struct io *io, void *user_data)
 static bool transport_recv(struct io *io, void *user_data)
 {
 	uint8_t buf[1024];
-	int ret;
+	int ret, len;
 
 	ret = read(io_get_fd(io), buf, sizeof(buf));
 	if (ret < 0) {
@@ -2229,6 +2234,13 @@ static bool transport_recv(struct io *io, void *user_data)
 	bt_shell_printf("[seq %d] recv: %u bytes\n", transport.seq, ret);
 
 	transport.seq++;
+
+	if (transport.fd) {
+		len = write(transport.fd, buf, ret);
+		if (len < 0)
+			bt_shell_printf("Unable to write: %s (%d)",
+						strerror(errno), -errno);
+	}
 
 	return true;
 }
@@ -2449,13 +2461,17 @@ static void cmd_release_transport(int argc, char *argv[])
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
 }
 
-static int open_file(const char *filename)
+static int open_file(const char *filename, int flags)
 {
 	int fd = -1;
 
 	bt_shell_printf("Opening %s ...\n", filename);
 
-	fd = open(filename, O_RDONLY);
+	if (flags & O_CREAT)
+		fd = open(filename, flags, 0755);
+	else
+		fd = open(filename, flags);
+
 	if (fd <= 0)
 		bt_shell_printf("Can't open file %s: %s\n", filename,
 						strerror(errno));
@@ -2512,7 +2528,7 @@ static void cmd_send_transport(int argc, char *argv[])
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 	}
 
-	fd = open_file(argv[1]);
+	fd = open_file(argv[1], O_RDONLY);
 
 	bt_shell_printf("Sending ...\n");
 	err = transport_send(fd);
@@ -2523,6 +2539,83 @@ static void cmd_send_transport(int argc, char *argv[])
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void transport_close(void)
+{
+	if (transport.fd < 0)
+		return;
+
+	close(transport.fd);
+	transport.fd = -1;
+
+	free(transport.filename);
+	transport.filename = NULL;
+}
+
+static void cmd_receive_transport(int argc, char *argv[])
+{
+	if (argc == 1) {
+		bt_shell_printf("Filename: %s\n", transport.filename);
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
+
+	transport_close();
+
+	transport.fd = open_file(argv[1], O_RDWR | O_CREAT);
+	if (transport.fd < 0)
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+
+	transport.filename = strdup(argv[1]);
+
+	bt_shell_printf("Filename: %s\n", transport.filename);
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void volume_callback(const DBusError *error, void *user_data)
+{
+	if (dbus_error_is_set(error)) {
+		bt_shell_printf("Failed to set Volume: %s\n", error->name);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	bt_shell_printf("Changing Volume succeeded\n");
+
+	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+}
+
+static void cmd_volume_transport(int argc, char *argv[])
+{
+	GDBusProxy *proxy;
+	char *endptr = NULL;
+	int volume;
+
+	proxy = g_dbus_proxy_lookup(transports, NULL, argv[1],
+					BLUEZ_MEDIA_TRANSPORT_INTERFACE);
+	if (!proxy) {
+		bt_shell_printf("Transport %s not found\n", argv[1]);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+
+	if (argc == 2) {
+		print_property(proxy, "Volume");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	volume = strtol(argv[2], &endptr, 0);
+	if (!endptr || *endptr != '\0' || volume > UINT16_MAX) {
+		bt_shell_printf("Invalid argument: %s\n", argv[2]);
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
+
+	if (!g_dbus_proxy_set_property_basic(proxy, "Volume", DBUS_TYPE_UINT16,
+						&volume, volume_callback,
+						NULL, NULL)) {
+		bt_shell_printf("Failed release transport\n");
+		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+	}
 }
 
 static const struct bt_shell_menu transport_menu = {
@@ -2542,6 +2635,11 @@ static const struct bt_shell_menu transport_menu = {
 						transport_generator },
 	{ "send",        "<filename>",	cmd_send_transport,
 						"Send contents of a file" },
+	{ "receive",     "[filename]",	cmd_receive_transport,
+						"Get/Set file to receive" },
+	{ "volume",      "<transport> [value]",	cmd_volume_transport,
+						"Get/Set transport volume",
+						transport_generator },
 	{} },
 };
 
@@ -2567,4 +2665,5 @@ void player_add_submenu(void)
 void player_remove_submenu(void)
 {
 	g_dbus_client_unref(client);
+	transport_close();
 }
