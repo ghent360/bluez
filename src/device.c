@@ -158,6 +158,7 @@ struct bearer_state {
 	bool bonded;
 	bool connected;
 	bool svc_resolved;
+	bool initiator;
 };
 
 struct csrk_info {
@@ -178,6 +179,7 @@ struct btd_device {
 	uint8_t		conn_bdaddr_type;
 	bdaddr_t	bdaddr;
 	uint8_t		bdaddr_type;
+	bool		rpa;
 	char		*path;
 	bool		bredr;
 	bool		le;
@@ -295,6 +297,16 @@ static struct bearer_state *get_state(struct btd_device *dev,
 		return &dev->bredr_state;
 	else
 		return &dev->le_state;
+}
+
+static bool get_initiator(struct btd_device *dev)
+{
+	if (dev->le_state.connected)
+		return dev->le_state.initiator;
+	if (dev->bredr_state.connected)
+		return dev->bredr_state.initiator;
+
+	return false;
 }
 
 static GSList *find_service_with_profile(GSList *list, struct btd_profile *p)
@@ -1449,6 +1461,12 @@ static bool device_get_wake_support(struct btd_device *device)
 
 void device_set_wake_support(struct btd_device *device, bool wake_support)
 {
+	if (device->rpa && !btd_adapter_has_exp_feature(device->adapter,
+						EXP_FEAT_RPA_RESOLUTION)) {
+		warn("Unable to set wake_support without RPA resolution");
+		return;
+	}
+
 	device->wake_support = wake_support;
 
 	/* If wake configuration has not been made yet, set the initial
@@ -1568,6 +1586,8 @@ static void dev_property_set_wake_allowed(const GDBusPropertyTable *property,
 		return;
 	}
 
+	dbus_message_iter_get_basic(value, &b);
+
 	/* Emit busy or success depending on current value. */
 	if (b == device->pending_wake_allowed) {
 		if (device->wake_allowed == device->pending_wake_allowed)
@@ -1580,7 +1600,6 @@ static void dev_property_set_wake_allowed(const GDBusPropertyTable *property,
 		return;
 	}
 
-	dbus_message_iter_get_basic(value, &b);
 	device_set_wake_override(device, b);
 	device_set_wake_allowed(device, b, id);
 }
@@ -3106,8 +3125,11 @@ static DBusMessage *cancel_pairing(DBusConnection *conn, DBusMessage *msg,
 
 	DBG("");
 
-	if (!req)
+	if (!req) {
+		btd_adapter_remove_bonding(device->adapter, &device->bdaddr,
+						device->bdaddr_type);
 		return btd_error_does_not_exist(msg);
+	}
 
 	device_cancel_bonding(device, MGMT_STATUS_CANCELLED);
 
@@ -3252,6 +3274,7 @@ void device_remove_connection(struct btd_device *device, uint8_t bdaddr_type)
 		return;
 
 	state->connected = false;
+	state->initiator = false;
 	device->general_connect = FALSE;
 
 	device_set_svc_refreshed(device, false);
@@ -4165,7 +4188,7 @@ done:
 	}
 
 	/* Notify driver about the new connection */
-	service_accept(service);
+	service_accept(service, get_initiator(device));
 }
 
 static void device_add_gatt_services(struct btd_device *device)
@@ -4187,7 +4210,7 @@ static void device_accept_gatt_profiles(struct btd_device *device)
 	GSList *l;
 
 	for (l = device->services; l != NULL; l = g_slist_next(l))
-		service_accept(l->data);
+		service_accept(l->data, get_initiator(device));
 }
 
 static void device_remove_gatt_service(struct btd_device *device,
@@ -4579,10 +4602,17 @@ void device_set_class(struct btd_device *device, uint32_t class)
 						DEVICE_INTERFACE, "Icon");
 }
 
+void device_set_rpa(struct btd_device *device, bool value)
+{
+	device->rpa = value;
+}
+
 void device_update_addr(struct btd_device *device, const bdaddr_t *bdaddr,
 							uint8_t bdaddr_type)
 {
 	bool auto_connect = device->auto_connect;
+
+	device_set_rpa(device, true);
 
 	if (!bacmp(bdaddr, &device->bdaddr) &&
 					bdaddr_type == device->bdaddr_type)
@@ -5895,6 +5925,8 @@ int device_connect_le(struct btd_device *dev)
 
 	/* Keep this, so we can cancel the connection */
 	dev->att_io = io;
+	/* Set as initiator */
+	dev->le_state.initiator = true;
 
 	return 0;
 }
