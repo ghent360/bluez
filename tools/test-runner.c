@@ -47,12 +47,14 @@ static int test_argc;
 
 static bool run_auto = false;
 static bool start_dbus = false;
+static bool start_dbus_session;
 static bool start_daemon = false;
 static bool start_emulator = false;
 static bool start_monitor = false;
 static int num_devs = 0;
 static const char *qemu_binary = NULL;
 static const char *kernel_image = NULL;
+static bool audio_support;
 
 static const char *qemu_table[] = {
 	"qemu-system-x86_64",
@@ -249,21 +251,43 @@ static void start_qemu(void)
 				"rootfstype=9p "
 				"rootflags=trans=virtio,version=9p2000.L "
 				"acpi=off pci=noacpi noapic quiet ro init=%s "
-				"bluetooth.enable_ecred=1"
+				"bluetooth.enable_ecred=1 "
 				"TESTHOME=%s TESTDBUS=%u TESTDAEMON=%u "
+				"TESTDBUSSESSION=%u XDG_RUNTIME_DIR=/run/user/0 "
+				"TESTAUDIO=%u "
 				"TESTMONITOR=%u TESTEMULATOR=%u TESTDEVS=%d "
 				"TESTAUTO=%u TESTARGS=\'%s\'",
 				initcmd, cwd, start_dbus, start_daemon,
+				start_dbus_session, audio_support,
 				start_monitor, start_emulator, num_devs,
 				run_auto, testargs);
 
 	argv = alloca(sizeof(qemu_argv) +
+				(audio_support ? 4 : 0) +
 				(sizeof(char *) * (4 + (num_devs * 4))));
 	memcpy(argv, qemu_argv, sizeof(qemu_argv));
 
 	pos = (sizeof(qemu_argv) / sizeof(char *)) - 1;
 
 	argv[0] = (char *) qemu_binary;
+
+	if (audio_support) {
+		char *xdg_runtime_dir, *audiodev;
+
+		xdg_runtime_dir = getenv("XDG_RUNTIME_DIR");
+		if (!xdg_runtime_dir) {
+			fprintf(stderr, "XDG_RUNTIME_DIR not set\n");
+			exit(1);
+		}
+		audiodev = alloca(40 + strlen(xdg_runtime_dir));
+		sprintf(audiodev, "id=audio,driver=pa,server=%s/pulse/native",
+				xdg_runtime_dir);
+
+		argv[pos++] = "-audiodev";
+		argv[pos++] = audiodev;
+		argv[pos++] = "-device";
+		argv[pos++] = "AC97,audiodev=audio";
+	}
 
 	argv[pos++] = "-kernel";
 	argv[pos++] = (char *) kernel_image;
@@ -420,19 +444,69 @@ static void create_dbus_system_conf(void)
 	mkdir("/run/dbus", 0755);
 }
 
-static pid_t start_dbus_daemon(void)
+static void create_dbus_session_conf(void)
+{
+	FILE *fp;
+
+	fp = fopen("/etc/dbus-1/session.conf", "we");
+	if (!fp)
+		return;
+
+	fputs("<!DOCTYPE busconfig PUBLIC "
+		"\"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\" "
+		"\"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n", fp);
+	fputs("<busconfig>\n", fp);
+	fputs("<type>session</type>\n", fp);
+	fputs("<listen>unix:path=/run/user/0/bus</listen>\n", fp);
+	fputs("<policy context=\"default\">\n", fp);
+	fputs("<allow user=\"*\"/>\n", fp);
+	fputs("<allow own=\"*\"/>\n", fp);
+	fputs("<allow send_type=\"method_call\"/>\n", fp);
+	fputs("<allow send_type=\"signal\"/>\n", fp);
+	fputs("<allow send_type=\"method_return\"/>\n", fp);
+	fputs("<allow send_type=\"error\"/>\n", fp);
+	fputs("<allow receive_type=\"method_call\"/>\n", fp);
+	fputs("<allow receive_type=\"signal\"/>\n", fp);
+	fputs("<allow receive_type=\"method_return\"/>\n", fp);
+	fputs("<allow receive_type=\"error\"/>\n", fp);
+	fputs("</policy>\n", fp);
+	fputs("</busconfig>\n", fp);
+
+	fclose(fp);
+
+	if (symlink("/etc/dbus-1/session.conf",
+				"/usr/share/dbus-1/session.conf") < 0)
+		perror("Failed to create session.conf symlink");
+
+	if (mkdir("/run/user", 0755) < 0) {
+		fprintf(stderr, "unable to create /run/user directory\n");
+		return;
+	}
+	if (mkdir("/run/user/0", 0755) < 0) {
+		fprintf(stderr, "unable to create /run/user/0 directory\n");
+		return;
+	}
+}
+
+static pid_t start_dbus_daemon(bool session)
 {
 	char *argv[3], *envp[1];
 	pid_t pid;
 	int i;
+	char *bus_type = session ? "session" : "system";
+	char *socket_path = session ?
+			"/run/user/0/bus" : "/run/dbus/system_bus_socket";
 
 	argv[0] = "/usr/bin/dbus-daemon";
-	argv[1] = "--system";
+	if (session)
+		argv[1] = "--session";
+	else
+		argv[1] = "--system";
 	argv[2] = NULL;
 
 	envp[0] = NULL;
 
-	printf("Starting D-Bus daemon\n");
+	printf("Starting D-Bus %s daemon\n", bus_type);
 
 	pid = fork();
 	if (pid < 0) {
@@ -445,13 +519,13 @@ static pid_t start_dbus_daemon(void)
 		exit(EXIT_SUCCESS);
 	}
 
-	printf("D-Bus daemon process %d created\n", pid);
+	printf("D-Bus %s daemon process %d created\n", bus_type, pid);
 
 	for (i = 0; i < 20; i++) {
 		struct stat st;
 
-		if (!stat("/run/dbus/system_bus_socket", &st)) {
-			printf("Found D-Bus daemon socket\n");
+		if (!stat(socket_path, &st)) {
+			printf("Found D-Bus %s daemon socket\n", bus_type);
 			return pid;
 		}
 
@@ -661,12 +735,70 @@ static pid_t start_btvirt(const char *home)
 	return pid;
 }
 
+static void trigger_udev(void)
+{
+	char *argv[3], *envp[1];
+	pid_t pid;
+
+	argv[0] = "/bin/udevadm";
+	argv[1] = "trigger";
+	argv[2] = NULL;
+
+	envp[0] = NULL;
+
+	printf("Triggering udev events\n");
+
+	pid = fork();
+	if (pid < 0) {
+		perror("Failed to fork new process");
+		return;
+	}
+
+	if (pid == 0) {
+		execve(argv[0], argv, envp);
+		exit(EXIT_SUCCESS);
+	}
+
+	printf("udev trigger process %d created\n", pid);
+}
+
+static pid_t start_udevd(void)
+{
+	char *argv[2], *envp[1];
+	pid_t pid;
+
+	argv[0] = "/lib/systemd/systemd-udevd";
+	argv[1] = NULL;
+
+	envp[0] = NULL;
+
+	printf("Starting udevd daemon\n");
+
+	pid = fork();
+	if (pid < 0) {
+		perror("Failed to fork new process");
+		return -1;
+	}
+
+	if (pid == 0) {
+		execve(argv[0], argv, envp);
+		exit(EXIT_SUCCESS);
+	}
+
+	printf("udevd daemon process %d created\n", pid);
+
+	trigger_udev();
+
+	return pid;
+}
+
 static void run_command(char *cmdname, char *home)
 {
 	char *argv[9], *envp[3];
 	int pos = 0, idx = 0;
 	int serial_fd;
-	pid_t pid, dbus_pid, daemon_pid, monitor_pid, emulator_pid;
+	pid_t pid, dbus_pid, daemon_pid, monitor_pid, emulator_pid,
+	      dbus_session_pid, udevd_pid;
 
 	if (num_devs) {
 		const char *node = "/dev/ttyS1";
@@ -682,11 +814,22 @@ static void run_command(char *cmdname, char *home)
 	} else
 		serial_fd = -1;
 
+	if (audio_support)
+		udevd_pid = start_udevd();
+	else
+		udevd_pid = -1;
+
 	if (start_dbus) {
 		create_dbus_system_conf();
-		dbus_pid = start_dbus_daemon();
+		dbus_pid = start_dbus_daemon(false);
 	} else
 		dbus_pid = -1;
+
+	if (start_dbus_session) {
+		create_dbus_session_conf();
+		dbus_session_pid = start_dbus_daemon(true);
+	} else
+		dbus_session_pid = -1;
 
 	if (start_daemon)
 		daemon_pid = start_bluetooth_daemon(home);
@@ -780,8 +923,13 @@ start_next:
 			printf("Process %d continued\n", corpse);
 
 		if (corpse == dbus_pid) {
-			printf("D-Bus daemon terminated\n");
+			printf("D-Bus system daemon terminated\n");
 			dbus_pid = -1;
+		}
+
+		if (corpse == dbus_session_pid) {
+			printf("D-Bus session daemon terminated\n");
+			dbus_session_pid = -1;
 		}
 
 		if (corpse == daemon_pid) {
@@ -799,6 +947,11 @@ start_next:
 			monitor_pid = -1;
 		}
 
+		if (corpse == udevd_pid) {
+			printf("udevd terminated\n");
+			udevd_pid = -1;
+		}
+
 		if (corpse == pid)
 			break;
 	}
@@ -814,11 +967,17 @@ start_next:
 	if (dbus_pid > 0)
 		kill(dbus_pid, SIGTERM);
 
+	if (dbus_session_pid > 0)
+		kill(dbus_session_pid, SIGTERM);
+
 	if (emulator_pid > 0)
 		kill(dbus_pid, SIGTERM);
 
 	if (monitor_pid > 0)
 		kill(monitor_pid, SIGTERM);
+
+	if (udevd_pid > 0)
+		kill(udevd_pid, SIGTERM);
 
 	if (serial_fd >= 0) {
 		close(serial_fd);
@@ -874,8 +1033,14 @@ static void run_tests(void)
 
 	ptr = strstr(cmdline, "TESTDBUS=1");
 	if (ptr) {
-		printf("D-Bus daemon requested\n");
+		printf("D-Bus system daemon requested\n");
 		start_dbus = true;
+	}
+
+	ptr = strstr(cmdline, "TESTDBUSSESSION=1");
+	if (ptr) {
+		printf("D-Bus session daemon requested\n");
+		start_dbus_session = true;
 	}
 
 	ptr = strstr(cmdline, "TESTDAEMON=1");
@@ -896,6 +1061,12 @@ static void run_tests(void)
 		start_emulator = true;
 	}
 
+	ptr = strstr(cmdline, "TESTAUDIO=1");
+	if (ptr) {
+		printf("Audio support requested\n");
+		audio_support = true;
+	}
+
 	ptr = strstr(cmdline, "TESTHOME=");
 	if (ptr) {
 		home = ptr + 4;
@@ -914,13 +1085,15 @@ static void usage(void)
 	printf("\ttest-runner [options] [--] <command> [args]\n");
 	printf("Options:\n"
 		"\t-a, --auto             Find tests and run them\n"
-		"\t-b, --dbus             Start D-Bus daemon\n"
+		"\t-b, --dbus             Start D-Bus system daemon\n"
+		"\t-s, --dbus-session     Start D-Bus session daemon\n"
 		"\t-d, --daemon           Start bluetoothd\n"
 		"\t-m, --monitor          Start btmon\n"
 		"\t-l, --emulator         Start btvirt\n"
 		"\t-u, --unix [path]      Provide serial device\n"
 		"\t-q, --qemu <path>      QEMU binary\n"
 		"\t-k, --kernel <image>   Kernel image (bzImage)\n"
+		"\t-A, --audio            Add audio support\n"
 		"\t-h, --help             Show help options\n");
 }
 
@@ -928,12 +1101,14 @@ static const struct option main_options[] = {
 	{ "all",     no_argument,       NULL, 'a' },
 	{ "auto",    no_argument,       NULL, 'a' },
 	{ "dbus",    no_argument,       NULL, 'b' },
+	{ "dbus-session", no_argument,  NULL, 's' },
 	{ "unix",    no_argument,       NULL, 'u' },
 	{ "daemon",  no_argument,       NULL, 'd' },
 	{ "emulator", no_argument,      NULL, 'l' },
 	{ "monitor", no_argument,       NULL, 'm' },
 	{ "qemu",    required_argument, NULL, 'q' },
 	{ "kernel",  required_argument, NULL, 'k' },
+	{ "audio",   no_argument,       NULL, 'A' },
 	{ "version", no_argument,       NULL, 'v' },
 	{ "help",    no_argument,       NULL, 'h' },
 	{ }
@@ -953,7 +1128,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "aubdlmq:k:vh", main_options,
+		opt = getopt_long(argc, argv, "aubdslmq:k:Avh", main_options,
 								NULL);
 		if (opt < 0)
 			break;
@@ -967,6 +1142,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'b':
 			start_dbus = true;
+			break;
+		case 's':
+			start_dbus_session = true;
 			break;
 		case 'd':
 			start_dbus = true;
@@ -983,6 +1161,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'k':
 			kernel_image = optarg;
+			break;
+		case 'A':
+			audio_support = true;
 			break;
 		case 'v':
 			printf("%s\n", VERSION);

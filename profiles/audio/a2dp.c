@@ -1843,6 +1843,11 @@ static int a2dp_reconfig(struct a2dp_channel *chan, const char *sender,
 	GSList *l;
 	int err;
 
+	/* Check SEP not used by a different session */
+	if (lsep->stream && chan->session &&
+	    !avdtp_has_stream(chan->session, lsep->stream))
+		return -EBUSY;
+
 	setup = a2dp_setup_get(chan->session);
 	if (!setup)
 		return -ENOMEM;
@@ -1871,8 +1876,10 @@ static int a2dp_reconfig(struct a2dp_channel *chan, const char *sender,
 		if (tmp->stream) {
 			/* Only allow switching sep from the same sender */
 			if (strcmp(sender, tmp->endpoint->get_name(tmp,
-							tmp->user_data)))
-				return -EPERM;
+							tmp->user_data))) {
+				err = -EPERM;
+				goto fail;
+			}
 
 			/* Check if stream is for the channel */
 			if (!avdtp_has_stream(chan->session, tmp->stream))
