@@ -541,6 +541,12 @@ static const struct iovec send_16_2_1 = {
 	.iov_len = sizeof(data_16_2_1),
 };
 
+static const uint8_t data_48_2_1[100] = { [0 ... 99] = 0xff };
+static const struct iovec send_48_2_1 = {
+	.iov_base = (void *)data_48_2_1,
+	.iov_len = sizeof(data_48_2_1),
+};
+
 static const struct iso_client_data connect_16_2_1_send = {
 	.qos = QOS_16_2_1,
 	.expect_err = 0,
@@ -567,10 +573,25 @@ static const struct iso_client_data connect_16_2_1_defer_send = {
 	.defer = true,
 };
 
+static const struct iso_client_data connect_48_2_1_defer_send = {
+	.qos = QOS_48_2_1,
+	.expect_err = 0,
+	.send = &send_16_2_1,
+	.defer = true,
+};
+
 static const struct iso_client_data listen_16_2_1_defer_recv = {
 	.qos = QOS_16_2_1,
 	.expect_err = 0,
 	.recv = &send_16_2_1,
+	.server = true,
+	.defer = true,
+};
+
+static const struct iso_client_data listen_48_2_1_defer_recv = {
+	.qos = QOS_48_2_1,
+	.expect_err = 0,
+	.recv = &send_48_2_1,
 	.server = true,
 	.defer = true,
 };
@@ -966,7 +987,7 @@ static bool check_io_qos(const struct bt_iso_io_qos *io1,
 		return false;
 	}
 
-	if (io1->sdu != io2->sdu) {
+	if (io1->sdu && io2->sdu && io1->sdu != io2->sdu) {
 		tester_warn("Unexpected IO SDU: %u != %u", io1->sdu, io2->sdu);
 		return false;
 	}
@@ -1233,6 +1254,19 @@ static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func)
 	}
 
 	if (isodata->defer) {
+		int defer;
+		socklen_t len;
+
+		/* Check if socket has DEFER_SETUP set */
+		len = sizeof(defer);
+		if (getsockopt(sk, SOL_BLUETOOTH, BT_DEFER_SETUP, &defer,
+				&len) < 0) {
+			tester_warn("getsockopt: %s (%d)", strerror(errno),
+								errno);
+			tester_test_failed();
+			return;
+		}
+
 		memset(&pfd, 0, sizeof(pfd));
 		pfd.fd = sk;
 		pfd.events = POLLOUT;
@@ -1430,7 +1464,7 @@ static void setup_listen(struct test_data *data, uint8_t num, GIOFunc func)
 		client = hciemu_get_client(data->hciemu, 0);
 		host = hciemu_client_host(client);
 
-		bthost_set_cig_params(host, 0x01, 0x01);
+		bthost_set_cig_params(host, 0x01, 0x01, &isodata->qos);
 		bthost_create_cis(host, 257, data->acl_handle);
 	}
 }
@@ -1674,7 +1708,15 @@ int main(int argc, char *argv[])
 							setup_powered,
 							test_connect);
 
+	test_iso("ISO 48_2_1 Defer Send - Success", &connect_48_2_1_defer_send,
+							setup_powered,
+							test_connect);
+
 	test_iso("ISO Defer Receive - Success", &listen_16_2_1_defer_recv,
+						setup_powered, test_listen);
+
+	test_iso("ISO 48_2_1 Defer Receive - Success",
+						&listen_48_2_1_defer_recv,
 						setup_powered, test_listen);
 
 	test_iso("ISO Defer Reject - Success", &listen_16_2_1_defer_reject,
