@@ -1047,15 +1047,21 @@ static bool parse_secondary(DBusMessageIter *iter,
 	const char *str;
 	struct adv_secondary *sec;
 
+	if (!iter) {
+		/* Reset secondary channels */
+		client->flags &= ~MGMT_ADV_FLAG_SEC_MASK;
+		return true;
+	}
+
 	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_STRING)
 		return false;
 
 	/* Reset secondary channels before parsing */
-	client->flags &= 0xfe00;
+	client->flags &= ~MGMT_ADV_FLAG_SEC_MASK;
 
 	dbus_message_iter_get_basic(iter, &str);
 
-	for (sec = secondary; sec && sec->name; sec++) {
+	for (sec = secondary; sec->name; sec++) {
 		if (strcmp(str, sec->name))
 			continue;
 
@@ -1081,8 +1087,10 @@ static bool parse_min_interval(DBusMessageIter *iter,
 	if (!(g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL))
 		return true;
 
-	if (!iter)
+	if (!iter) {
+		client->min_interval = 0;
 		return false;
+	}
 
 	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_UINT32)
 		return false;
@@ -1112,8 +1120,10 @@ static bool parse_max_interval(DBusMessageIter *iter,
 	if (!(g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL))
 		return true;
 
-	if (!iter)
+	if (!iter) {
+		client->max_interval = 0;
 		return false;
+	}
 
 	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_UINT32)
 		return false;
@@ -1143,8 +1153,10 @@ static bool parse_tx_power(DBusMessageIter *iter,
 	if (!(g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL))
 		return true;
 
-	if (!iter)
+	if (!iter) {
+		client->tx_power = ADV_TX_POWER_NO_PREFERENCE;
 		return false;
+	}
 
 	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_INT16)
 		return false;

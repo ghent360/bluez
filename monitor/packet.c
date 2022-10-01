@@ -384,8 +384,9 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 		}
 
 		if (filter_mask & PACKET_FILTER_SHOW_TIME) {
-			n = sprintf(ts_str + ts_pos, " %02d:%02d:%02d.%06lu",
-				tm.tm_hour, tm.tm_min, tm.tm_sec, tv->tv_usec);
+			n = sprintf(ts_str + ts_pos, " %02d:%02d:%02d.%06llu",
+				tm.tm_hour, tm.tm_min, tm.tm_sec,
+				(long long)tv->tv_usec);
 			if (n > 0) {
 				ts_pos += n;
 				ts_len += n;
@@ -393,8 +394,9 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 		}
 
 		if (filter_mask & PACKET_FILTER_SHOW_TIME_OFFSET) {
-			n = sprintf(ts_str + ts_pos, " %lu.%06lu",
-					tv->tv_sec - time_offset, tv->tv_usec);
+			n = sprintf(ts_str + ts_pos, " %llu.%06llu",
+				(long long)(tv->tv_sec - time_offset),
+				(long long)tv->tv_usec);
 			if (n > 0) {
 				ts_pos += n;
 				ts_len += n;
@@ -403,12 +405,7 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 	}
 
 	if (use_color()) {
-		n = sprintf(ts_str + ts_pos, "%s", COLOR_OFF);
-		if (n > 0)
-			ts_pos += n;
-	}
-
-	if (use_color()) {
+		sprintf(ts_str + ts_pos, "%s", COLOR_OFF);
 		n = sprintf(line + pos, "%s", color);
 		if (n > 0)
 			pos += n;
@@ -449,10 +446,8 @@ static void print_packet(struct timeval *tv, struct ucred *cred, char ident,
 
 	if (extra) {
 		n = sprintf(line + pos, " %s", extra);
-		if (n > 0) {
-			pos += n;
+		if (n > 0)
 			len += n;
-		}
 	}
 
 	if (ts_len > 0) {
@@ -7472,7 +7467,6 @@ static void print_le_phys_preference(uint8_t all_phys, uint8_t tx_phys,
 							" (0x%2.2x)", mask);
 
 	print_field("TX PHYs preference: 0x%2.2x", tx_phys);
-	mask = tx_phys;
 
 	mask = print_bitfield(2, tx_phys, le_phys);
 	if (mask)
@@ -7480,7 +7474,6 @@ static void print_le_phys_preference(uint8_t all_phys, uint8_t tx_phys,
 							" (0x%2.2x)", mask);
 
 	print_field("RX PHYs preference: 0x%2.2x", rx_phys);
-	mask = rx_phys;
 
 	mask = print_bitfield(2, rx_phys, le_phys);
 	if (mask)
@@ -11237,9 +11230,10 @@ static void le_pa_report_evt(uint16_t index, const void *data, uint8_t size)
 		break;
 	default:
 		str = "Reserved";
-		color_on = COLOR_RED;
 		break;
 	}
+
+	print_field("CTE Type: %s (0x%2x)", str, evt->cte_type);
 
 	switch (evt->data_status) {
 	case 0x00:

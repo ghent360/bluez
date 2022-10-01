@@ -1238,7 +1238,8 @@ static void populate_gatt_service(struct btd_gatt_database *database)
 				NULL, NULL, database);
 
 	database->svc_chngd_ccc = service_add_ccc(service, database, NULL, NULL,
-								    0, NULL);
+						BT_ATT_PERM_READ |
+						BT_ATT_PERM_WRITE, NULL);
 
 	bt_uuid16_create(&uuid, GATT_CHARAC_CLI_FEAT);
 	database->cli_feat = gatt_db_service_add_characteristic(service,
@@ -1726,8 +1727,10 @@ static bool parse_chrc_flags(DBusMessageIter *array, uint8_t *props,
 			*perm |= BT_ATT_PERM_WRITE;
 		} else if (!strcmp("notify", flag)) {
 			*props |= BT_GATT_CHRC_PROP_NOTIFY;
+			*ccc_perm |= BT_ATT_PERM_WRITE;
 		} else if (!strcmp("indicate", flag)) {
 			*props |= BT_GATT_CHRC_PROP_INDICATE;
+			*ccc_perm |= BT_ATT_PERM_WRITE;
 		} else if (!strcmp("authenticated-signed-writes", flag)) {
 			*props |= BT_GATT_CHRC_PROP_AUTH;
 			*perm |= BT_ATT_PERM_WRITE;
@@ -2864,17 +2867,19 @@ static void property_changed_cb(GDBusProxy *proxy, const char *name,
 	if (strcmp(name, "Value"))
 		return;
 
-	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY) {
-		DBG("Malformed \"Value\" property received");
-		return;
-	}
+	if (iter) {
+		if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_ARRAY) {
+			DBG("Malformed \"Value\" property received");
+			return;
+		}
 
-	dbus_message_iter_recurse(iter, &array);
-	dbus_message_iter_get_fixed_array(&array, &value, &len);
+		dbus_message_iter_recurse(iter, &array);
+		dbus_message_iter_get_fixed_array(&array, &value, &len);
 
-	if (len < 0) {
-		DBG("Malformed \"Value\" property received");
-		return;
+		if (len < 0) {
+			DBG("Malformed \"Value\" property received");
+			return;
+		}
 	}
 
 	/* Truncate the value if it's too large */
@@ -2895,6 +2900,9 @@ static bool database_add_ccc(struct external_service *service,
 	if (!(chrc->props & BT_GATT_CHRC_PROP_NOTIFY) &&
 				!(chrc->props & BT_GATT_CHRC_PROP_INDICATE))
 		return true;
+
+	/* Always set read/write permissions */
+	chrc->ccc_perm |= BT_ATT_PERM_WRITE | BT_ATT_PERM_READ;
 
 	chrc->ccc = service_add_ccc(service->attrib, service->app->database,
 				    ccc_write_cb, chrc, chrc->ccc_perm, NULL);
@@ -3532,8 +3540,8 @@ static void register_characteristic(void *data, void *user_data)
 {
 	struct gatt_app *app = user_data;
 	GDBusProxy *proxy = data;
-	const char *iface = g_dbus_proxy_get_interface(proxy);
-	const char *path = g_dbus_proxy_get_path(proxy);
+	const char *iface;
+	const char *path;
 
 	if (app->failed)
 		return;

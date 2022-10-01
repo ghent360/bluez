@@ -2143,7 +2143,8 @@ static int write_value(size_t *dst_len, uint8_t **dst_value, uint8_t *src_val,
 		*dst_value = g_realloc(*dst_value, *dst_len);
 	}
 
-	memcpy(*dst_value + offset, src_val, src_len);
+	if (src_val && src_len)
+		memcpy(*dst_value + offset, src_val, src_len);
 
 	return 0;
 }
@@ -2518,7 +2519,7 @@ static DBusMessage *chrc_start_notify(DBusConnection *conn, DBusMessage *msg,
 
 	chrc->notifying = true;
 	bt_shell_printf("[" COLORED_CHG "] Attribute %s (%s) notifications "
-			"enabled", chrc->path, bt_uuidstr_to_str(chrc->uuid));
+			"enabled\n", chrc->path, bt_uuidstr_to_str(chrc->uuid));
 	g_dbus_emit_property_changed(conn, chrc->path, CHRC_INTERFACE,
 							"Notifying");
 
@@ -2538,7 +2539,8 @@ static DBusMessage *chrc_stop_notify(DBusConnection *conn, DBusMessage *msg,
 
 	chrc->notifying = false;
 	bt_shell_printf("[" COLORED_CHG "] Attribute %s (%s) notifications "
-			"disabled", chrc->path, bt_uuidstr_to_str(chrc->uuid));
+			"disabled\n", chrc->path,
+			bt_uuidstr_to_str(chrc->uuid));
 	g_dbus_emit_property_changed(conn, chrc->path, CHRC_INTERFACE,
 							"Notifying");
 
@@ -3002,17 +3004,20 @@ static void proxy_property_changed(GDBusProxy *proxy, const char *name,
 			chrc->path, bt_uuidstr_to_str(chrc->uuid), name);
 
 	if (!strcmp(name, "Value")) {
-		DBusMessageIter array;
-		uint8_t *value;
-		int len;
+		uint8_t *value = '\0';  /* don't pass NULL to write_value() */
+		int len = 0;
 
-		if (dbus_message_iter_get_arg_type(iter) == DBUS_TYPE_ARRAY) {
+		if (iter && dbus_message_iter_get_arg_type(iter) ==
+				DBUS_TYPE_ARRAY) {
+			DBusMessageIter array;
+
 			dbus_message_iter_recurse(iter, &array);
 			dbus_message_iter_get_fixed_array(&array, &value, &len);
-			write_value(&chrc->value_len, &chrc->value, value, len,
-					0, chrc->max_val_len);
-			bt_shell_hexdump(value, len);
 		}
+
+		write_value(&chrc->value_len, &chrc->value, value, len,
+				0, chrc->max_val_len);
+		bt_shell_hexdump(value, len);
 	}
 
 	g_dbus_emit_property_changed(conn, chrc->path, CHRC_INTERFACE, name);

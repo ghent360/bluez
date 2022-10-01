@@ -3067,6 +3067,13 @@ void mesh_net_send_seg(struct mesh_net *net, uint32_t net_key_id,
 	uint8_t segO = (hdr >> SEGO_HDR_SHIFT) & SEG_MASK;
 	uint8_t segN = (hdr >> SEGN_HDR_SHIFT) & SEG_MASK;
 
+	/*
+	 * MshPRFv1.0.1 section 3.4.5.2, Interface output filter:
+	 * If TTL is set to 1, message shall be dropped.
+	 */
+	if (ttl == 1)
+		return;
+
 	/* TODO: Only used for current POLLed segments to LPNs */
 
 	l_debug("SEQ: %6.6x", seq + segO);
@@ -3133,6 +3140,13 @@ bool mesh_net_app_send(struct mesh_net *net, bool frnd_cred, uint16_t src,
 	 */
 	if ((result && IS_UNICAST(dst)) || src == dst ||
 			(dst >= net->src_addr && dst <= net->last_addr))
+		return true;
+
+	/*
+	 * MshPRFv1.0.1 section 3.4.5.2, Interface output filter:
+	 * If TTL is set to 1, message shall be dropped.
+	 */
+	if (ttl == 1)
 		return true;
 
 	/* Setup OTA Network send */
@@ -3206,6 +3220,13 @@ void mesh_net_ack_send(struct mesh_net *net, uint32_t net_key_id,
 	uint8_t pkt_len;
 	uint8_t pkt[30];
 
+	/*
+	 * MshPRFv1.0.1 section 3.4.5.2, Interface output filter:
+	 * If TTL is set to 1, message shall be dropped.
+	 */
+	if (ttl == 1)
+		return;
+
 	hdr = NET_OP_SEG_ACKNOWLEDGE << OPCODE_HDR_SHIFT;
 	hdr |= rly << RELAY_HDR_SHIFT;
 	hdr |= (seqZero & SEQ_ZERO_MASK) << SEQ_ZERO_HDR_SHIFT;
@@ -3262,6 +3283,13 @@ void mesh_net_transport_send(struct mesh_net *net, uint32_t net_key_id,
 
 	/* Range check the Opcode and msg length*/
 	if (*msg & 0xc0 || (9 + msg_len + 8 > 29))
+		return;
+
+	/*
+	 * MshPRFv1.0.1 section 3.4.5.2, Interface output filter:
+	 * If TTL is set to 1, message shall be dropped.
+	 */
+	if (ttl == 1)
 		return;
 
 	/* Enqueue for Friend if forwardable and from us */
@@ -3580,24 +3608,14 @@ int mesh_net_set_heartbeat_sub(struct mesh_net *net, uint16_t src, uint16_t dst,
 		return MESH_STATUS_UNSPECIFIED_ERROR;
 
 	/* Check if the subscription should be disabled */
-	if (IS_UNASSIGNED(src) || IS_UNASSIGNED(dst)) {
-		if (IS_GROUP(sub->dst))
-			mesh_net_dst_unreg(net, sub->dst);
-
-		sub->enabled = false;
-		sub->dst = UNASSIGNED_ADDRESS;
-		sub->src = UNASSIGNED_ADDRESS;
-		sub->count = 0;
-		sub->period = 0;
-		sub->min_hops = 0;
-		sub->max_hops = 0;
-
-	} else if (!period_log && src == sub->src && dst == sub->dst) {
+	if (IS_UNASSIGNED(src) || IS_UNASSIGNED(dst) || !period_log) {
 		if (IS_GROUP(sub->dst))
 			mesh_net_dst_unreg(net, sub->dst);
 
 		/* Preserve collected data, but disable */
 		sub->enabled = false;
+		sub->dst = UNASSIGNED_ADDRESS;
+		sub->src = UNASSIGNED_ADDRESS;
 		sub->period = 0;
 
 	} else {
@@ -3609,12 +3627,12 @@ int mesh_net_set_heartbeat_sub(struct mesh_net *net, uint16_t src, uint16_t dst,
 				mesh_net_dst_reg(net, dst);
 		}
 
-		sub->enabled = !!period_log;
+		sub->enabled = true;
 		sub->src = src;
 		sub->dst = dst;
 		sub->count = 0;
 		sub->period = log_to_uint32(period_log);
-		sub->min_hops = 0x00;
+		sub->min_hops = 0x7f;
 		sub->max_hops = 0x00;
 		gettimeofday(&time_now, NULL);
 		sub->start = time_now.tv_sec;
@@ -3627,8 +3645,6 @@ int mesh_net_set_heartbeat_sub(struct mesh_net *net, uint16_t src, uint16_t dst,
 		sub->timer = NULL;
 		return MESH_STATUS_SUCCESS;
 	}
-
-	sub->min_hops = 0xff;
 
 	if (!sub->timer)
 		sub->timer = l_timeout_create(sub->period, hb_sub_timeout_func,
