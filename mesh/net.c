@@ -2613,7 +2613,8 @@ static bool update_kr_state(struct mesh_subnet *subnet, bool kr, uint32_t id)
 {
 	/* Figure out the key refresh phase */
 	if (kr) {
-		if (id == subnet->net_key_upd) {
+		if (subnet->kr_phase == KEY_REFRESH_PHASE_ONE &&
+						id == subnet->net_key_upd) {
 			l_debug("Beacon based KR phase 2 change");
 			return (key_refresh_phase_two(subnet->net, subnet->idx)
 							== MESH_STATUS_SUCCESS);
@@ -2671,6 +2672,10 @@ static bool update_iv_ivu_state(struct mesh_net *net, uint32_t iv_index,
 		if (iv_index == net->iv_index)
 			return false;
 
+		/* Ignore beacon with invalid IV index value */
+		if (net->iv_update && iv_index == net->iv_index + 1)
+			return false;
+
 		if (!net->iv_update) {
 			l_debug("iv_upd_state = IV_UPD_UPDATING");
 			net->iv_upd_state = IV_UPD_UPDATING;
@@ -2708,7 +2713,7 @@ static void process_beacon(void *net_ptr, void *user_data)
 	struct net_beacon_data *beacon_data = user_data;
 	uint32_t ivi;
 	bool ivu, kr, local_kr;
-	struct mesh_subnet *subnet;
+	struct mesh_subnet *subnet, *primary_subnet;
 
 	ivi = beacon_data->ivi;
 
@@ -2721,6 +2726,17 @@ static void process_beacon(void *net_ptr, void *user_data)
 					L_UINT_TO_PTR(beacon_data->net_key_id));
 
 	if (!subnet)
+		return;
+
+	/*
+	 * @MshPRFv1.0.1 section 3.10.5: IV Update procedure
+	 * If this node is a member of a primary subnet and receives a Secure
+	 * Network beacon on a secondary subnet with an IV Index greater than
+	 * the last known IV Index of the primary subnet, the Secure Network
+	 * beacon shall be ignored.
+	 */
+	primary_subnet = get_primary_subnet(net);
+	if (primary_subnet && subnet != primary_subnet && ivi > net->iv_index)
 		return;
 
 	/* Get IVU and KR boolean bits from beacon */
@@ -2739,7 +2755,7 @@ static void process_beacon(void *net_ptr, void *user_data)
 							ivu != net->iv_update)
 		updated |= update_iv_ivu_state(net, ivi, ivu);
 
-	if (kr != local_kr)
+	if (kr != local_kr || beacon_data->net_key_id != subnet->net_key_cur)
 		updated |= update_kr_state(subnet, kr, beacon_data->net_key_id);
 
 	if (updated)
