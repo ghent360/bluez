@@ -46,6 +46,7 @@
 
 #define SEG_TO	2
 #define MSG_TO	60
+#define SAR_DEL	10
 
 #define DEFAULT_TRANSMIT_COUNT		1
 #define DEFAULT_TRANSMIT_INTERVAL	100
@@ -166,6 +167,7 @@ struct mesh_sar {
 	bool segmented;
 	bool frnd;
 	bool frnd_cred;
+	bool delete;
 	uint8_t ttl;
 	uint8_t last_seg;
 	uint8_t key_aid;
@@ -1026,12 +1028,11 @@ static bool msg_in_cache(struct mesh_net *net, uint16_t src, uint32_t seq,
 		.mic = mic,
 	};
 
-	msg = l_queue_remove_if(net->msg_cache, match_cache, &tst);
+	msg = l_queue_find(net->msg_cache, match_cache, &tst);
 
 	if (msg) {
 		l_debug("Supressing duplicate %4.4x + %6.6x + %8.8x",
 							src, seq, mic);
-		l_queue_push_head(net->msg_cache, msg);
 		return true;
 	}
 
@@ -1493,14 +1494,27 @@ static void inseg_to(struct l_timeout *seg_timeout, void *user_data)
 static void inmsg_to(struct l_timeout *msg_timeout, void *user_data)
 {
 	struct mesh_net *net = user_data;
-	struct mesh_sar *sar = l_queue_remove_if(net->sar_in,
+	struct mesh_sar *sar = l_queue_find(net->sar_in,
 			match_msg_timeout, msg_timeout);
 
-	l_timeout_remove(msg_timeout);
-	if (!sar)
+	if (!sar) {
+		l_timeout_remove(msg_timeout);
 		return;
+	}
 
-	sar->msg_timeout = NULL;
+	if (!sar->delete) {
+		/*
+		 * Incomplete timer expired, cancel SAR and start
+		 * delete timer
+		 */
+		l_timeout_remove(sar->seg_timeout);
+		sar->seg_timeout = NULL;
+		sar->delete = true;
+		l_timeout_modify(sar->msg_timeout, SAR_DEL);
+		return;
+	}
+
+	l_queue_remove(net->sar_in, sar);
 	mesh_sar_free(sar);
 }
 
@@ -1763,13 +1777,17 @@ not_for_friend:
 	return true;
 }
 
-static uint16_t key_id_to_net_idx(struct mesh_net *net, uint32_t net_key_id)
+static uint16_t key_id_to_net_idx(struct mesh_net *net,
+				uint32_t net_key_id, bool *frnd)
 {
 	struct mesh_subnet *subnet;
 	struct mesh_friend *friend;
 
 	if (!net)
 		return NET_IDX_INVALID;
+
+	if (frnd)
+		*frnd = false;
 
 	subnet = l_queue_find(net->subnets, match_key_id,
 						L_UINT_TO_PTR(net_key_id));
@@ -1780,8 +1798,12 @@ static uint16_t key_id_to_net_idx(struct mesh_net *net, uint32_t net_key_id)
 	friend = l_queue_find(net->friends, match_friend_key_id,
 						L_UINT_TO_PTR(net_key_id));
 
-	if (friend)
+	if (friend) {
+		if (frnd)
+			*frnd = true;
+
 		return friend->net_idx;
+	}
 
 	friend = l_queue_find(net->negotiations, match_friend_key_id,
 						L_UINT_TO_PTR(net_key_id));
@@ -1956,7 +1978,9 @@ static bool seg_rxed(struct mesh_net *net, bool frnd, uint32_t iv_index,
 			/* Re-Send ACK for full msg */
 			send_net_ack(net, sar_in, expected);
 			return true;
-		}
+		} else if (sar_in->delete)
+			/* Ignore cancelled */
+			return false;
 	} else {
 		uint16_t len = MAX_SEG_TO_LEN(segN);
 
@@ -2006,6 +2030,10 @@ static bool seg_rxed(struct mesh_net *net, bool frnd, uint32_t iv_index,
 		/* Kill Inter-Seg timeout */
 		l_timeout_remove(sar_in->seg_timeout);
 		sar_in->seg_timeout = NULL;
+
+		/* Start delete timer */
+		sar_in->delete = true;
+		l_timeout_modify(sar_in->msg_timeout, SAR_DEL);
 		return true;
 	}
 
@@ -2059,7 +2087,7 @@ static bool ctl_received(struct mesh_net *net, uint32_t net_key_id,
 		break;
 
 	case NET_OP_FRND_POLL:
-		if (len != 1 || ttl)
+		if (len != 1 || ttl || pkt[0] > 1)
 			return false;
 
 		print_packet("Rx-NET_OP_FRND_POLL", pkt, len);
@@ -2078,7 +2106,7 @@ static bool ctl_received(struct mesh_net *net, uint32_t net_key_id,
 			return false;
 
 		print_packet("Rx-NET_OP_FRND_REQUEST", pkt, len);
-		net_idx = key_id_to_net_idx(net, net_key_id);
+		net_idx = key_id_to_net_idx(net, net_key_id, NULL);
 		friend_request(net, net_idx, src, pkt[0], pkt[1],
 				l_get_be32(pkt + 1) & 0xffffff,
 				l_get_be16(pkt + 5), pkt[7],
@@ -2269,7 +2297,8 @@ static void send_msg_pkt(struct mesh_net *net, uint8_t cnt, uint16_t interval,
 }
 
 static enum _relay_advice packet_received(void *user_data,
-				uint32_t net_key_id, uint32_t iv_index,
+				uint32_t net_key_id, uint16_t net_idx,
+				bool frnd, uint32_t iv_index,
 				const void *data, uint8_t size, int8_t rssi)
 {
 	struct mesh_net *net = user_data;
@@ -2278,15 +2307,10 @@ static enum _relay_advice packet_received(void *user_data,
 	uint8_t net_ttl, key_aid, net_segO, net_segN, net_opcode;
 	uint32_t net_seq, cache_cookie;
 	uint16_t net_src, net_dst, net_seqZero;
-	uint16_t net_idx;
 	uint8_t packet[31];
 	bool net_ctl, net_segmented, net_szmic, net_relay;
 
 	memcpy(packet + 2, data, size);
-
-	net_idx = key_id_to_net_idx(net, net_key_id);
-	if (net_idx == NET_IDX_INVALID)
-		return RELAY_NONE;
 
 	print_packet("RX: Network [clr] :", packet + 2, size);
 
@@ -2389,6 +2413,13 @@ static enum _relay_advice packet_received(void *user_data,
 			return RELAY_DISALLOWED;
 	}
 
+	/*
+	 * Messages that are encrypted with friendship credentials
+	 * should *always* be relayed
+	 */
+	if (frnd)
+		return RELAY_ALWAYS;
+
 	/* If relay not enable, or no more hops allowed */
 	if (!net->relay.enable || net_ttl < 0x02)
 		return RELAY_NONE;
@@ -2414,7 +2445,9 @@ static void net_rx(void *net_ptr, void *user_data)
 	uint8_t *out;
 	size_t out_size;
 	uint32_t net_key_id;
+	uint16_t net_idx;
 	int8_t rssi = 0;
+	bool frnd;
 	bool ivi_net = !!(net->iv_index & 1);
 	bool ivi_pkt = !!(data->data[0] & 0x80);
 
@@ -2438,9 +2471,21 @@ static void net_rx(void *net_ptr, void *user_data)
 		rssi = data->info->rssi;
 	}
 
-	relay_advice = packet_received(net, net_key_id, iv_index, out, out_size,
-									rssi);
+	net_idx = key_id_to_net_idx(net, net_key_id, &frnd);
+
+	if (net_idx == NET_IDX_INVALID)
+		return;
+
+	relay_advice = packet_received(net, net_key_id, net_idx, frnd,
+						iv_index, out, out_size, rssi);
 	if (relay_advice > data->relay_advice) {
+		/*
+		 * If packet was encrypted with friendship credentials,
+		 * relay it using master credentials
+		 */
+		if (frnd && !mesh_net_get_key(net, false, net_idx, &net_key_id))
+			return;
+
 		data->iv_index = iv_index;
 		data->relay_advice = relay_advice;
 		data->net_key_id = net_key_id;
@@ -2703,6 +2748,7 @@ static bool update_iv_ivu_state(struct mesh_net *net, uint32_t iv_index,
 
 	net->iv_index = iv_index;
 	net->iv_update = ivu;
+	queue_friend_update(net);
 	return true;
 }
 

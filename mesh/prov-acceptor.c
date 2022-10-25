@@ -70,6 +70,7 @@ struct mesh_prov_acceptor {
 	uint8_t material;
 	uint8_t expected;
 	int8_t previous;
+	bool failed;
 	struct conf_input conf_inputs;
 	uint8_t calc_key[16];
 	uint8_t salt[16];
@@ -383,6 +384,47 @@ static void send_rand(struct mesh_prov_acceptor *prov)
 	prov_send(prov, &msg, sizeof(msg));
 }
 
+static bool prov_start_check(struct prov_start *start,
+						struct mesh_net_prov_caps *caps)
+{
+	if (start->algorithm || start->pub_key > 1 || start->auth_method > 3)
+		return false;
+
+	if (start->pub_key && !caps->pub_type)
+		return false;
+
+	switch (start->auth_method) {
+	case 0: /* No OOB */
+		if (start->auth_action != 0 || start->auth_size != 0)
+			return false;
+
+		break;
+
+	case 1: /* Static OOB */
+		if (!caps->static_type || start->auth_action != 0 ||
+							start->auth_size != 0)
+			return false;
+
+		break;
+
+	case 2: /* Output OOB */
+		if (!(caps->output_action & (1 << start->auth_action)) ||
+							start->auth_size == 0)
+			return false;
+
+		break;
+
+	case 3: /* Input OOB */
+		if (!(caps->input_action & (1 << start->auth_action)) ||
+							start->auth_size == 0)
+			return false;
+
+		break;
+	}
+
+	return true;
+}
+
 static void acp_prov_rx(void *user_data, const uint8_t *data, uint16_t len)
 {
 	struct mesh_prov_acceptor *rx_prov = user_data;
@@ -399,17 +441,23 @@ static void acp_prov_rx(void *user_data, const uint8_t *data, uint16_t len)
 	l_debug("Provisioning packet received type: %2.2x (%u octets)",
 								type, len);
 
+	if (type >= L_ARRAY_SIZE(expected_pdu_size)) {
+		l_error("Unknown PDU type: %2.2x", type);
+		fail.reason = PROV_ERR_INVALID_PDU;
+		goto failure;
+	}
+
 	if (type == prov->previous) {
 		l_error("Ignore repeated %2.2x packet", type);
 		return;
-	} else if (type > prov->expected || type < prov->previous) {
+	} else if (prov->failed || type > prov->expected ||
+							type < prov->previous) {
 		l_error("Expected %2.2x, Got:%2.2x", prov->expected, type);
 		fail.reason = PROV_ERR_UNEXPECTED_PDU;
 		goto failure;
 	}
 
-	if (type >= L_ARRAY_SIZE(expected_pdu_size) ||
-					len != expected_pdu_size[type]) {
+	if (len != expected_pdu_size[type]) {
 		l_error("Expected PDU size %d, Got %d (type: %2.2x)",
 			len, expected_pdu_size[type], type);
 		fail.reason = PROV_ERR_INVALID_FORMAT;
@@ -426,22 +474,16 @@ static void acp_prov_rx(void *user_data, const uint8_t *data, uint16_t len)
 		memcpy(&prov->conf_inputs.start, data,
 				sizeof(prov->conf_inputs.start));
 
-		if (prov->conf_inputs.start.algorithm ||
-				prov->conf_inputs.start.pub_key > 1 ||
-				prov->conf_inputs.start.auth_method > 3) {
+		if (!prov_start_check(&prov->conf_inputs.start,
+						&prov->conf_inputs.caps)) {
 			fail.reason = PROV_ERR_INVALID_FORMAT;
 			goto failure;
 		}
 
 		if (prov->conf_inputs.start.pub_key) {
-			if (prov->conf_inputs.caps.pub_type) {
-				/* Prompt Agent for Private Key of OOB */
-				mesh_agent_request_private_key(prov->agent,
-							priv_key_cb, prov);
-			} else {
-				fail.reason = PROV_ERR_INVALID_PDU;
-				goto failure;
-			}
+			/* Prompt Agent for Private Key of OOB */
+			mesh_agent_request_private_key(prov->agent,
+						priv_key_cb, prov);
 		} else {
 			/* Ephemeral Public Key requested */
 			ecc_make_key(prov->conf_inputs.dev_pub_key,
@@ -643,6 +685,8 @@ static void acp_prov_rx(void *user_data, const uint8_t *data, uint16_t len)
 failure:
 	fail.opcode = PROV_FAILED;
 	prov_send(prov, &fail, sizeof(fail));
+	prov->failed = true;
+	prov->previous = -1;
 	if (prov->cmplt)
 		prov->cmplt(prov->caller_data, fail.reason, NULL);
 	prov->cmplt = NULL;
@@ -702,6 +746,7 @@ bool acceptor_start(uint8_t num_ele, uint8_t uuid[16],
 	prov->cmplt = complete_cb;
 	prov->ob = l_queue_new();
 	prov->previous = -1;
+	prov->failed = false;
 	prov->out_opcode = PROV_NONE;
 	prov->caller_data = caller_data;
 
