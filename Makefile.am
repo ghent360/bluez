@@ -82,7 +82,7 @@ pkginclude_HEADERS += $(lib_headers)
 lib_LTLIBRARIES += lib/libbluetooth.la
 
 lib_libbluetooth_la_SOURCES = $(lib_headers) $(lib_sources)
-lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 22:7:19
+lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 22:8:19
 lib_libbluetooth_la_DEPENDENCIES = $(local_headers)
 endif
 
@@ -568,6 +568,12 @@ unit_test_gattrib_SOURCES = unit/test-gattrib.c attrib/gattrib.c \
 unit_test_gattrib_LDADD = lib/libbluetooth-internal.la \
 			src/libshared-glib.la \
 			$(GLIB_LIBS) $(DBUS_LIBS) -ldl -lrt
+
+unit_tests += unit/test-bap
+
+unit_test_bap_SOURCES = unit/test-bap.c
+unit_test_bap_LDADD = src/libshared-glib.la \
+				lib/libbluetooth-internal.la $(GLIB_LIBS)
 
 if MIDI
 unit_tests += unit/test-midi
