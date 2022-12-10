@@ -30,6 +30,7 @@
 #include <sys/uio.h>
 #include <linux/sockios.h>
 #include <time.h>
+#include <inttypes.h>
 
 #include "lib/bluetooth.h"
 #include "lib/hci.h"
@@ -584,17 +585,21 @@ static void send_wait(struct timespec *t_start, uint32_t us)
 	}
 
 	t_diff.tv_sec = t_now.tv_sec - t_start->tv_sec;
+	if (t_start->tv_nsec > t_now.tv_nsec) {
+		t_diff.tv_sec--;
+		t_now.tv_nsec += 1000000000L;
+	}
 	t_diff.tv_nsec = t_now.tv_nsec - t_start->tv_nsec;
 
 	delta_us = us - TS_USEC(&t_diff);
 
 	if (delta_us < 0) {
-		syslog(LOG_INFO, "Send is behind: %zd us", delta_us);
+		syslog(LOG_INFO, "Send is behind: %" PRId64 " us", delta_us);
 		delta_us = 1000;
 	}
 
 	if (!quiet)
-		syslog(LOG_INFO, "Waiting (%zd us)...", delta_us);
+		syslog(LOG_INFO, "Waiting (%" PRId64 " us)...", delta_us);
 
 	usleep(delta_us);
 

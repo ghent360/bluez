@@ -25,6 +25,7 @@
 #include "src/shared/shell.h"
 #include "src/shared/util.h"
 #include "gdbus/gdbus.h"
+#include "print.h"
 #include "agent.h"
 #include "gatt.h"
 #include "advertising.h"
@@ -54,6 +55,7 @@ struct adapter {
 
 static struct adapter *default_ctrl;
 static GDBusProxy *default_dev;
+static char *default_local_attr;
 static GDBusProxy *default_attr;
 static GList *ctrl_list;
 static GList *battery_proxies;
@@ -160,171 +162,6 @@ static void print_device(GDBusProxy *proxy, const char *description)
 				description ? : "",
 				description ? "] " : "",
 				address, name);
-}
-
-static void print_fixed_iter(const char *label, const char *name,
-						DBusMessageIter *iter)
-{
-	dbus_bool_t *valbool;
-	dbus_uint32_t *valu32;
-	dbus_uint16_t *valu16;
-	dbus_int16_t *vals16;
-	unsigned char *byte;
-	int len;
-
-	switch (dbus_message_iter_get_arg_type(iter)) {
-	case DBUS_TYPE_BOOLEAN:
-		dbus_message_iter_get_fixed_array(iter, &valbool, &len);
-
-		if (len <= 0)
-			return;
-
-		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_hexdump((void *)valbool, len * sizeof(*valbool));
-
-		break;
-	case DBUS_TYPE_UINT32:
-		dbus_message_iter_get_fixed_array(iter, &valu32, &len);
-
-		if (len <= 0)
-			return;
-
-		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_hexdump((void *)valu32, len * sizeof(*valu32));
-
-		break;
-	case DBUS_TYPE_UINT16:
-		dbus_message_iter_get_fixed_array(iter, &valu16, &len);
-
-		if (len <= 0)
-			return;
-
-		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_hexdump((void *)valu16, len * sizeof(*valu16));
-
-		break;
-	case DBUS_TYPE_INT16:
-		dbus_message_iter_get_fixed_array(iter, &vals16, &len);
-
-		if (len <= 0)
-			return;
-
-		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_hexdump((void *)vals16, len * sizeof(*vals16));
-
-		break;
-	case DBUS_TYPE_BYTE:
-		dbus_message_iter_get_fixed_array(iter, &byte, &len);
-
-		if (len <= 0)
-			return;
-
-		bt_shell_printf("%s%s:\n", label, name);
-		bt_shell_hexdump((void *)byte, len * sizeof(*byte));
-
-		break;
-	default:
-		return;
-	};
-}
-
-static void print_iter(const char *label, const char *name,
-						DBusMessageIter *iter)
-{
-	dbus_bool_t valbool;
-	dbus_uint32_t valu32;
-	dbus_uint16_t valu16;
-	dbus_int16_t vals16;
-	unsigned char byte;
-	const char *valstr;
-	DBusMessageIter subiter;
-	char *entry;
-
-	if (iter == NULL) {
-		bt_shell_printf("%s%s is nil\n", label, name);
-		return;
-	}
-
-	switch (dbus_message_iter_get_arg_type(iter)) {
-	case DBUS_TYPE_INVALID:
-		bt_shell_printf("%s%s is invalid\n", label, name);
-		break;
-	case DBUS_TYPE_STRING:
-	case DBUS_TYPE_OBJECT_PATH:
-		dbus_message_iter_get_basic(iter, &valstr);
-		bt_shell_printf("%s%s: %s\n", label, name, valstr);
-		break;
-	case DBUS_TYPE_BOOLEAN:
-		dbus_message_iter_get_basic(iter, &valbool);
-		bt_shell_printf("%s%s: %s\n", label, name,
-					valbool == TRUE ? "yes" : "no");
-		break;
-	case DBUS_TYPE_UINT32:
-		dbus_message_iter_get_basic(iter, &valu32);
-		bt_shell_printf("%s%s: 0x%08x\n", label, name, valu32);
-		break;
-	case DBUS_TYPE_UINT16:
-		dbus_message_iter_get_basic(iter, &valu16);
-		bt_shell_printf("%s%s: 0x%04x\n", label, name, valu16);
-		break;
-	case DBUS_TYPE_INT16:
-		dbus_message_iter_get_basic(iter, &vals16);
-		bt_shell_printf("%s%s: %d\n", label, name, vals16);
-		break;
-	case DBUS_TYPE_BYTE:
-		dbus_message_iter_get_basic(iter, &byte);
-		bt_shell_printf("%s%s: 0x%02x (%d)\n", label, name, byte, byte);
-		break;
-	case DBUS_TYPE_VARIANT:
-		dbus_message_iter_recurse(iter, &subiter);
-		print_iter(label, name, &subiter);
-		break;
-	case DBUS_TYPE_ARRAY:
-		dbus_message_iter_recurse(iter, &subiter);
-
-		if (dbus_type_is_fixed(
-				dbus_message_iter_get_arg_type(&subiter))) {
-			print_fixed_iter(label, name, &subiter);
-			break;
-		}
-
-		while (dbus_message_iter_get_arg_type(&subiter) !=
-							DBUS_TYPE_INVALID) {
-			print_iter(label, name, &subiter);
-			dbus_message_iter_next(&subiter);
-		}
-		break;
-	case DBUS_TYPE_DICT_ENTRY:
-		dbus_message_iter_recurse(iter, &subiter);
-		entry = g_strconcat(name, " Key", NULL);
-		print_iter(label, entry, &subiter);
-		g_free(entry);
-
-		entry = g_strconcat(name, " Value", NULL);
-		dbus_message_iter_next(&subiter);
-		print_iter(label, entry, &subiter);
-		g_free(entry);
-		break;
-	default:
-		bt_shell_printf("%s%s has unsupported type\n", label, name);
-		break;
-	}
-}
-
-static void print_property_with_label(GDBusProxy *proxy, const char *name,
-					const char *label)
-{
-	DBusMessageIter iter;
-
-	if (g_dbus_proxy_get_property(proxy, name, &iter) == FALSE)
-		return;
-
-	print_iter("\t", label ? label : name, &iter);
-}
-
-static void print_property(GDBusProxy *proxy, const char *name)
-{
-	print_property_with_label(proxy, name, NULL);
 }
 
 static void print_uuid(const char *label, const char *uuid)
@@ -604,6 +441,7 @@ static void set_default_attribute(GDBusProxy *proxy)
 {
 	const char *path;
 
+	default_local_attr = NULL;
 	default_attr = proxy;
 
 	path = g_dbus_proxy_get_path(proxy);
@@ -2146,9 +1984,40 @@ static void cmd_set_alias(int argc, char *argv[])
 	return bt_shell_noninteractive_quit(EXIT_FAILURE);
 }
 
+static void set_default_local_attribute(char *attr)
+{
+	char *desc = NULL;
+
+	default_local_attr = attr;
+	default_attr = NULL;
+
+	desc = g_strdup_printf(COLOR_BLUE "[%s]" COLOR_OFF "# ", attr);
+
+	bt_shell_set_prompt(desc);
+	free(desc);
+}
+
 static void cmd_select_attribute(int argc, char *argv[])
 {
 	GDBusProxy *proxy;
+
+	if (!strcasecmp("local", argv[1])) {
+		char *attr;
+
+		if (argc < 2) {
+			bt_shell_printf("attribute/UUID required\n");
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
+
+		attr = gatt_select_local_attribute(argv[2]);
+		if (!attr) {
+			bt_shell_printf("Unable to find %s\n", argv[2]);
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
+
+		set_default_local_attribute(attr);
+		return bt_shell_noninteractive_quit(EXIT_SUCCESS);
+	}
 
 	if (!default_dev) {
 		bt_shell_printf("No device connected\n");
@@ -2234,6 +2103,11 @@ static void cmd_attribute_info(int argc, char *argv[])
 
 static void cmd_read(int argc, char *argv[])
 {
+	if (default_local_attr) {
+		gatt_read_local_attribute(default_local_attr, argc, argv);
+		return;
+	}
+
 	if (!default_attr) {
 		bt_shell_printf("No attribute selected\n");
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
@@ -2244,6 +2118,11 @@ static void cmd_read(int argc, char *argv[])
 
 static void cmd_write(int argc, char *argv[])
 {
+	if (default_local_attr) {
+		gatt_write_local_attribute(default_local_attr, argc, argv);
+		return;
+	}
+
 	if (!default_attr) {
 		bt_shell_printf("No attribute selected\n");
 		return bt_shell_noninteractive_quit(EXIT_FAILURE);
@@ -3001,8 +2880,9 @@ static const struct bt_shell_menu gatt_menu = {
 	.entries = {
 	{ "list-attributes", "[dev/local]", cmd_list_attributes,
 				"List attributes", dev_generator },
-	{ "select-attribute", "<attribute/UUID>",  cmd_select_attribute,
-				"Select attribute", attribute_generator },
+	{ "select-attribute", "<attribute/UUID/local> [attribute/UUID]",
+				cmd_select_attribute, "Select attribute",
+				attribute_generator },
 	{ "attribute-info", "[attribute/UUID]",  cmd_attribute_info,
 				"Select attribute", attribute_generator },
 	{ "read", "[offset]", cmd_read, "Read attribute value" },
