@@ -344,8 +344,8 @@ static void pac_foreach(void *data, void *user_data)
 
 	p = util_iov_push(iov, sizeof(*p));
 	p->codec.id = pac->codec.id;
-	p->codec.cid = pac->codec.cid;
-	p->codec.vid = pac->codec.vid;
+	p->codec.cid = cpu_to_le16(pac->codec.cid);
+	p->codec.vid = cpu_to_le16(pac->codec.vid);
 
 	if (pac->data) {
 		p->cc_len = pac->data->iov_len;
@@ -2260,6 +2260,12 @@ static struct bt_bap_pac *bap_pac_find(struct bt_bap_db *bdb, uint8_t type,
 static void *ltv_merge(struct iovec *data, struct iovec *cont)
 {
 	uint8_t delimiter = 0;
+
+	if (!data)
+		return NULL;
+
+	if (!cont || !cont->iov_len || !cont->iov_base)
+		return data->iov_base;
 
 	iov_append(data, sizeof(delimiter), &delimiter);
 
