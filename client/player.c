@@ -66,6 +66,8 @@ struct endpoint {
 	char *path;
 	char *uuid;
 	uint8_t codec;
+	uint16_t cid;
+	uint16_t vid;
 	struct iovec *caps;
 	bool auto_accept;
 	bool acquiring;
@@ -1815,7 +1817,8 @@ static void endpoint_free(void *data)
 	struct endpoint *ep = data;
 
 	if (ep->caps) {
-		g_free(ep->caps->iov_base);
+		if (ep->caps->iov_base)
+			g_free(ep->caps->iov_base);
 		g_free(ep->caps);
 	}
 
@@ -1865,10 +1868,35 @@ static gboolean endpoint_get_capabilities(const GDBusPropertyTable *property,
 	return TRUE;
 }
 
+struct vendor {
+	uint16_t cid;
+	uint16_t vid;
+} __packed;
+
+static gboolean endpoint_get_vendor(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct endpoint *ep = data;
+	struct vendor vendor = { ep->cid, ep->vid };
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT32, &vendor);
+
+	return TRUE;
+}
+
+static gboolean endpoint_vendor_exists(const GDBusPropertyTable *property,
+							void *data)
+{
+	struct endpoint *ep = data;
+
+	return ep->cid && ep->vid;
+}
+
 static const GDBusPropertyTable endpoint_properties[] = {
 	{ "UUID", "s", endpoint_get_uuid, NULL, NULL },
 	{ "Codec", "y", endpoint_get_codec, NULL, NULL },
 	{ "Capabilities", "ay", endpoint_get_capabilities, NULL, NULL },
+	{ "Vendor", "u", endpoint_get_vendor, NULL, endpoint_vendor_exists },
 	{ }
 };
 
@@ -1886,12 +1914,21 @@ static void register_endpoint_setup(DBusMessageIter *iter, void *user_data)
 
 	g_dbus_dict_append_entry(&dict, "Codec", DBUS_TYPE_BYTE, &ep->codec);
 
-	g_dbus_dict_append_basic_array(&dict, DBUS_TYPE_STRING, &key,
+	if (ep->cid && ep->vid) {
+		struct vendor vendor = { ep->cid, ep->vid };
+
+		g_dbus_dict_append_entry(&dict, "Vendor", DBUS_TYPE_UINT32,
+						 &vendor);
+	}
+
+	if (ep->caps) {
+		g_dbus_dict_append_basic_array(&dict, DBUS_TYPE_STRING, &key,
 					DBUS_TYPE_BYTE, &ep->caps->iov_base,
 					ep->caps->iov_len);
 
-	bt_shell_printf("Capabilities:\n");
-	bt_shell_hexdump(ep->caps->iov_base, ep->caps->iov_len);
+		bt_shell_printf("Capabilities:\n");
+		bt_shell_hexdump(ep->caps->iov_base, ep->caps->iov_len);
+	}
 
 	dbus_message_iter_close_container(iter, &dict);
 }
@@ -2014,12 +2051,20 @@ static void endpoint_set_capabilities(const char *input, void *user_data)
 {
 	struct endpoint *ep = user_data;
 
-	if (ep->caps)
+	if (ep->caps && ep->caps->iov_base) {
 		g_free(ep->caps->iov_base);
-	else
+		ep->caps = g_new0(struct iovec, 1);
+	} else
 		ep->caps = g_new0(struct iovec, 1);
 
 	ep->caps->iov_base = str2bytearray((char *) input, &ep->caps->iov_len);
+
+	if (ep->caps->iov_len == 0x01 &&
+			(*(uint8_t *)(ep->caps->iov_base)) == 0x00) {
+		g_free(ep->caps->iov_base);
+		ep->caps->iov_base = NULL;
+		ep->caps->iov_len = 0x00;
+	}
 
 	bt_shell_prompt_input(ep->path, "Auto Accept (yes/no):",
 						endpoint_auto_accept, ep);
@@ -2069,13 +2114,25 @@ static void cmd_register_endpoint(int argc, char *argv[])
 {
 	struct endpoint *ep;
 	char *endptr = NULL;
+	char **list;
 
 	ep = g_new0(struct endpoint, 1);
 	ep->uuid = g_strdup(argv[1]);
 	ep->codec = strtol(argv[2], &endptr, 0);
+	ep->cid = 0x0000;
+	ep->vid = 0x0000;
 	ep->path = g_strdup_printf("%s/ep%u", BLUEZ_MEDIA_ENDPOINT_PATH,
 					g_list_length(local_endpoints));
 	local_endpoints = g_list_append(local_endpoints, ep);
+
+	if (strrchr(argv[2], ':')) {
+		list = g_strsplit(argv[2], ":", 2);
+
+		ep->codec = 0xff;
+		ep->vid = strtol(list[0], &endptr, 0);
+		endptr = NULL;
+		ep->cid = strtol(list[1], &endptr, 0);
+	}
 
 	if (argc > 3)
 		endpoint_set_capabilities(argv[3], ep);
@@ -2638,7 +2695,7 @@ static const struct bt_shell_menu endpoint_menu = {
 	{ "show",         "<endpoint>", cmd_show_endpoint,
 						"Endpoint information",
 						endpoint_generator },
-	{ "register",     "<UUID> <codec> [capabilities...]",
+	{ "register",     "<UUID> <codec[:company]> [capabilities...]",
 						cmd_register_endpoint,
 						"Register Endpoint",
 						uuid_generator },

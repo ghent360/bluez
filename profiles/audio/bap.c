@@ -484,6 +484,9 @@ static DBusMessage *set_configuration(DBusConnection *conn, DBusMessage *msg,
 	bt_bap_stream_set_user_data(ep->stream, ep->path);
 	ep->msg = dbus_message_ref(msg);
 
+	if (ep->metadata && ep->metadata->iov_len)
+		bt_bap_stream_metadata(ep->stream, ep->metadata, NULL, NULL);
+
 	return NULL;
 }
 
@@ -510,6 +513,22 @@ static void ep_free(void *data)
 	free(ep);
 }
 
+struct match_ep {
+	struct bt_bap_pac *lpac;
+	struct bt_bap_pac *rpac;
+};
+
+static bool match_ep(const void *data, const void *user_data)
+{
+	const struct bap_ep *ep = data;
+	const struct match_ep *match = user_data;
+
+	if (ep->lpac != match->lpac)
+		return false;
+
+	return ep->rpac == match->rpac;
+}
+
 static struct bap_ep *ep_register(struct btd_service *service,
 					struct bt_bap_pac *lpac,
 					struct bt_bap_pac *rpac)
@@ -520,6 +539,7 @@ static struct bap_ep *ep_register(struct btd_service *service,
 	struct queue *queue;
 	int i, err;
 	const char *suffix;
+	struct match_ep match = { lpac, rpac };
 
 	switch (bt_bap_pac_get_type(rpac)) {
 	case BT_BAP_SINK:
@@ -535,6 +555,10 @@ static struct bap_ep *ep_register(struct btd_service *service,
 	default:
 		return NULL;
 	}
+
+	ep = queue_find(queue, match_ep, &match);
+	if (ep)
+		return ep;
 
 	ep = new0(struct bap_ep, 1);
 	ep->data = data;
@@ -612,8 +636,10 @@ static void select_cb(struct bt_bap_pac *pac, int err, struct iovec *caps,
 
 	ep->caps = util_iov_dup(caps, 1);
 
-	if (metadata && metadata->iov_base && metadata->iov_len)
+	if (metadata && metadata->iov_base && metadata->iov_len) {
 		ep->metadata = util_iov_dup(metadata, 1);
+		bt_bap_stream_metadata(ep->stream, ep->metadata, NULL, NULL);
+	}
 
 	ep->qos = *qos;
 
@@ -998,9 +1024,10 @@ static void bap_state(struct bt_bap_stream *stream, uint8_t old_state,
 	switch (new_state) {
 	case BT_BAP_STREAM_STATE_IDLE:
 		/* Release stream if idle */
-		if (ep)
+		if (ep) {
 			bap_io_close(ep);
-		else
+			ep->stream = NULL;
+		} else
 			queue_remove(data->streams, stream);
 		break;
 	case BT_BAP_STREAM_STATE_CONFIG:
@@ -1048,12 +1075,12 @@ static void pac_added(struct bt_bap_pac *pac, void *user_data)
 	bt_bap_foreach_pac(data->bap, BT_BAP_SINK, pac_found, service);
 }
 
-static bool ep_match_rpac(const void *data, const void *match_data)
+static bool ep_match_pac(const void *data, const void *match_data)
 {
 	const struct bap_ep *ep = data;
 	const struct bt_bap_pac *pac = match_data;
 
-	return ep->rpac == pac;
+	return ep->rpac == pac || ep->lpac == pac;
 }
 
 static void pac_removed(struct bt_bap_pac *pac, void *user_data)
@@ -1081,7 +1108,7 @@ static void pac_removed(struct bt_bap_pac *pac, void *user_data)
 		return;
 	}
 
-	ep = queue_remove_if(queue, ep_match_rpac, pac);
+	ep = queue_remove_if(queue, ep_match_pac, pac);
 	if (!ep)
 		return;
 
