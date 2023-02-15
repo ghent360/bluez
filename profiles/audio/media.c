@@ -23,6 +23,7 @@
 #include "lib/bluetooth.h"
 #include "lib/sdp.h"
 #include "lib/uuid.h"
+#include "lib/mgmt.h"
 
 #include "gdbus/gdbus.h"
 
@@ -86,7 +87,6 @@ struct endpoint_request {
 struct media_endpoint {
 	struct a2dp_sep		*sep;
 	struct bt_bap_pac	*pac;
-	void			*stream;
 	char			*sender;	/* Endpoint DBus bus id */
 	char			*path;		/* Endpoint object path */
 	char			*uuid;		/* Endpoint property UUID */
@@ -1006,9 +1006,6 @@ static void pac_config_cb(struct media_endpoint *endpoint, void *ret, int size,
 	struct pac_config_data *data = user_data;
 	gboolean *ret_value = ret;
 
-	if (ret_value)
-		endpoint->stream = data->stream;
-
 	data->cb(data->stream, ret_value ? 0 : -EINVAL);
 }
 
@@ -1088,11 +1085,20 @@ static int pac_config(struct bt_bap_stream *stream, struct iovec *cfg,
 static void pac_clear(struct bt_bap_stream *stream, void *user_data)
 {
 	struct media_endpoint *endpoint = user_data;
+	struct media_transport *transport;
+	const char *path;
 
-	endpoint->stream = NULL;
+	path = bt_bap_stream_get_user_data(stream);
+	if (!path)
+		return;
 
-	while (endpoint->transports != NULL)
-		clear_configuration(endpoint, endpoint->transports->data);
+	DBG("endpoint %p path %s", endpoint, path);
+
+	transport = find_transport(endpoint, path);
+	if (transport) {
+		clear_configuration(endpoint, transport);
+		bt_bap_stream_set_user_data(stream, NULL);
+	}
 }
 
 static struct bt_bap_pac_ops pac_ops = {
@@ -1276,6 +1282,10 @@ static bool endpoint_supported(struct btd_adapter *adapter)
 static bool experimental_endpoint_supported(struct btd_adapter *adapter)
 {
 	if (!btd_adapter_has_exp_feature(adapter, EXP_FEAT_ISO_SOCKET))
+		return false;
+
+	if (!btd_adapter_has_settings(adapter, MGMT_SETTING_CIS_CENTRAL |
+					MGMT_SETTING_CIS_PERIPHERAL))
 		return false;
 
 	return g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL;
