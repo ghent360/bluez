@@ -1347,30 +1347,54 @@ static struct codec_preset lc3_presets[] = {
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_10, 155u),
 			LC3_10_UNFRAMED(155u, 5u, 20u, 40000u)),
 	/* QoS Configuration settings for high reliability audio data */
+	LC3_PRESET_HR("8_1_2",
+			LC3_PRESET_8KHZ(LC3_CONFIG_DURATION_7_5, 26u),
+			LC3_7_5_UNFRAMED(26u, 13u, 75u, 40000u)),
+	LC3_PRESET_HR("8_2_2",
+			LC3_PRESET_8KHZ(LC3_CONFIG_DURATION_10, 30u),
+			LC3_10_UNFRAMED(30u, 13u, 95u, 40000u)),
+	LC3_PRESET_HR("16_1_2",
+			LC3_PRESET_16KHZ(LC3_CONFIG_DURATION_7_5, 30u),
+			LC3_7_5_UNFRAMED(30u, 13u, 75u, 40000u)),
+	LC3_PRESET_HR("16_2_2",
+			LC3_PRESET_16KHZ(LC3_CONFIG_DURATION_10, 40u),
+			LC3_10_UNFRAMED(40u, 13u, 95u, 40000u)),
+	LC3_PRESET_HR("24_1_2",
+			LC3_PRESET_24KHZ(LC3_CONFIG_DURATION_7_5, 45u),
+			LC3_7_5_UNFRAMED(45u, 13u, 75u, 40000u)),
+	LC3_PRESET_HR("24_2_2",
+			LC3_PRESET_24KHZ(LC3_CONFIG_DURATION_10, 60u),
+			LC3_10_UNFRAMED(60u, 13u, 95u, 40000u)),
+	LC3_PRESET_HR("32_1_2",
+			LC3_PRESET_32KHZ(LC3_CONFIG_DURATION_7_5, 60u),
+			LC3_7_5_UNFRAMED(60u, 13u, 75u, 40000u)),
+	LC3_PRESET_HR("32_2_2",
+			LC3_PRESET_32KHZ(LC3_CONFIG_DURATION_10, 80u),
+			LC3_10_UNFRAMED(80u, 13u, 95u, 40000u)),
 	LC3_PRESET_HR("44_1_2",
 			LC3_PRESET_44KHZ(LC3_CONFIG_DURATION_7_5, 98u),
-			QOS_FRAMED_2M(8163u, 98u, 23u, 54u, 40000u)),
+			QOS_FRAMED_2M(8163u, 98u, 13u, 80u, 40000u)),
 	LC3_PRESET_HR("44_2_2",
 			LC3_PRESET_44KHZ(LC3_CONFIG_DURATION_10, 130u),
-			QOS_FRAMED_2M(10884u, 130u, 23u, 71u, 40000u)),
+			QOS_FRAMED_2M(10884u, 130u, 13u, 85u, 40000u)),
 	LC3_PRESET_HR("48_1_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_7_5, 75u),
-			LC3_7_5_UNFRAMED(75u, 23u, 45u, 40000u)),
+			LC3_7_5_UNFRAMED(75u, 13u, 75u, 40000u)),
 	LC3_PRESET_HR("48_2_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_10, 100u),
-			LC3_10_UNFRAMED(100u, 23u, 60u, 40000u)),
+			LC3_10_UNFRAMED(100u, 13u, 95u, 40000u)),
 	LC3_PRESET_HR("48_3_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_7_5, 90u),
-			LC3_7_5_UNFRAMED(90u, 23u, 45u, 40000u)),
+			LC3_7_5_UNFRAMED(90u, 13u, 75u, 40000u)),
 	LC3_PRESET_HR("48_4_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_10, 120u),
-			LC3_10_UNFRAMED(120u, 23u, 60u, 40000u)),
+			LC3_10_UNFRAMED(120u, 13u, 100u, 40000u)),
 	LC3_PRESET_HR("48_5_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_7_5, 117u),
-			LC3_7_5_UNFRAMED(117u, 23u, 45u, 40000u)),
+			LC3_7_5_UNFRAMED(117u, 13u, 75u, 40000u)),
 	LC3_PRESET_HR("48_6_2",
 			LC3_PRESET_48KHZ(LC3_CONFIG_DURATION_10, 155u),
-			LC3_10_UNFRAMED(155u, 23u, 60u, 40000u)),
+			LC3_10_UNFRAMED(155u, 13u, 100u, 40000u)),
 };
 
 #define PRESET(_uuid, _presets, _default_index) \
@@ -3566,48 +3590,54 @@ static void cmd_send_transport(int argc, char *argv[])
 {
 	GDBusProxy *proxy;
 	struct transport *transport;
-	int fd, err;
+	int fd = -1, err;
 	struct bt_iso_qos qos;
 	socklen_t len;
+	int i;
 
-	proxy = g_dbus_proxy_lookup(transports, NULL, argv[1],
+	for (i = 1; i < argc; i++) {
+		proxy = g_dbus_proxy_lookup(transports, NULL, argv[i],
 					BLUEZ_MEDIA_TRANSPORT_INTERFACE);
-	if (!proxy) {
-		bt_shell_printf("Transport %s not found\n", argv[1]);
-		return bt_shell_noninteractive_quit(EXIT_FAILURE);
-	}
+		if (!proxy) {
+			bt_shell_printf("Transport %s not found\n", argv[i]);
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
 
-	transport = find_transport(proxy);
-	if (!transport) {
-		bt_shell_printf("Transport %s not acquired\n", argv[1]);
-		return bt_shell_noninteractive_quit(EXIT_FAILURE);
-	}
+		transport = find_transport(proxy);
+		if (!transport) {
+			bt_shell_printf("Transport %s not acquired\n", argv[i]);
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
 
-	if (transport->sk < 0) {
-		bt_shell_printf("No Transport Socked found\n");
-		return bt_shell_noninteractive_quit(EXIT_FAILURE);
-	}
+		if (transport->sk < 0) {
+			bt_shell_printf("No Transport Socked found\n");
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
 
-	fd = open_file(argv[2], O_RDONLY);
-	if (fd < 0)
-		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		if (i + 1 < argc) {
+			fd = open_file(argv[++i], O_RDONLY);
+			if (fd < 0)
+				return bt_shell_noninteractive_quit(
+								EXIT_FAILURE);
+		}
 
-	bt_shell_printf("Sending ...\n");
+		bt_shell_printf("Sending ...\n");
 
-	/* Read QoS if available */
-	memset(&qos, 0, sizeof(qos));
-	len = sizeof(qos);
-	if (getsockopt(transport->sk, SOL_BLUETOOTH, BT_ISO_QOS, &qos,
+		/* Read QoS if available */
+		memset(&qos, 0, sizeof(qos));
+		len = sizeof(qos);
+		if (getsockopt(transport->sk, SOL_BLUETOOTH, BT_ISO_QOS, &qos,
 							&len) < 0)
-		err = transport_send(transport, fd, NULL);
-	else
-		err = transport_send(transport, fd, &qos);
+			err = transport_send(transport, fd, NULL);
+		else
+			err = transport_send(transport, fd, &qos);
 
-	if (err < 0) {
-		bt_shell_printf("Unable to send: %s (%d)", strerror(-err),
-								-err);
-		close(fd);
-		return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		if (err < 0) {
+			bt_shell_printf("Unable to send: %s (%d)",
+						strerror(-err), -err);
+			close(fd);
+			return bt_shell_noninteractive_quit(EXIT_FAILURE);
+		}
 	}
 
 	return bt_shell_noninteractive_quit(EXIT_SUCCESS);
@@ -3710,7 +3740,8 @@ static const struct bt_shell_menu transport_menu = {
 	{ "release",     "<transport> [transport1...]", cmd_release_transport,
 						"Release Transport",
 						transport_generator },
-	{ "send",        "<transport> <filename>", cmd_send_transport,
+	{ "send",        "<transport> <filename> [transport1...]",
+						cmd_send_transport,
 						"Send contents of a file",
 						transport_generator },
 	{ "receive",     "<transport> [filename]", cmd_receive_transport,

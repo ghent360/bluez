@@ -4387,8 +4387,8 @@ static void load_ltks(struct btd_adapter *adapter, GSList *keys)
 		if (dev) {
 			device_set_paired(dev, info->bdaddr_type);
 			device_set_bonded(dev, info->bdaddr_type);
-			device_set_ltk_enc_size(dev, info->enc_size);
-			device_set_ltk_enc_size(dev, info->enc_size);
+			device_set_ltk(dev, info->val, info->central,
+						info->enc_size);
 		}
 	}
 
@@ -7122,7 +7122,7 @@ void btd_adapter_update_found_device(struct btd_adapter *adapter,
 
 	dev = btd_adapter_find_device(adapter, bdaddr, bdaddr_type);
 	if (!dev) {
-		if (!discoverable && !monitoring) {
+		if (!discoverable && !monitoring && !eir_data.rsi) {
 			eir_data_free(&eir_data);
 			return;
 		}
@@ -7169,7 +7169,7 @@ void btd_adapter_update_found_device(struct btd_adapter *adapter,
 	/* If there is no matched Adv monitors, don't continue if not
 	 * discoverable or if active discovery filter don't match.
 	 */
-	if (!monitoring && (!discoverable ||
+	if (!eir_data.rsi && !monitoring && (!discoverable ||
 		(adapter->filtered_discovery && !is_filter_match(
 				adapter->discovery_list, &eir_data, rssi)))) {
 		eir_data_free(&eir_data);
@@ -8657,7 +8657,7 @@ static void new_long_term_key_callback(uint16_t index, uint16_t length,
 		device_set_bonded(device, addr->type);
 	}
 
-	device_set_ltk_enc_size(device, ev->key.enc_size);
+	device_set_ltk(device, ev->key.val, ev->key.central, ev->key.enc_size);
 
 	bonding_complete(adapter, &addr->bdaddr, addr->type, 0);
 }

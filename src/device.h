@@ -67,6 +67,7 @@ GSList *btd_device_get_primaries(struct btd_device *device);
 struct gatt_db *btd_device_get_gatt_db(struct btd_device *device);
 struct bt_gatt_client *btd_device_get_gatt_client(struct btd_device *device);
 struct bt_gatt_server *btd_device_get_gatt_server(struct btd_device *device);
+bool btd_device_is_initiator(struct btd_device *device);
 void *btd_device_get_attrib(struct btd_device *device);
 void btd_device_gatt_set_service_changed(struct btd_device *device,
 						uint16_t start, uint16_t end);
@@ -128,8 +129,10 @@ void device_remove_connection(struct btd_device *device, uint8_t bdaddr_type,
 								bool *remove);
 void device_request_disconnect(struct btd_device *device, DBusMessage *msg);
 bool device_is_disconnecting(struct btd_device *device);
-void device_set_ltk_enc_size(struct btd_device *device, uint8_t enc_size);
-
+void device_set_ltk(struct btd_device *device, const uint8_t val[16],
+				bool central, uint8_t enc_size);
+bool btd_device_add_set(struct btd_device *device, bool encrypted,
+				uint8_t sirk[16], uint8_t size, uint8_t rank);
 void device_store_svc_chng_ccc(struct btd_device *device, uint8_t bdaddr_type,
 								uint16_t value);
 void device_load_svc_chng_ccc(struct btd_device *device, uint16_t *ccc_le,
@@ -188,3 +191,8 @@ void btd_device_cleanup(void);
 
 void btd_device_set_volume(struct btd_device *dev, int8_t volume);
 int8_t btd_device_get_volume(struct btd_device *dev);
+
+typedef void (*bt_device_ad_func_t)(void *data, void *user_data);
+
+void btd_device_foreach_ad(struct btd_device *dev, bt_device_ad_func_t func,
+							void *data);
