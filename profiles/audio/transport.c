@@ -734,15 +734,22 @@ static void set_volume(const GDBusPropertyTable *property,
 	uint16_t arg;
 	int8_t volume;
 	bool notify;
+	int err;
 
-	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_UINT16)
-		goto error;
+	if (dbus_message_iter_get_arg_type(iter) != DBUS_TYPE_UINT16) {
+		g_dbus_pending_property_error(id,
+				ERROR_INTERFACE ".InvalidArguments",
+				"Expected UINT16");
+		return;
+	}
 
 	dbus_message_iter_get_basic(iter, &arg);
-	if (arg > INT8_MAX)
-		goto error;
-
-	g_dbus_pending_property_success(id);
+	if (arg > INT8_MAX) {
+		g_dbus_pending_property_error(id,
+				ERROR_INTERFACE ".InvalidArguments",
+				"Volume must not be larger than 127");
+		return;
+	}
 
 	volume = (int8_t)arg;
 	if (a2dp->volume == volume)
@@ -757,12 +764,17 @@ static void set_volume(const GDBusPropertyTable *property,
 						"Volume");
 	}
 
-	avrcp_set_volume(transport->device, volume, notify);
-	return;
+	err = avrcp_set_volume(transport->device, volume, notify);
+	if (err) {
+		error("avrcp_set_volume returned %s (%d)", strerror(-err), err);
+		g_dbus_pending_property_error(id,
+				ERROR_INTERFACE ".Failed",
+				"Internal error %s (%d)",
+				strerror(-err), err);
+		return;
+	}
 
-error:
-	g_dbus_pending_property_error(id, ERROR_INTERFACE ".InvalidArguments",
-					"Invalid arguments in method call");
+	g_dbus_pending_property_success(id);
 }
 
 static gboolean endpoint_exists(const GDBusPropertyTable *property, void *data)
@@ -811,6 +823,38 @@ static const GDBusPropertyTable a2dp_properties[] = {
 	{ }
 };
 
+static gboolean qos_exists(const GDBusPropertyTable *property, void *data)
+{
+	struct media_transport *transport = data;
+	struct bap_transport *bap = transport->data;
+
+	return bap->qos.phy != 0x00;
+}
+
+static gboolean get_cig(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct media_transport *transport = data;
+	struct bap_transport *bap = transport->data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
+							&bap->qos.cig_id);
+
+	return TRUE;
+}
+
+static gboolean get_cis(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct media_transport *transport = data;
+	struct bap_transport *bap = transport->data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
+							&bap->qos.cis_id);
+
+	return TRUE;
+}
+
 static gboolean get_interval(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
@@ -831,6 +875,17 @@ static gboolean get_framing(const GDBusPropertyTable *property,
 	dbus_bool_t val = bap->qos.framing;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_BOOLEAN, &val);
+
+	return TRUE;
+}
+
+static gboolean get_phy(const GDBusPropertyTable *property,
+					DBusMessageIter *iter, void *data)
+{
+	struct media_transport *transport = data;
+	struct bap_transport *bap = transport->data;
+
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE, &bap->qos.phy);
 
 	return TRUE;
 }
@@ -962,12 +1017,15 @@ static const GDBusPropertyTable bap_properties[] = {
 	{ "Codec", "y", get_codec },
 	{ "Configuration", "ay", get_configuration },
 	{ "State", "s", get_state },
-	{ "Interval", "u", get_interval },
-	{ "Framing", "b", get_framing },
-	{ "SDU", "q", get_sdu },
-	{ "Retransmissions", "y", get_retransmissions },
-	{ "Latency", "q", get_latency },
-	{ "Delay", "u", get_delay },
+	{ "CIG", "y", get_cig, NULL, qos_exists },
+	{ "CIS", "y", get_cis, NULL, qos_exists },
+	{ "Interval", "u", get_interval, NULL, qos_exists },
+	{ "Framing", "b", get_framing, NULL, qos_exists },
+	{ "PHY", "y", get_phy, NULL, qos_exists },
+	{ "SDU", "q", get_sdu, NULL, qos_exists },
+	{ "Retransmissions", "y", get_retransmissions, NULL, qos_exists },
+	{ "Latency", "q", get_latency, NULL, qos_exists },
+	{ "Delay", "u", get_delay, NULL, qos_exists },
 	{ "Endpoint", "o", get_endpoint, NULL, endpoint_exists },
 	{ "Location", "u", get_location },
 	{ "Metadata", "ay", get_metadata },
@@ -1193,10 +1251,19 @@ static void bap_update_qos(const struct media_transport *transport)
 
 	g_dbus_emit_property_changed(btd_get_dbus_connection(),
 			transport->path, MEDIA_TRANSPORT_INTERFACE,
+			"CIG");
+	g_dbus_emit_property_changed(btd_get_dbus_connection(),
+			transport->path, MEDIA_TRANSPORT_INTERFACE,
+			"CIS");
+	g_dbus_emit_property_changed(btd_get_dbus_connection(),
+			transport->path, MEDIA_TRANSPORT_INTERFACE,
 			"Interval");
 	g_dbus_emit_property_changed(btd_get_dbus_connection(),
 			transport->path, MEDIA_TRANSPORT_INTERFACE,
 			"Framing");
+	g_dbus_emit_property_changed(btd_get_dbus_connection(),
+			transport->path, MEDIA_TRANSPORT_INTERFACE,
+			"PHY");
 	g_dbus_emit_property_changed(btd_get_dbus_connection(),
 			transport->path, MEDIA_TRANSPORT_INTERFACE,
 			"SDU");

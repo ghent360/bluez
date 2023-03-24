@@ -122,6 +122,8 @@ void bt_csip_detach(struct bt_csip *csip)
 	if (!queue_remove(sessions, csip))
 		return;
 
+	bt_gatt_client_idle_unregister(csip->client, csip->idle_id);
+
 	bt_gatt_client_unref(csip->client);
 	csip->client = NULL;
 
@@ -806,6 +808,9 @@ bool bt_csip_get_sirk(struct bt_csip *csip, uint8_t *type,
 
 	csis = csip_get_csis(csip);
 	if (!csis)
+		return false;
+
+	if (!csis->sirk_val)
 		return false;
 
 	if (type)
