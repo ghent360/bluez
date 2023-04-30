@@ -30,20 +30,47 @@
 #include "src/shared/gatt-db.h"
 #include "src/shared/gatt-client.h"
 #include "src/shared/bap.h"
+#include "src/shared/lc3.h"
+
+struct test_config {
+	struct bt_bap_pac_qos pqos;
+	struct iovec cc;
+	struct bt_bap_qos qos;
+	bool snk;
+	bool src;
+	bool vs;
+};
 
 struct test_data {
 	struct bt_gatt_client *client;
+	struct gatt_db *db;
 	struct bt_bap *bap;
+	struct bt_bap_pac *snk;
+	struct bt_bap_pac *src;
+	struct iovec *caps;
+	struct test_config *cfg;
+	struct bt_bap_stream *stream;
 	size_t iovcnt;
 	struct iovec *iov;
 };
 
+/*
+ * Frequencies: 8Khz 11Khz 16Khz 22Khz 24Khz 32Khz 44.1Khz 48Khz
+ * Duration: 7.5 ms 10 ms
+ * Channel count: 3
+ * Frame length: 30-240
+ */
+static struct iovec lc3_caps = LC3_CAPABILITIES(LC3_FREQ_ANY, LC3_DURATION_ANY,
+								3u, 30, 240);
+
 #define iov_data(args...) ((const struct iovec[]) { args })
 
-#define define_test(name, function, args...)			\
+#define define_test(name, function, _cfg, args...)		\
 	do {							\
 		const struct iovec iov[] = { args };		\
 		static struct test_data data;			\
+		data.caps = &lc3_caps;				\
+		data.cfg = _cfg;				\
 		data.iovcnt = ARRAY_SIZE(iov_data(args));	\
 		data.iov = util_iov_dup(iov, ARRAY_SIZE(iov_data(args))); \
 		tester_add(name, &data, test_setup, function,	\
@@ -307,24 +334,93 @@ static void test_complete_cb(const void *user_data)
 	tester_test_passed();
 }
 
+static void bap_config(struct bt_bap_stream *stream,
+					uint8_t code, uint8_t reason,
+					void *user_data)
+{
+	if (code)
+		tester_test_failed();
+}
+
+static bool pac_found(struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
+							void *user_data)
+{
+	struct test_data *data = user_data;
+	unsigned int config_id;
+
+	data->stream = bt_bap_stream_new(data->bap, lpac, rpac,
+						&data->cfg->qos,
+						&data->cfg->cc);
+	g_assert(data->stream);
+
+	config_id = bt_bap_stream_config(data->stream, &data->cfg->qos,
+					&data->cfg->cc, bap_config, data);
+	g_assert(config_id);
+
+	return true;
+}
+
+static void bap_ready(struct bt_bap *bap, void *user_data)
+{
+	bt_bap_foreach_pac(bap, BT_BAP_SINK, pac_found, user_data);
+	bt_bap_foreach_pac(bap, BT_BAP_SOURCE, pac_found, user_data);
+}
+
+static void test_client_config(struct test_data *data)
+{
+	if (!data->cfg)
+		return;
+
+	if (data->cfg->src) {
+		if (data->cfg->vs)
+			data->snk = bt_bap_add_vendor_pac(data->db,
+							"test-bap-snk",
+							BT_BAP_SINK, 0x0ff,
+							0x0001, 0x0001,
+							NULL, data->caps, NULL);
+		else
+			data->snk = bt_bap_add_pac(data->db, "test-bap-snk",
+							BT_BAP_SINK, LC3_ID,
+							NULL, data->caps, NULL);
+		g_assert(data->snk);
+	}
+
+	if (data->cfg->snk) {
+		if (data->cfg->vs)
+			data->src = bt_bap_add_vendor_pac(data->db,
+							"test-bap-src",
+							BT_BAP_SOURCE, 0x0ff,
+							0x0001, 0x0001,
+							NULL, data->caps, NULL);
+		else
+			data->src = bt_bap_add_pac(data->db, "test-bap-src",
+							BT_BAP_SOURCE, LC3_ID,
+							NULL, data->caps, NULL);
+		g_assert(data->src);
+	}
+}
+
 static void test_client(const void *user_data)
 {
 	struct test_data *data = (void *)user_data;
 	struct io *io;
-	struct gatt_db *db;
 
 	io = tester_setup_io(data->iov, data->iovcnt);
 	g_assert(io);
 
 	tester_io_set_complete_func(test_complete_cb);
 
-	db = gatt_db_new();
-	g_assert(db);
+	data->db = gatt_db_new();
+	g_assert(data->db);
 
-	data->bap = bt_bap_new(db, bt_gatt_client_get_db(data->client));
+	test_client_config(data);
+
+	data->bap = bt_bap_new(data->db, bt_gatt_client_get_db(data->client));
 	g_assert(data->bap);
 
 	bt_bap_set_debug(data->bap, print_debug, "bt_bap:", NULL);
+
+	bt_bap_ready_register(data->bap, bap_ready, data, NULL);
 
 	bt_bap_attach(data->bap, data->client);
 }
@@ -336,6 +432,10 @@ static void test_teardown(const void *user_data)
 	bt_bap_unref(data->bap);
 	bt_gatt_client_unref(data->client);
 	util_iov_free(data->iov, data->iovcnt);
+
+	bt_bap_remove_pac(data->snk);
+	bt_bap_remove_pac(data->src);
+	gatt_db_unref(data->db);
 
 	tester_teardown_complete();
 }
@@ -377,13 +477,16 @@ static void test_teardown(const void *user_data)
  *       Front Left (0x00000001)
  *       Front Right (0x00000002)
  */
-#define DISC_SINK_PAC \
+#define DISC_SNK_PAC(_caps...) \
 	IOV_DATA(0x0a, 0x03, 0x00), \
-	IOV_DATA(0x0b, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
-		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
-		0x1e, 0x00, 0xf0, 0x00, 0x00), \
+	IOV_DATA(0x0b, 0x01, _caps), \
 	IOV_DATA(0x0a, 0x06, 0x00), \
 	IOV_DATA(0x0b, 0x03, 0x00, 0x00, 0x00)
+
+#define DISC_SNK_LC3 \
+	DISC_SNK_PAC(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
 
 /* ATT: Read Request (0x0a) len 2
  *   Handle: 0x0009 Type: Source PAC (0x2bcb)
@@ -422,25 +525,33 @@ static void test_teardown(const void *user_data)
  *       Front Left (0x00000001)
  *       Front Right (0x00000002)
  */
-#define DISC_SOURCE_PAC \
-	DISC_SINK_PAC, \
+#define DISC_SRC_PAC(_caps...) \
+	DISC_SNK_PAC(_caps), \
 	IOV_DATA(0x0a, 0x09, 0x00), \
-	IOV_DATA(0x0b, 0x01, 0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
-		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
-		0x1e, 0x00, 0xf0, 0x00, 0x00), \
+	IOV_DATA(0x0b, 0x01, _caps), \
 	IOV_DATA(0x0a, 0x0c, 0x00), \
 	IOV_DATA(0x0b, 0x03, 0x00, 0x00, 0x00)
 
+#define DISC_SRC_LC3 \
+	DISC_SRC_PAC(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
+
 /* ATT: Read Request (0x0a) len 2
  *   Handle: 0x000f Type: Available Audio Contexts (0x2bcd)
  * ATT: Read Response (0x0b) len 4
  *   Value: ff0f0e00
  *   Handle: 0x000f Type: Available Audio Contexts (0x2bcd)
  */
-#define DISC_CTX \
-	DISC_SOURCE_PAC, \
+#define DISC_CTX(_caps...) \
+	DISC_SRC_PAC(_caps), \
 	IOV_DATA(0x0a, 0x0f, 0x00), \
 	IOV_DATA(0x0b, 0xff, 0x0f, 0x0e, 0x00)
+
+#define DISC_CTX_LC3 \
+	DISC_CTX(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
 
 /* ATT: Read Request (0x0a) len 2
  *   Handle: 0x0012 Type: Supported Audio Contexts (0x2bce)
@@ -448,10 +559,15 @@ static void test_teardown(const void *user_data)
  *   Value: ff0f0e00
  *   Handle: 0x0012 Type: Supported Audio Contexts (0x2bce)
  */
-#define DISC_SUP_CTX \
-	DISC_CTX, \
+#define DISC_SUP_CTX(_caps...) \
+	DISC_CTX(_caps), \
 	IOV_DATA(0x0a, 0x12, 0x00), \
 	IOV_DATA(0x0b, 0xff, 0x0f, 0x0e, 0x00)
+
+#define DISC_SUP_CTX_LC3 \
+	DISC_SUP_CTX(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
 
 /* ATT: Read Request (0x0a) len 2
  *   Handle: 0x0016 Type: Sink ASE (0x2bc4)
@@ -474,8 +590,8 @@ static void test_teardown(const void *user_data)
  *       Notification (0x01)
  * ATT: Write Response (0x13) len 0
  */
-#define DISC_SINK_ASE \
-	DISC_SUP_CTX, \
+#define DISC_SNK_ASE(_caps...) \
+	DISC_SUP_CTX(_caps), \
 	IOV_DATA(0x0a, 0x16, 0x00), \
 	IOV_DATA(0x0b, 0x01, 0x00), \
 	IOV_DATA(0x12, 0x17, 0x00, 0x01, 0x00), \
@@ -484,6 +600,11 @@ static void test_teardown(const void *user_data)
 	IOV_DATA(0x0b, 0x02, 0x00), \
 	IOV_DATA(0x12, 0x1a, 0x00, 0x01, 0x00), \
 	IOV_DATA(0x13)
+
+#define DISC_SNK_ASE_LC3 \
+	DISC_SNK_ASE(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
 
 /* ATT: Read Request (0x0a) len 2
  *   Handle: 0x001c Type: Source ASE (0x2bc5)
@@ -511,8 +632,8 @@ static void test_teardown(const void *user_data)
  *       Notification (0x01)
  * ATT: Write Response (0x13) len 0
  */
-#define DISC_SOURCE_ASE \
-	DISC_SINK_ASE, \
+#define DISC_SRC_ASE(_cfg...) \
+	DISC_SNK_ASE(_cfg), \
 	IOV_DATA(0x0a, 0x1c, 0x00), \
 	IOV_DATA(0x0b, 0x03, 0x00), \
 	IOV_DATA(0x12, 0x1d, 0x00, 0x01, 0x00), \
@@ -524,6 +645,11 @@ static void test_teardown(const void *user_data)
 	IOV_DATA(0x12, 0x23, 0x00, 0x01, 0x00), \
 	IOV_DATA(0x13)
 
+#define DISC_SRC_ASE_LC3 \
+	DISC_SRC_ASE(0x06, 0x00, 0x00, 0x00, 0x00, 0x10, 0x03, 0x01, \
+		0xff, 0x00, 0x02, 0x02, 0x03, 0x02, 0x03, 0x03, 0x05, 0x04, \
+		0x1e, 0x00, 0xf0, 0x00, 0x00)
+
 static void test_disc(void)
 {
 	/* The IUT discovers the characteristics specified in the PAC
@@ -531,22 +657,23 @@ static void test_disc(void)
 	 * The IUT reads the values of the characteristics specified in the PAC
 	 * Characteristic and Location Characteristic columns.
 	 */
-	define_test("BAP/UCL/DISC/BV-01-C", test_client, DISC_SINK_PAC);
-	define_test("BAP/UCL/DISC/BV-02-C", test_client, DISC_SOURCE_PAC);
+	define_test("BAP/UCL/DISC/BV-01-C", test_client, NULL, DISC_SNK_LC3);
+	define_test("BAP/UCL/DISC/BV-02-C", test_client, NULL, DISC_SRC_LC3);
 
 	/* BAP/UCL/DISC/BV-06-C [Discover Available Audio Contexts]
 	 *
 	 * The IUT successfully reads the value of the Available Audio Contexts
 	 * characteristic on the LowerTester.
 	 */
-	define_test("BAP/UCL/DISC/BV-06-C", test_client, DISC_CTX);
+	define_test("BAP/UCL/DISC/BV-06-C", test_client, NULL, DISC_CTX_LC3);
 
 	/* BAP/UCL/DISC/BV-05-C [Discover Supported Audio Contexts]
 	 *
 	 * The IUT successfully reads the value of the Supported Audio Contexts
 	 * characteristic on the Lower Tester.
 	 */
-	define_test("BAP/UCL/DISC/BV-05-C", test_client, DISC_SUP_CTX);
+	define_test("BAP/UCL/DISC/BV-05-C", test_client, NULL,
+						DISC_SUP_CTX_LC3);
 
 	/* BAP/UCL/DISC/BV-03-C [Discover Sink ASE_ID]
 	 * BAP/UCL/DISC/BV-04-C [Discover Source ASE_ID]
@@ -554,8 +681,511 @@ static void test_disc(void)
 	 * The IUT successfully reads the ASE_ID values of each discovered ASE
 	 * characteristic on the LowerTester.
 	 */
-	define_test("BAP/UCL/DISC/BV-03-C", test_client, DISC_SINK_ASE);
-	define_test("BAP/UCL/DISC/BV-04-C", test_client, DISC_SOURCE_ASE);
+	define_test("BAP/UCL/DISC/BV-03-C", test_client, NULL,
+						DISC_SNK_ASE_LC3);
+	define_test("BAP/UCL/DISC/BV-04-C", test_client, NULL,
+						DISC_SRC_ASE_LC3);
+}
+
+/* ATT: Write Command (0x52) len 23
+ *  Handle: 0x0022
+ *    Data: 0101010202_cfg
+ * ATT: Handle Value Notification (0x1b) len 7
+ *   Handle: 0x0022
+ *     Data: 0101010000
+ * ATT: Handle Value Notification (0x1b) len 37
+ *   Handle: 0x0016
+ *     Data: 01010102010a00204e00409c00204e00409c00_cfg
+ */
+#define SCC_SNK(_cfg...) \
+	IOV_DATA(0x52, 0x22, 0x00, 0x01, 0x01, 0x01, 0x02, 0x02, _cfg), \
+	IOV_DATA(0x1b, 0x22, 0x00, 0x01, 0x01, 0x01, 0x00, 0x00), \
+	IOV_NULL, \
+	IOV_DATA(0x1b, 0x16, 0x00, 0x01, 0x01, 0x01, 0x02, 0x01, 0x0a, 0x00, \
+			0x20, 0x4e, 0x00, 0x40, 0x9c, 0x00, 0x20, 0x4e, 0x00, \
+			0x40, 0x9c, 0x00, _cfg)
+
+#define SCC_SNK_LC3(_cc...) \
+	DISC_SRC_ASE_LC3, \
+	SCC_SNK(0x06, 0x00, 0x00, 0x00, 0x00, _cc)
+
+#define QOS_BALANCED_2M \
+	{ \
+		.target_latency = BT_BAP_CONFIG_LATENCY_BALANCED, \
+		.phy = BT_BAP_CONFIG_PHY_2M, \
+	}
+
+static struct test_config cfg_snk_8_1 = {
+	.cc = LC3_CONFIG_8_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_8_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x1a, 0x00)
+
+static struct test_config cfg_snk_8_2 = {
+	.cc = LC3_CONFIG_8_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_8_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x01, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x1e, 0x00)
+
+static struct test_config cfg_snk_16_1 = {
+	.cc = LC3_CONFIG_16_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_16_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x03, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x1e, 0x00)
+
+static struct test_config cfg_snk_16_2 = {
+	.cc = LC3_CONFIG_16_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_16_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x03, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x28, 0x00)
+
+static struct test_config cfg_snk_24_1 = {
+	.cc = LC3_CONFIG_24_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_24_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x05, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x2d, 0x00)
+
+static struct test_config cfg_snk_24_2 = {
+	.cc = LC3_CONFIG_24_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_24_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x05, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x3c, 0x00)
+
+static struct test_config cfg_snk_32_1 = {
+	.cc = LC3_CONFIG_32_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_32_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x06, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x3c, 0x00)
+
+static struct test_config cfg_snk_32_2 = {
+	.cc = LC3_CONFIG_32_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_32_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x06, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x50, 0x00)
+
+static struct test_config cfg_snk_44_1 = {
+	.cc = LC3_CONFIG_44_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_44_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x07, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x62, 0x00)
+
+static struct test_config cfg_snk_44_2 = {
+	.cc = LC3_CONFIG_44_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_44_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x07, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x82, 0x00)
+
+static struct test_config cfg_snk_48_1 = {
+	.cc = LC3_CONFIG_48_1,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_1 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x4b, 0x00)
+
+static struct test_config cfg_snk_48_2 = {
+	.cc = LC3_CONFIG_48_2,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_2 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x64, 0x00)
+
+static struct test_config cfg_snk_48_3 = {
+	.cc = LC3_CONFIG_48_3,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_3 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x5a, 0x00)
+
+static struct test_config cfg_snk_48_4 = {
+	.cc = LC3_CONFIG_48_4,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_4 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x78, 0x00)
+
+static struct test_config cfg_snk_48_5 = {
+	.cc = LC3_CONFIG_48_5,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_5 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x75, 0x00)
+
+static struct test_config cfg_snk_48_6 = {
+	.cc = LC3_CONFIG_48_6,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+};
+
+#define SCC_SNK_48_6 \
+	SCC_SNK_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x9b, 0x00)
+
+/* ATT: Write Command (0x52) len 23
+ *  Handle: 0x0022
+ *    Data: 0101030202_cfg
+ * ATT: Handle Value Notification (0x1b) len 7
+ *   Handle: 0x0022
+ *     Data: 0101030000
+ * ATT: Handle Value Notification (0x1b) len 37
+ *   Handle: 0x001c
+ *     Data: 03010102010a00204e00409c00204e00409c00_cfg
+ */
+#define SCC_SRC(_cfg...) \
+	IOV_DATA(0x52, 0x22, 0x00, 0x01, 0x01, 0x03, 0x02, 0x02, _cfg), \
+	IOV_DATA(0x1b, 0x22, 0x00, 0x01, 0x01, 0x03, 0x00, 0x00), \
+	IOV_NULL, \
+	IOV_DATA(0x1b, 0x1c, 0x00, 0x03, 0x01, 0x01, 0x02, 0x01, 0x0a, 0x00, \
+			0x20, 0x4e, 0x00, 0x40, 0x9c, 0x00, 0x20, 0x4e, 0x00, \
+			0x40, 0x9c, 0x00, _cfg)
+
+#define SCC_SRC_LC3(_cc...) \
+	DISC_SRC_ASE_LC3, \
+	SCC_SRC(0x06, 0x00, 0x00, 0x00, 0x00, _cc)
+
+static struct test_config cfg_src_8_1 = {
+	.cc = LC3_CONFIG_8_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_8_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			    0x1a, 0x00)
+
+static struct test_config cfg_src_8_2 = {
+	.cc = LC3_CONFIG_8_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_8_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x01, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x1e, 0x00)
+
+static struct test_config cfg_src_16_1 = {
+	.cc = LC3_CONFIG_16_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_16_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x03, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x1e, 0x00)
+
+static struct test_config cfg_src_16_2 = {
+	.cc = LC3_CONFIG_16_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_16_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x03, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x28, 0x00)
+
+static struct test_config cfg_src_24_1 = {
+	.cc = LC3_CONFIG_24_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_24_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x05, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x2d, 0x00)
+
+static struct test_config cfg_src_24_2 = {
+	.cc = LC3_CONFIG_24_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_24_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x05, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x3c, 0x00)
+
+static struct test_config cfg_src_32_1 = {
+	.cc = LC3_CONFIG_32_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_32_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x06, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x3c, 0x00)
+
+static struct test_config cfg_src_32_2 = {
+	.cc = LC3_CONFIG_32_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_32_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x06, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x50, 0x00)
+
+static struct test_config cfg_src_44_1 = {
+	.cc = LC3_CONFIG_44_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_44_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x07, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x62, 0x00)
+
+static struct test_config cfg_src_44_2 = {
+	.cc = LC3_CONFIG_44_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_44_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x07, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x82, 0x00)
+
+static struct test_config cfg_src_48_1 = {
+	.cc = LC3_CONFIG_48_1,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_1 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x4b, 0x00)
+
+static struct test_config cfg_src_48_2 = {
+	.cc = LC3_CONFIG_48_2,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_2 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x64, 0x00)
+
+static struct test_config cfg_src_48_3 = {
+	.cc = LC3_CONFIG_48_3,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_3 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x5a, 0x00)
+
+static struct test_config cfg_src_48_4 = {
+	.cc = LC3_CONFIG_48_4,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_4 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x78, 0x00)
+
+static struct test_config cfg_src_48_5 = {
+	.cc = LC3_CONFIG_48_5,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_5 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x00, 0x03, 0x04, \
+			0x75, 0x00)
+
+static struct test_config cfg_src_48_6 = {
+	.cc = LC3_CONFIG_48_6,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+};
+
+#define SCC_SRC_48_6 \
+	SCC_SRC_LC3(0x0a, 0x02, 0x01, 0x08, 0x02, 0x02, 0x01, 0x03, 0x04, \
+			0x9b, 0x00)
+
+/* Test Purpose:
+ * Verify that a Unicast Client IUT can initiate a Config Codec
+ * operation for an LC3 codec.
+ *
+ * Pass verdict:
+ * The IUT successfully writes to the ASE Control point with the opcode
+ * set to 0x01 (Config Codec) and correctly formatted parameter values
+ * from Table 4.9. The Codec_ID field is a 5-octet field with octet 0
+ * set to the LC3 Coding_Format value defined in Bluetooth Assigned
+ * Numbers, octets 1–4 set to 0x0000. Each parameter (if present)
+ * included in the data sent in Codec_Specific_Configuration is
+ * formatted in an LTV structure with the length, type, and value
+ * specified in Table 4.10.
+ */
+static void test_scc_cc_lc3(void)
+{
+	define_test("BAP/UCL/SCC/BV-001-C [UCL SRC Config Codec, LC3 8_1]",
+			test_client, &cfg_snk_8_1, SCC_SNK_8_1);
+	define_test("BAP/UCL/SCC/BV-002-C [UCL SRC Config Codec, LC3 8_2]",
+			test_client, &cfg_snk_8_2, SCC_SNK_8_2);
+	define_test("BAP/UCL/SCC/BV-003-C [UCL SRC Config Codec, LC3 16_1]",
+			test_client, &cfg_snk_16_1, SCC_SNK_16_1);
+	define_test("BAP/UCL/SCC/BV-004-C [UCL SRC Config Codec, LC3 16_2]",
+			test_client, &cfg_snk_16_2, SCC_SNK_16_2);
+	define_test("BAP/UCL/SCC/BV-005-C [UCL SRC Config Codec, LC3 24_1]",
+			test_client, &cfg_snk_24_1, SCC_SNK_24_1);
+	define_test("BAP/UCL/SCC/BV-006-C [UCL SRC Config Codec, LC3 24_2]",
+			test_client, &cfg_snk_24_2, SCC_SNK_24_2);
+	define_test("BAP/UCL/SCC/BV-007-C [UCL SRC Config Codec, LC3 32_1]",
+			test_client, &cfg_snk_32_1, SCC_SNK_32_1);
+	define_test("BAP/UCL/SCC/BV-008-C [UCL SRC Config Codec, LC3 32_2]",
+			test_client, &cfg_snk_32_2, SCC_SNK_32_2);
+	define_test("BAP/UCL/SCC/BV-009-C [UCL SRC Config Codec, LC3 44.1_1]",
+			test_client, &cfg_snk_44_1, SCC_SNK_44_1);
+	define_test("BAP/UCL/SCC/BV-010-C [UCL SRC Config Codec, LC3 44.1_2]",
+			test_client, &cfg_snk_44_2, SCC_SNK_44_2);
+	define_test("BAP/UCL/SCC/BV-011-C [UCL SRC Config Codec, LC3 48_1]",
+			test_client, &cfg_snk_48_1, SCC_SNK_48_1);
+	define_test("BAP/UCL/SCC/BV-012-C [UCL SRC Config Codec, LC3 48_2]",
+			test_client, &cfg_snk_48_2, SCC_SNK_48_2);
+	define_test("BAP/UCL/SCC/BV-013-C [UCL SRC Config Codec, LC3 48_3]",
+			test_client, &cfg_snk_48_3, SCC_SNK_48_3);
+	define_test("BAP/UCL/SCC/BV-014-C [UCL SRC Config Codec, LC3 48_4]",
+			test_client, &cfg_snk_48_4, SCC_SNK_48_4);
+	define_test("BAP/UCL/SCC/BV-015-C [UCL SRC Config Codec, LC3 48_5]",
+			test_client, &cfg_snk_48_5, SCC_SNK_48_5);
+	define_test("BAP/UCL/SCC/BV-016-C [UCL SRC Config Codec, LC3 48_6]",
+			test_client, &cfg_snk_48_6, SCC_SNK_48_6);
+	define_test("BAP/UCL/SCC/BV-017-C [UCL SNK Config Codec, LC3 8_1]",
+			test_client, &cfg_src_8_1, SCC_SRC_8_1);
+	define_test("BAP/UCL/SCC/BV-018-C [UCL SNK Config Codec, LC3 8_2]",
+			test_client, &cfg_src_8_2, SCC_SRC_8_2);
+	define_test("BAP/UCL/SCC/BV-019-C [UCL SNK Config Codec, LC3 16_1]",
+			test_client, &cfg_src_16_1, SCC_SRC_16_1);
+	define_test("BAP/UCL/SCC/BV-020-C [UCL SNK Config Codec, LC3 16_2]",
+			test_client, &cfg_src_16_2, SCC_SRC_16_2);
+	define_test("BAP/UCL/SCC/BV-021-C [UCL SNK Config Codec, LC3 24_1]",
+			test_client, &cfg_src_24_1, SCC_SRC_24_1);
+	define_test("BAP/UCL/SCC/BV-022-C [UCL SNK Config Codec, LC3 24_2]",
+			test_client, &cfg_src_24_2, SCC_SRC_24_2);
+	define_test("BAP/UCL/SCC/BV-023-C [UCL SNK Config Codec, LC3 32_1]",
+			test_client, &cfg_src_32_1, SCC_SRC_32_1);
+	define_test("BAP/UCL/SCC/BV-024-C [UCL SNK Config Codec, LC3 32_2]",
+			test_client, &cfg_src_32_2, SCC_SRC_32_2);
+	define_test("BAP/UCL/SCC/BV-025-C [UCL SNK Config Codec, LC3 44.1_1]",
+			test_client, &cfg_src_44_1, SCC_SRC_44_1);
+	define_test("BAP/UCL/SCC/BV-026-C [UCL SNK Config Codec, LC3 44.1_2]",
+			test_client, &cfg_src_44_2, SCC_SRC_44_2);
+	define_test("BAP/UCL/SCC/BV-027-C [UCL SNK Config Codec, LC3 48_1]",
+			test_client, &cfg_src_48_1, SCC_SRC_48_1);
+	define_test("BAP/UCL/SCC/BV-028-C [UCL SNK Config Codec, LC3 48_2]",
+			test_client, &cfg_src_48_2, SCC_SRC_48_2);
+	define_test("BAP/UCL/SCC/BV-029-C [UCL SNK Config Codec, LC3 48_3]",
+			test_client, &cfg_src_48_3, SCC_SRC_48_3);
+	define_test("BAP/UCL/SCC/BV-030-C [UCL SNK Config Codec, LC3 48_4]",
+			test_client, &cfg_src_48_4, SCC_SRC_48_4);
+	define_test("BAP/UCL/SCC/BV-031-C [UCL SNK Config Codec, LC3 48_5]",
+			test_client, &cfg_src_48_5, SCC_SRC_48_5);
+	define_test("BAP/UCL/SCC/BV-032-C [UCL SNK Config Codec, LC3 48_6]",
+			test_client, &cfg_src_48_6, SCC_SRC_48_6);
+}
+
+static struct test_config cfg_snk_vs = {
+	.cc = IOV_NULL,
+	.qos = QOS_BALANCED_2M,
+	.snk = true,
+	.vs = true,
+};
+
+#define DISC_SRC_ASE_VS \
+	DISC_SRC_ASE(0xff, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00)
+
+#define SCC_SNK_VS \
+	DISC_SRC_ASE_VS,  \
+	SCC_SNK(0xff, 0x01, 0x00, 0x01, 0x00, 0x00)
+
+static struct test_config cfg_src_vs = {
+	.cc = IOV_NULL,
+	.qos = QOS_BALANCED_2M,
+	.src = true,
+	.vs = true,
+};
+
+#define SCC_SRC_VS \
+	DISC_SRC_ASE_VS,  \
+	SCC_SRC(0xff, 0x01, 0x00, 0x01, 0x00, 0x00)
+
+/* Test Purpose:
+ * Verify that a Unicast Client IUT can initiate a Config Codec operation for a
+ * vendor-specific codec.
+ *
+ * Pass verdict:
+ * The IUT successfully writes to the ASE Control Point characteristic with the
+ * opcode set to 0x01 (Config Codec) and the specified parameters. The Codec_ID
+ * parameter is formatted with octet 0 set to 0xFF, octets 1–2 set to
+ * TSPX_VS_Company_ID, and octets 3–4 set to TSPX_VS_Codec_ID.
+ */
+static void test_scc_cc_vs(void)
+{
+	define_test("BAP/UCL/SCC/BV-033-C [UCL SRC Config Codec, VS]",
+			test_client, &cfg_snk_vs, SCC_SNK_VS);
+	define_test("BAP/UCL/SCC/BV-034-C [UCL SNK Config Codec, VS]",
+			test_client, &cfg_src_vs, SCC_SRC_VS);
+}
+
+static void test_scc(void)
+{
+	test_scc_cc_lc3();
+	test_scc_cc_vs();
 }
 
 int main(int argc, char *argv[])
@@ -563,6 +1193,7 @@ int main(int argc, char *argv[])
 	tester_init(&argc, &argv);
 
 	test_disc();
+	test_scc();
 
 	return tester_run();
 }
