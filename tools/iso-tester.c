@@ -64,6 +64,11 @@
 		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), \
 		QOS_IO(_interval, _latency, _sdu, _phy, _rtn))
 
+#define QOS_2(_interval, _latency, _sdu, _phy, _rtn) \
+	QOS_FULL(0x02, BT_ISO_QOS_CIS_UNSET, \
+		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), \
+		QOS_IO(_interval, _latency, _sdu, _phy, _rtn))
+
 #define QOS_1_1(_interval, _latency, _sdu, _phy, _rtn) \
 	QOS_FULL(0x01, 0x01, \
 		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), \
@@ -109,6 +114,7 @@
 #define QOS_16_1_1 QOS(7500, 8, 30, 0x02, 2)
 #define QOS_16_2_1 QOS(10000, 10, 40, 0x02, 2)
 #define QOS_1_16_2_1 QOS_1(10000, 10, 40, 0x02, 2)
+#define QOS_2_16_2_1 QOS_2(10000, 10, 40, 0x02, 2)
 #define QOS_1_1_16_2_1 QOS_1_1(10000, 10, 40, 0x02, 2)
 #define QOS_24_1_1 QOS(7500, 8, 45, 0x02, 2)
 #define QOS_24_2_1 QOS(10000, 10, 60, 0x02, 2)
@@ -546,6 +552,20 @@ static const struct iso_client_data connect_1_16_2_1 = {
 	.expect_err = 0
 };
 
+static const struct iso_client_data connect_ac_1_2_cig_1_2 = {
+	.qos = QOS_1_16_2_1,
+	.qos_2 = QOS_2_16_2_1,
+	.expect_err = 0,
+	.mcis = true,
+};
+
+static const struct iso_client_data connect_ac_1_2 = {
+	.qos = QOS_16_2_1,
+	.qos_2 = QOS_16_2_1,
+	.expect_err = 0,
+	.mcis = true,
+};
+
 static const struct iso_client_data connect_1_1_16_2_1 = {
 	.qos = QOS_1_1_16_2_1,
 	.expect_err = 0
@@ -740,6 +760,12 @@ static const struct iso_client_data defer_16_2_1 = {
 	.defer = true,
 };
 
+static const struct iso_client_data defer_1_16_2_1 = {
+	.qos = QOS_1_16_2_1,
+	.expect_err = 0,
+	.defer = true,
+};
+
 static const struct iso_client_data connect_16_2_1_defer_send = {
 	.qos = QOS_16_2_1,
 	.expect_err = 0,
@@ -817,6 +843,7 @@ static const struct iso_client_data connect_ac_6i = {
 	.qos_2 = AC_6i_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_6ii = {
@@ -824,6 +851,7 @@ static const struct iso_client_data connect_ac_6ii = {
 	.qos_2 = AC_6ii_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_7i = {
@@ -831,6 +859,7 @@ static const struct iso_client_data connect_ac_7i = {
 	.qos_2 = AC_7i_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_7ii = {
@@ -838,6 +867,7 @@ static const struct iso_client_data connect_ac_7ii = {
 	.qos_2 = AC_7ii_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_8i = {
@@ -845,6 +875,7 @@ static const struct iso_client_data connect_ac_8i = {
 	.qos_2 = AC_8i_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_8ii = {
@@ -852,6 +883,7 @@ static const struct iso_client_data connect_ac_8ii = {
 	.qos_2 = AC_8ii_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_9i = {
@@ -859,6 +891,7 @@ static const struct iso_client_data connect_ac_9i = {
 	.qos_2 = AC_9i_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_9ii = {
@@ -866,6 +899,7 @@ static const struct iso_client_data connect_ac_9ii = {
 	.qos_2 = AC_9ii_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_11i = {
@@ -873,6 +907,7 @@ static const struct iso_client_data connect_ac_11i = {
 	.qos_2 = AC_11i_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data connect_ac_11ii = {
@@ -880,6 +915,7 @@ static const struct iso_client_data connect_ac_11ii = {
 	.qos_2 = AC_11ii_2,
 	.expect_err = 0,
 	.mcis = true,
+	.defer = true,
 };
 
 static const struct iso_client_data bcast_16_2_1_send = {
@@ -1715,13 +1751,9 @@ static gboolean iso_connect2_cb(GIOChannel *io, GIOCondition cond,
 	return iso_connect(io, cond, user_data);
 }
 
-static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func)
+static int setup_sock(struct test_data *data, uint8_t num)
 {
-	const struct iso_client_data *isodata = data->test_data;
-	GIOChannel *io;
 	int sk, err;
-	char c;
-	struct pollfd pfd;
 
 	sk = create_iso_sock(data);
 	if (sk < 0) {
@@ -1729,7 +1761,8 @@ static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func)
 			tester_test_abort();
 		else
 			tester_test_failed();
-		return;
+
+		return sk;
 	}
 
 	err = connect_iso_sock(data, num, sk);
@@ -1743,65 +1776,106 @@ static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func)
 		else
 			tester_test_failed();
 
-		return;
+		return err;
+	}
+
+	return sk;
+}
+
+static int connect_deferred(int sk)
+{
+	int defer;
+	socklen_t len;
+	struct pollfd pfd;
+	char c;
+
+	/* Check if socket has DEFER_SETUP set */
+	len = sizeof(defer);
+	if (getsockopt(sk, SOL_BLUETOOTH, BT_DEFER_SETUP, &defer,
+					&len) < 0) {
+		tester_warn("getsockopt: %s (%d)", strerror(errno),
+				errno);
+		tester_test_failed();
+		return 0;
+	}
+
+	memset(&pfd, 0, sizeof(pfd));
+	pfd.fd = sk;
+	pfd.events = POLLOUT;
+
+	if (poll(&pfd, 1, 0) < 0) {
+		tester_warn("poll: %s (%d)", strerror(errno), errno);
+		tester_test_failed();
+		return -EIO;
+	}
+
+	if (!(pfd.revents & POLLOUT)) {
+		if (read(sk, &c, 1) < 0) {
+			tester_warn("read: %s (%d)", strerror(errno),
+					errno);
+			tester_test_failed();
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
+static void setup_connect_many(struct test_data *data, uint8_t n, uint8_t *num,
+								GIOFunc *func)
+{
+	const struct iso_client_data *isodata = data->test_data;
+	int sk[256];
+	GIOChannel *io;
+	unsigned int i;
+
+	for (i = 0; i < n; ++i) {
+		sk[i] = setup_sock(data, num[i]);
+		if (sk[i] < 0)
+			return;
 	}
 
 	if (isodata->defer) {
-		int defer;
-		socklen_t len;
-
-		/* Check if socket has DEFER_SETUP set */
-		len = sizeof(defer);
-		if (getsockopt(sk, SOL_BLUETOOTH, BT_DEFER_SETUP, &defer,
-				&len) < 0) {
-			tester_warn("getsockopt: %s (%d)", strerror(errno),
-								errno);
-			tester_test_failed();
-			return;
-		}
-
-		memset(&pfd, 0, sizeof(pfd));
-		pfd.fd = sk;
-		pfd.events = POLLOUT;
-
-		if (poll(&pfd, 1, 0) < 0) {
-			tester_warn("poll: %s (%d)", strerror(errno), errno);
-			tester_test_failed();
-			return;
-		}
-
-		if (!(pfd.revents & POLLOUT)) {
-			if (read(sk, &c, 1) < 0) {
-				tester_warn("read: %s (%d)", strerror(errno),
-								errno);
-				tester_test_failed();
+		for (i = 0; i < n; ++i)
+			if (connect_deferred(sk[i]) < 0)
 				return;
-			}
-		}
 	}
 
-	io = g_io_channel_unix_new(sk);
-	g_io_channel_set_close_on_unref(io, TRUE);
+	for (i = 0; i < n; ++i) {
+		io = g_io_channel_unix_new(sk[i]);
+		g_io_channel_set_close_on_unref(io, TRUE);
 
-	data->io_id[num] = g_io_add_watch(io, G_IO_OUT, func, NULL);
+		data->io_id[num[i]] = g_io_add_watch(io, G_IO_OUT, func[i],
+									NULL);
 
-	g_io_channel_unref(io);
+		g_io_channel_unref(io);
 
-	tester_print("Connect in progress");
+		tester_print("Connect %d in progress", num[i]);
 
-	data->step++;
+		data->step++;
+	}
+}
+
+static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func)
+{
+	return setup_connect_many(data, 1, &num, &func);
 }
 
 static void test_connect(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
 	const struct iso_client_data *isodata = test_data;
+	uint8_t n = 0;
+	GIOFunc func[2];
+	uint8_t num[2] = {0, 1};
 
-	setup_connect(data, 0, iso_connect_cb);
+	func[n++] = iso_connect_cb;
 
 	/* Check if configuration requires multiple CIS setup */
 	if (!isodata->bcast && isodata->mcis)
-		setup_connect(data, 1, iso_connect2_cb);
+		func[n++] = iso_connect2_cb;
+
+	setup_connect_many(data, n, num, func);
 }
 
 static void setup_reconnect(struct test_data *data, uint8_t num, GIOFunc func)
@@ -2066,9 +2140,29 @@ static void test_listen(const void *test_data)
 static void test_connect2(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
+	uint8_t num[2] = {0, 1};
+	GIOFunc funcs[2] = {iso_connect_cb, iso_connect2_cb};
 
-	setup_connect(data, 0, iso_connect_cb);
+	setup_connect_many(data, 2, num, funcs);
+}
+
+static gboolean iso_connect2_seq_cb(GIOChannel *io, GIOCondition cond,
+							gpointer user_data)
+{
+	struct test_data *data = tester_get_data();
+
+	data->io_id[0] = 0;
+
 	setup_connect(data, 1, iso_connect2_cb);
+
+	return iso_connect(io, cond, user_data);
+}
+
+static void test_connect2_seq(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+
+	setup_connect(data, 0, iso_connect2_seq_cb);
 }
 
 static void test_bcast(const void *test_data)
@@ -2212,10 +2306,6 @@ int main(int argc, char *argv[])
 	test_iso_rej("ISO Connect - Reject", &connect_reject, setup_powered,
 			test_connect, BT_HCI_ERR_CONN_FAILED_TO_ESTABLISH);
 
-	test_iso2("ISO Connect2 CIG 0x01 - Success", &connect_1_16_2_1,
-							setup_powered,
-							test_connect2);
-
 	test_iso("ISO Send - Success", &connect_16_2_1_send, setup_powered,
 							test_connect);
 
@@ -2228,6 +2318,13 @@ int main(int argc, char *argv[])
 
 	test_iso("ISO Defer - Success", &defer_16_2_1, setup_powered,
 							test_defer);
+
+	test_iso("ISO Defer Connect - Success", &defer_16_2_1, setup_powered,
+							test_connect);
+
+	test_iso2("ISO Defer Connect2 CIG 0x01 - Success", &defer_1_16_2_1,
+							setup_powered,
+							test_connect2);
 
 	test_iso("ISO Defer Send - Success", &connect_16_2_1_defer_send,
 							setup_powered,
@@ -2297,6 +2394,14 @@ int main(int argc, char *argv[])
 
 	test_iso2("ISO AC 11(ii) - Success", &connect_ac_11ii, setup_powered,
 							test_connect2);
+
+	test_iso2("ISO AC 1 + 2 - Success", &connect_ac_1_2, setup_powered,
+							test_connect2_seq);
+
+	test_iso2("ISO AC 1 + 2 CIG 0x01/0x02 - Success",
+							&connect_ac_1_2_cig_1_2,
+							setup_powered,
+							test_connect2_seq);
 
 	test_iso("ISO Broadcaster - Success", &bcast_16_2_1_send, setup_powered,
 							test_bcast);
