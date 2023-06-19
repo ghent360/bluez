@@ -157,6 +157,9 @@ extern "C" {
 #define PAC_SOURCE_UUID		"00002bcb-0000-1000-8000-00805f9b34fb"
 #define PAC_SOURCE_LOC_CHRC_UUID			0x2bcc
 
+#define BAA_SERVICE		0x1852
+#define BAA_SERVICE_UUID	"00001852-0000-1000-8000-00805f9b34fb"
+
 #define PAC_CONTEXT					0x2bcd
 #define PAC_SUPPORTED_CONTEXT				0x2bce
 
@@ -175,6 +178,11 @@ extern "C" {
 #define VOL_STATE_CHRC_UUID				0x2B7D
 #define VOL_CP_CHRC_UUID				0x2B7E
 #define VOL_FLAG_CHRC_UUID				0x2B7F
+
+#define VOCS_STATE_CHAR_UUID			0x2B80
+#define VOCS_AUDIO_LOC_CHRC_UUID		0x2B81
+#define VOCS_CP_CHRC_UUID			0x2B82
+#define VOCS_AUDIO_OP_DESC_CHAR_UUID		0x2B83
 
 #define GMCS_UUID                               0x1849
 #define MEDIA_PLAYER_NAME_CHRC_UUID             0x2b93

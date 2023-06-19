@@ -4,6 +4,7 @@
  *  BlueZ - Bluetooth protocol stack for Linux
  *
  *  Copyright (C) 2022  Intel Corporation. All rights reserved.
+ *  Copyright 2023 NXP
  *
  */
 
@@ -120,6 +121,8 @@ struct bt_bap_db {
 	struct bt_ascs *ascs;
 	struct queue *sinks;
 	struct queue *sources;
+	struct queue *broadcast_sources;
+	struct queue *broadcast_sinks;
 };
 
 struct bt_bap_req {
@@ -622,6 +625,18 @@ static struct bt_bap_endpoint *bap_endpoint_new(struct bt_bap_db *bdb,
 	return ep;
 }
 
+static struct bt_bap_endpoint *bap_endpoint_new_broacast(struct bt_bap_db *bdb)
+{
+	struct bt_bap_endpoint *ep;
+
+	ep = new0(struct bt_bap_endpoint, 1);
+	ep->bdb = bdb;
+	ep->attr = NULL;
+	ep->dir = BT_BAP_BCAST_SOURCE;
+
+	return ep;
+}
+
 static struct bt_bap_endpoint *bap_get_endpoint(struct queue *endpoints,
 						struct bt_bap_db *db,
 						struct gatt_db_attribute *attr)
@@ -636,6 +651,30 @@ static struct bt_bap_endpoint *bap_get_endpoint(struct queue *endpoints,
 		return ep;
 
 	ep = bap_endpoint_new(db, attr);
+	if (!ep)
+		return NULL;
+
+	queue_push_tail(endpoints, ep);
+
+	return ep;
+}
+
+static struct bt_bap_endpoint *bap_get_endpoint_bcast(struct queue *endpoints,
+						struct bt_bap_db *db)
+{
+	struct bt_bap_endpoint *ep;
+
+	if (!db)
+		return NULL;
+	/*
+	 * We have support for only one stream so we will have
+	 * only one endpoint.
+	 * TO DO add support for more then one stream
+	 */
+	if (queue_length(endpoints) > 0)
+		return queue_peek_head(endpoints);
+
+	ep = bap_endpoint_new_broacast(db);
 	if (!ep)
 		return NULL;
 
@@ -861,15 +900,15 @@ static void stream_notify_qos(struct bt_bap_stream *stream)
 	status->state = ep->state;
 
 	qos = (void *)status->params;
-	qos->cis_id = stream->qos.cis_id;
-	qos->cig_id = stream->qos.cig_id;
-	put_le24(stream->qos.interval, qos->interval);
-	qos->framing = stream->qos.framing;
-	qos->phy = stream->qos.phy;
-	qos->sdu = cpu_to_le16(stream->qos.sdu);
-	qos->rtn = stream->qos.rtn;
-	qos->latency = cpu_to_le16(stream->qos.latency);
-	put_le24(stream->qos.delay, qos->pd);
+	qos->cis_id = stream->qos.ucast.cis_id;
+	qos->cig_id = stream->qos.ucast.cig_id;
+	put_le24(stream->qos.ucast.io_qos.interval, qos->interval);
+	qos->framing = stream->qos.ucast.framing;
+	qos->phy = stream->qos.ucast.io_qos.phy;
+	qos->sdu = cpu_to_le16(stream->qos.ucast.io_qos.sdu);
+	qos->rtn = stream->qos.ucast.io_qos.rtn;
+	qos->latency = cpu_to_le16(stream->qos.ucast.io_qos.latency);
+	put_le24(stream->qos.ucast.delay, qos->pd);
 
 	gatt_db_attribute_notify(ep->attr, (void *) status, len,
 					bt_bap_get_att(stream->bap));
@@ -898,8 +937,8 @@ static void stream_notify_metadata(struct bt_bap_stream *stream)
 	status->state = ep->state;
 
 	meta = (void *)status->params;
-	meta->cis_id = stream->qos.cis_id;
-	meta->cig_id = stream->qos.cig_id;
+	meta->cis_id = stream->qos.ucast.cis_id;
+	meta->cig_id = stream->qos.ucast.cig_id;
 
 	if (stream->meta) {
 		meta->len = stream->meta->iov_len;
@@ -1260,6 +1299,37 @@ static void bap_stream_state_changed(struct bt_bap_stream *stream)
 	bt_bap_unref(bap);
 }
 
+static void stream_set_state_broadcast(struct bt_bap_stream *stream,
+					uint8_t state)
+{
+	struct bt_bap_endpoint *ep = stream->ep;
+	struct bt_bap *bap = stream->bap;
+	const struct queue_entry *entry;
+
+	ep->old_state = ep->state;
+	ep->state = state;
+
+	bt_bap_ref(bap);
+
+	for (entry = queue_get_entries(bap->state_cbs); entry;
+							entry = entry->next) {
+		struct bt_bap_state *state = entry->data;
+
+		if (state->func)
+			state->func(stream, stream->ep->old_state,
+					stream->ep->state, state->data);
+	}
+
+	/* Post notification updates */
+	switch (stream->ep->state) {
+	case BT_ASCS_ASE_STATE_IDLE:
+		bap_stream_detach(stream);
+		break;
+	}
+
+	bt_bap_unref(bap);
+}
+
 static void stream_set_state(struct bt_bap_stream *stream, uint8_t state)
 {
 	struct bt_bap_endpoint *ep = stream->ep;
@@ -1395,6 +1465,11 @@ static void ep_config_cb(struct bt_bap_stream *stream, int err)
 {
 	if (err)
 		return;
+
+	if (bt_bap_stream_get_type(stream) == BT_BAP_STREAM_TYPE_BCAST) {
+		stream_set_state_broadcast(stream, BT_BAP_STREAM_STATE_CONFIG);
+		return;
+	}
 
 	stream_set_state(stream, BT_BAP_STREAM_STATE_CONFIG);
 }
@@ -1575,20 +1650,22 @@ static uint8_t ascs_qos(struct bt_ascs *ascs, struct bt_bap *bap,
 
 	memset(&qos, 0, sizeof(qos));
 
-	qos.cig_id = req->cig;
-	qos.cis_id = req->cis;
-	qos.interval = get_le24(req->interval);
-	qos.framing = req->framing;
-	qos.phy = req->phy;
-	qos.sdu = le16_to_cpu(req->sdu);
-	qos.rtn = req->rtn;
-	qos.latency = le16_to_cpu(req->latency);
-	qos.delay = get_le24(req->pd);
+	qos.ucast.cig_id = req->cig;
+	qos.ucast.cis_id = req->cis;
+	qos.ucast.io_qos.interval = get_le24(req->interval);
+	qos.ucast.framing = req->framing;
+	qos.ucast.io_qos.phy = req->phy;
+	qos.ucast.io_qos.sdu = le16_to_cpu(req->sdu);
+	qos.ucast.io_qos.rtn = req->rtn;
+	qos.ucast.io_qos.latency = le16_to_cpu(req->latency);
+	qos.ucast.delay = get_le24(req->pd);
 
 	DBG(bap, "CIG 0x%02x CIS 0x%02x interval %u framing 0x%02x "
 			"phy 0x%02x SDU %u rtn %u latency %u pd %u",
-			req->cig, req->cis, qos.interval, qos.framing, qos.phy,
-			qos.sdu, qos.rtn, qos.latency, qos.delay);
+			req->cig, req->cis, qos.ucast.io_qos.interval,
+			qos.ucast.framing, qos.ucast.io_qos.phy,
+			qos.ucast.io_qos.sdu, qos.ucast.io_qos.rtn,
+			qos.ucast.io_qos.latency, qos.ucast.delay);
 
 	ep = bap_get_local_endpoint_id(bap, req->ase);
 	if (!ep) {
@@ -2219,6 +2296,8 @@ static struct bt_bap_db *bap_db_new(struct gatt_db *db)
 	bdb->db = gatt_db_ref(db);
 	bdb->sinks = queue_new();
 	bdb->sources = queue_new();
+	bdb->broadcast_sources = queue_new();
+	bdb->broadcast_sinks = queue_new();
 
 	if (!bap_db)
 		bap_db = queue_new();
@@ -2394,6 +2473,16 @@ static void bap_add_source(struct bt_bap_pac *pac)
 				iov.iov_len, NULL);
 }
 
+static void bap_add_broadcast_source(struct bt_bap_pac *pac)
+{
+	queue_push_tail(pac->bdb->broadcast_sources, pac);
+}
+
+static void bap_add_broadcast_sink(struct bt_bap_pac *pac)
+{
+	queue_push_tail(pac->bdb->broadcast_sinks, pac);
+}
+
 static void notify_pac_added(void *data, void *user_data)
 {
 	struct bt_bap_pac_changed *changed = data;
@@ -2418,7 +2507,7 @@ struct bt_bap_pac *bt_bap_add_vendor_pac(struct gatt_db *db,
 					struct iovec *metadata)
 {
 	struct bt_bap_db *bdb;
-	struct bt_bap_pac *pac;
+	struct bt_bap_pac *pac, *pac_brodcast_sink;
 	struct bt_bap_codec codec;
 
 	if (!db)
@@ -2443,6 +2532,13 @@ struct bt_bap_pac *bt_bap_add_vendor_pac(struct gatt_db *db,
 		break;
 	case BT_BAP_SOURCE:
 		bap_add_source(pac);
+		break;
+	case BT_BAP_BCAST_SOURCE:
+		// For broadcast add local pac and remote pac
+		bap_add_broadcast_source(pac);
+		pac_brodcast_sink = bap_pac_new(bdb, name, type, &codec, qos,
+					data, metadata);
+		bap_add_broadcast_sink(pac_brodcast_sink);
 		break;
 	default:
 		bap_pac_free(pac);
@@ -2484,6 +2580,23 @@ uint32_t bt_bap_pac_get_locations(struct bt_bap_pac *pac)
 	default:
 		return 0;
 	}
+}
+
+uint8_t bt_bap_stream_get_type(struct bt_bap_stream *stream)
+{
+	if (!stream)
+		return 0x00;
+
+	switch (bt_bap_pac_get_type(stream->lpac)) {
+	case BT_BAP_SINK:
+	case BT_BAP_SOURCE:
+		return BT_BAP_STREAM_TYPE_UCAST;
+	case BT_BAP_BCAST_SOURCE:
+	case BT_BAP_BCAST_SINK:
+		return BT_BAP_STREAM_TYPE_BCAST;
+	}
+
+	return 0x00;
 }
 
 static void notify_pac_removed(void *data, void *user_data)
@@ -2542,6 +2655,9 @@ bool bt_bap_remove_pac(struct bt_bap_pac *pac)
 		goto found;
 
 	if (queue_remove_if(pac->bdb->sources, NULL, pac))
+		goto found;
+
+	if (queue_remove_if(pac->bdb->broadcast_sources, NULL, pac))
 		goto found;
 
 	return false;
@@ -2922,9 +3038,6 @@ static void read_source_pac_loc(bool success, uint8_t att_ecode,
 
 	pacs->source_loc_value = get_le32(value);
 
-	gatt_db_attribute_write(pacs->source_loc, 0, value, length, 0, NULL,
-							NULL, NULL);
-
 	/* Resume reading sinks if supported but for some reason is empty */
 	if (pacs->source && queue_isempty(bap->rdb->sources)) {
 		uint16_t value_handle;
@@ -2957,9 +3070,6 @@ static void read_sink_pac_loc(bool success, uint8_t att_ecode,
 	}
 
 	pacs->sink_loc_value = get_le32(value);
-
-	gatt_db_attribute_write(pacs->sink_loc, 0, value, length, 0, NULL,
-							NULL, NULL);
 
 	/* Resume reading sinks if supported but for some reason is empty */
 	if (pacs->sink && queue_isempty(bap->rdb->sinks)) {
@@ -2994,9 +3104,6 @@ static void read_pac_context(bool success, uint8_t att_ecode,
 
 	pacs->sink_context_value = le16_to_cpu(ctx->snk);
 	pacs->source_context_value = le16_to_cpu(ctx->src);
-
-	gatt_db_attribute_write(pacs->context, 0, value, length, 0, NULL,
-							NULL, NULL);
 }
 
 static void read_pac_supported_context(bool success, uint8_t att_ecode,
@@ -3020,9 +3127,6 @@ static void read_pac_supported_context(bool success, uint8_t att_ecode,
 
 	pacs->supported_sink_context_value = le16_to_cpu(ctx->snk);
 	pacs->supported_source_context_value = le16_to_cpu(ctx->src);
-
-	gatt_db_attribute_write(pacs->supported_context, 0, value, length, 0,
-							NULL, NULL, NULL);
 }
 
 static void foreach_pacs_char(struct gatt_db_attribute *attr, void *user_data)
@@ -3295,13 +3399,13 @@ static void ep_status_qos(struct bt_bap *bap, struct bt_bap_endpoint *ep,
 	if (!ep->stream)
 		return;
 
-	ep->stream->qos.interval = interval;
-	ep->stream->qos.framing = qos->framing;
-	ep->stream->qos.phy = qos->phy;
-	ep->stream->qos.sdu = sdu;
-	ep->stream->qos.rtn = qos->rtn;
-	ep->stream->qos.latency = latency;
-	ep->stream->qos.delay = pd;
+	ep->stream->qos.ucast.io_qos.interval = interval;
+	ep->stream->qos.ucast.framing = qos->framing;
+	ep->stream->qos.ucast.io_qos.phy = qos->phy;
+	ep->stream->qos.ucast.io_qos.sdu = sdu;
+	ep->stream->qos.ucast.io_qos.rtn = qos->rtn;
+	ep->stream->qos.ucast.io_qos.latency = latency;
+	ep->stream->qos.ucast.delay = pd;
 
 	if (ep->old_state == BT_ASCS_ASE_STATE_CONFIG)
 		bap_stream_config_cfm(ep->stream);
@@ -3876,6 +3980,25 @@ clone:
 	return true;
 }
 
+bool bt_bap_attach_broadcast(struct bt_bap *bap)
+{
+	struct bt_bap_endpoint *ep;
+
+	if (queue_find(sessions, NULL, bap))
+		return true;
+
+	if (!sessions)
+		sessions = queue_new();
+
+	queue_push_tail(sessions, bap);
+
+	ep = bap_get_endpoint_bcast(bap->remote_eps, bap->ldb);
+	if (ep)
+		ep->bap = bap;
+
+	return true;
+}
+
 static void stream_foreach_detach(void *data, void *user_data)
 {
 	struct bt_bap_stream *stream = data;
@@ -4080,7 +4203,11 @@ void bt_bap_foreach_pac(struct bt_bap *bap, uint8_t type,
 							func, user_data);
 	case BT_BAP_SOURCE:
 		return bap_foreach_pac(bap->ldb->sinks, bap->rdb->sources,
-							func, user_data);
+							   func, user_data);
+	case BT_BAP_BCAST_SOURCE:
+		return bap_foreach_pac(bap->ldb->broadcast_sources,
+					bap->ldb->broadcast_sinks,
+					func, user_data);
 	}
 }
 
@@ -4193,42 +4320,51 @@ unsigned int bt_bap_stream_config(struct bt_bap_stream *stream,
 	if (!bap_stream_valid(stream))
 		return 0;
 
-	if (!stream->client) {
-		stream_config(stream, data, NULL);
-		return 0;
-	}
-
-	memset(&config, 0, sizeof(config));
-
-	config.ase = stream->ep->id;
-	config.latency = qos->target_latency;
-	config.phy = qos->phy;
-	config.codec = stream->rpac->codec;
-
-	iov[0].iov_base = &config;
-	iov[0].iov_len = sizeof(config);
-
-	if (data) {
-		if (!bap_print_cc(data->iov_base, data->iov_len,
-					stream->bap->debug_func,
-					stream->bap->debug_data))
+	switch (bt_bap_stream_get_type(stream)) {
+	case BT_BAP_STREAM_TYPE_UCAST:
+		if (!stream->client) {
+			stream_config(stream, data, NULL);
 			return 0;
+		}
 
-		config.cc_len = data->iov_len;
-		iov[1] = *data;
-		iovlen++;
+		memset(&config, 0, sizeof(config));
+
+		config.ase = stream->ep->id;
+		config.latency = qos->ucast.target_latency;
+		config.phy = qos->ucast.io_qos.phy;
+		config.codec = stream->rpac->codec;
+
+		iov[0].iov_base = &config;
+		iov[0].iov_len = sizeof(config);
+
+		if (data) {
+			if (!bap_print_cc(data->iov_base, data->iov_len,
+						stream->bap->debug_func,
+						stream->bap->debug_data))
+				return 0;
+
+			config.cc_len = data->iov_len;
+			iov[1] = *data;
+			iovlen++;
+		}
+
+		req = bap_req_new(stream, BT_ASCS_CONFIG, iov, iovlen,
+					func, user_data);
+
+		if (!bap_queue_req(stream->bap, req)) {
+			bap_req_free(req);
+			return 0;
+		}
+
+		stream->qos = *qos;
+
+		return req->id;
+	case BT_BAP_STREAM_TYPE_BCAST:
+		stream->qos = *qos;
+		return 1;
 	}
 
-	req = bap_req_new(stream, BT_ASCS_CONFIG, iov, iovlen, func, user_data);
-
-	if (!bap_queue_req(stream->bap, req)) {
-		bap_req_free(req);
-		return 0;
-	}
-
-	stream->qos = *qos;
-
-	return req->id;
+	return 0;
 }
 
 static bool match_pac(struct bt_bap_pac *lpac, struct bt_bap_pac *rpac,
@@ -4354,6 +4490,10 @@ bool bt_bap_stream_set_user_data(struct bt_bap_stream *stream, void *user_data)
 
 	stream->user_data = user_data;
 
+	if (bt_bap_stream_get_type(stream) == BT_BAP_STREAM_TYPE_BCAST)
+		stream->lpac->ops->config(stream, stream->cc, &stream->qos,
+					ep_config_cb, stream->lpac->user_data);
+
 	return true;
 }
 
@@ -4384,15 +4524,15 @@ unsigned int bt_bap_stream_qos(struct bt_bap_stream *stream,
 
 	/* TODO: Figure out how to pass these values around */
 	qos.ase = stream->ep->id;
-	qos.cig = data->cig_id;
-	qos.cis = data->cis_id;
-	put_le24(data->interval, qos.interval);
-	qos.framing = data->framing;
-	qos.phy = data->phy;
-	qos.sdu = cpu_to_le16(data->sdu);
-	qos.rtn = data->rtn;
-	qos.latency = cpu_to_le16(data->latency);
-	put_le24(data->delay, qos.pd);
+	qos.cig = data->ucast.cig_id;
+	qos.cis = data->ucast.cis_id;
+	put_le24(data->ucast.io_qos.interval, qos.interval);
+	qos.framing = data->ucast.framing;
+	qos.phy = data->ucast.io_qos.phy;
+	qos.sdu = cpu_to_le16(data->ucast.io_qos.sdu);
+	qos.rtn = data->ucast.io_qos.rtn;
+	qos.latency = cpu_to_le16(data->ucast.io_qos.latency);
+	put_le24(data->ucast.delay, qos.pd);
 
 	iov.iov_base = &qos;
 	iov.iov_len = sizeof(qos);
@@ -4463,7 +4603,7 @@ unsigned int bt_bap_stream_enable(struct bt_bap_stream *stream,
 					bt_bap_stream_func_t func,
 					void *user_data)
 {
-	int ret;
+	int ret = 0;
 
 	/* Table 3.2: ASE state machine transition
 	 * Initiating device - client Only
@@ -4471,12 +4611,20 @@ unsigned int bt_bap_stream_enable(struct bt_bap_stream *stream,
 	if (!bap_stream_valid(stream) || !stream->client)
 		return 0;
 
-	ret = bap_stream_metadata(stream, BT_ASCS_ENABLE, metadata, func,
-								user_data);
-	if (!ret || !enable_links)
-		return ret;
+	switch (bt_bap_stream_get_type(stream)) {
+	case BT_BAP_STREAM_TYPE_UCAST:
+		ret = bap_stream_metadata(stream, BT_ASCS_ENABLE, metadata,
+							func, user_data);
+		if (!ret || !enable_links)
+			return ret;
 
-	queue_foreach(stream->links, bap_stream_enable_link, metadata);
+		queue_foreach(stream->links, bap_stream_enable_link, metadata);
+		break;
+	case BT_BAP_STREAM_TYPE_BCAST:
+		stream_set_state_broadcast(stream,
+					BT_BAP_STREAM_STATE_STREAMING);
+		return 1;
+	}
 
 	return ret;
 }
@@ -4655,6 +4803,16 @@ unsigned int bt_bap_stream_release(struct bt_bap_stream *stream,
 
 	bap = stream->bap;
 
+	/* If stream is broadcast, no BT_ASCS_RELEASE is required */
+	if (bt_bap_stream_get_type(stream) == BT_BAP_STREAM_TYPE_BCAST) {
+		if (!bap_stream_valid(stream)) {
+			stream_set_state_broadcast(stream,
+					BT_BAP_STREAM_STATE_IDLE);
+			stream = NULL;
+		}
+		return 0;
+	}
+
 	/* If stream does not belong to a client session, clean it up now */
 	if (!bap_stream_valid(stream)) {
 		stream_set_state(stream, BT_BAP_STREAM_STATE_IDLE);
@@ -4690,8 +4848,13 @@ uint32_t bt_bap_stream_get_location(struct bt_bap_stream *stream)
 
 	if (stream->ep->dir == BT_BAP_SOURCE)
 		return pacs->source_loc_value;
-	else
+	else if (stream->ep->dir == BT_BAP_SINK)
 		return pacs->sink_loc_value;
+	else
+		/* TO DO get the location values from metadata
+		 * for brodcast source and sink
+		 */
+		return stream->bap->ldb->pacs->source_loc_value;
 }
 
 struct iovec *bt_bap_stream_get_config(struct bt_bap_stream *stream)
@@ -4796,8 +4959,8 @@ int bt_bap_stream_io_link(struct bt_bap_stream *stream,
 		return -EALREADY;
 
 	if (stream->client != link->client ||
-			stream->qos.cig_id != link->qos.cig_id ||
-			stream->qos.cis_id != link->qos.cis_id)
+			stream->qos.ucast.cig_id != link->qos.ucast.cig_id ||
+			stream->qos.ucast.cis_id != link->qos.ucast.cis_id)
 		return -EINVAL;
 
 	if (!stream->links)
@@ -4834,7 +4997,7 @@ static void bap_stream_get_in_qos(void *data, void *user_data)
 	struct bt_bap_qos **qos = user_data;
 
 	if (!qos || *qos || stream->ep->dir != BT_BAP_SOURCE ||
-						!stream->qos.sdu)
+				!stream->qos.ucast.io_qos.sdu)
 		return;
 
 	*qos = &stream->qos;
@@ -4845,7 +5008,8 @@ static void bap_stream_get_out_qos(void *data, void *user_data)
 	struct bt_bap_stream *stream = data;
 	struct bt_bap_qos **qos = user_data;
 
-	if (!qos || *qos || stream->ep->dir != BT_BAP_SINK || !stream->qos.sdu)
+	if (!qos || *qos || stream->ep->dir != BT_BAP_SINK ||
+				!stream->qos.ucast.io_qos.sdu)
 		return;
 
 	*qos = &stream->qos;

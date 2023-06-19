@@ -5,6 +5,7 @@
  *
  *  Copyright (C) 2006-2007  Nokia Corporation
  *  Copyright (C) 2004-2009  Marcel Holtmann <marcel@holtmann.org>
+ *  Copyright 2023 NXP
  *
  *
  */
@@ -90,6 +91,7 @@ struct bap_transport {
 struct media_transport {
 	char			*path;		/* Transport object path */
 	struct btd_device	*device;	/* Transport device */
+	struct btd_adapter	*adapter;	/* Transport adapter bcast*/
 	const char		*remote_endpoint; /* Transport remote SEP */
 	struct media_endpoint	*endpoint;	/* Transport endpoint */
 	struct media_owner	*owner;		/* Transport owner */
@@ -525,6 +527,13 @@ static void media_owner_add(struct media_owner *owner,
 	owner->pending = req;
 }
 
+static void *get_stream_bap(struct media_transport *transport)
+{
+	struct bap_transport *bap = transport->data;
+
+	return bap->stream;
+}
+
 static DBusMessage *acquire(DBusConnection *conn, DBusMessage *msg,
 					void *data)
 {
@@ -540,15 +549,24 @@ static DBusMessage *acquire(DBusConnection *conn, DBusMessage *msg,
 		return btd_error_not_authorized(msg);
 
 	owner = media_owner_create(msg);
+	if (bt_bap_stream_get_type(get_stream_bap(transport)) ==
+				BT_BAP_STREAM_TYPE_BCAST) {
+		req = media_request_create(msg, 0x00);
+		media_owner_add(owner, req);
+		media_transport_set_owner(transport, owner);
+	}
 	id = transport->resume(transport, owner);
 	if (id == 0) {
 		media_owner_free(owner);
 		return btd_error_not_authorized(msg);
 	}
 
-	req = media_request_create(msg, id);
-	media_owner_add(owner, req);
-	media_transport_set_owner(transport, owner);
+	if (bt_bap_stream_get_type(get_stream_bap(transport)) ==
+				BT_BAP_STREAM_TYPE_UCAST) {
+		req = media_request_create(msg, id);
+		media_owner_add(owner, req);
+		media_transport_set_owner(transport, owner);
+	}
 
 	return NULL;
 }
@@ -627,7 +645,12 @@ static gboolean get_device(const GDBusPropertyTable *property,
 					DBusMessageIter *iter, void *data)
 {
 	struct media_transport *transport = data;
-	const char *path = device_get_path(transport->device);
+	const char *path;
+
+	if (transport->device)
+		path = device_get_path(transport->device);
+	else
+		path = adapter_get_path(transport->adapter);
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_OBJECT_PATH, &path);
 
@@ -828,7 +851,7 @@ static gboolean qos_exists(const GDBusPropertyTable *property, void *data)
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
 
-	return bap->qos.phy != 0x00;
+	return bap->qos.ucast.io_qos.phy != 0x00;
 }
 
 static gboolean get_cig(const GDBusPropertyTable *property,
@@ -838,7 +861,7 @@ static gboolean get_cig(const GDBusPropertyTable *property,
 	struct bap_transport *bap = transport->data;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
-							&bap->qos.cig_id);
+							&bap->qos.ucast.cig_id);
 
 	return TRUE;
 }
@@ -850,7 +873,7 @@ static gboolean get_cis(const GDBusPropertyTable *property,
 	struct bap_transport *bap = transport->data;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
-							&bap->qos.cis_id);
+							&bap->qos.ucast.cis_id);
 
 	return TRUE;
 }
@@ -862,7 +885,7 @@ static gboolean get_interval(const GDBusPropertyTable *property,
 	struct bap_transport *bap = transport->data;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT32,
-							&bap->qos.interval);
+					&bap->qos.ucast.io_qos.interval);
 
 	return TRUE;
 }
@@ -872,7 +895,7 @@ static gboolean get_framing(const GDBusPropertyTable *property,
 {
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
-	dbus_bool_t val = bap->qos.framing;
+	dbus_bool_t val = bap->qos.ucast.framing;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_BOOLEAN, &val);
 
@@ -885,7 +908,8 @@ static gboolean get_phy(const GDBusPropertyTable *property,
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
 
-	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE, &bap->qos.phy);
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
+					&bap->qos.ucast.io_qos.phy);
 
 	return TRUE;
 }
@@ -896,7 +920,8 @@ static gboolean get_sdu(const GDBusPropertyTable *property,
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
 
-	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16, &bap->qos.sdu);
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16,
+					&bap->qos.ucast.io_qos.sdu);
 
 	return TRUE;
 }
@@ -907,7 +932,8 @@ static gboolean get_retransmissions(const GDBusPropertyTable *property,
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
 
-	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE, &bap->qos.rtn);
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_BYTE,
+					&bap->qos.ucast.io_qos.rtn);
 
 	return TRUE;
 }
@@ -919,7 +945,7 @@ static gboolean get_latency(const GDBusPropertyTable *property,
 	struct bap_transport *bap = transport->data;
 
 	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT16,
-							&bap->qos.latency);
+					&bap->qos.ucast.io_qos.latency);
 
 	return TRUE;
 }
@@ -930,7 +956,8 @@ static gboolean get_delay(const GDBusPropertyTable *property,
 	struct media_transport *transport = data;
 	struct bap_transport *bap = transport->data;
 
-	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT32, &bap->qos.delay);
+	dbus_message_iter_append_basic(iter, DBUS_TYPE_UINT32,
+						&bap->qos.ucast.delay);
 
 	return TRUE;
 }
@@ -1478,13 +1505,6 @@ static void bap_connecting(struct bt_bap_stream *stream, bool state, int fd,
 	bap_update_links(transport);
 }
 
-static void *get_stream_bap(struct media_transport *transport)
-{
-	struct bap_transport *bap = transport->data;
-
-	return bap->stream;
-}
-
 static void free_bap(void *data)
 {
 	struct bap_transport *bap = data;
@@ -1534,15 +1554,26 @@ struct media_transport *media_transport_create(struct btd_device *device,
 	const GDBusPropertyTable *properties;
 
 	transport = g_new0(struct media_transport, 1);
-	transport->device = device;
+	if (device)
+		transport->device = device;
+	else
+		transport->adapter = media_endpoint_get_btd_adapter(endpoint);
+
 	transport->endpoint = endpoint;
 	transport->configuration = g_new(uint8_t, size);
 	memcpy(transport->configuration, configuration, size);
 	transport->size = size;
 	transport->remote_endpoint = remote_endpoint;
-	transport->path = g_strdup_printf("%s/fd%d",
-				remote_endpoint ? remote_endpoint :
-				device_get_path(device), fd++);
+
+	if (device)
+		transport->path = g_strdup_printf("%s/fd%d",
+					remote_endpoint ? remote_endpoint :
+					device_get_path(device), fd++);
+	else
+		transport->path = g_strdup_printf("%s/fd%d",
+					remote_endpoint ? remote_endpoint :
+					adapter_get_path(transport->adapter),
+					fd++);
 	transport->fd = -1;
 
 	uuid = media_endpoint_get_uuid(endpoint);
@@ -1555,7 +1586,8 @@ struct media_transport *media_transport_create(struct btd_device *device,
 			goto fail;
 		properties = a2dp_properties;
 	} else if (!strcasecmp(uuid, PAC_SINK_UUID) ||
-				!strcasecmp(uuid, PAC_SOURCE_UUID)) {
+				!strcasecmp(uuid, PAC_SOURCE_UUID) ||
+				!strcasecmp(uuid, BAA_SERVICE_UUID)) {
 		if (media_transport_init_bap(transport, stream) < 0)
 			goto fail;
 		properties = bap_properties;

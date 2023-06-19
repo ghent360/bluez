@@ -101,6 +101,9 @@
 #define QOS_IN_1(_interval, _latency, _sdu, _phy, _rtn) \
 	QOS_FULL(0x01, BT_ISO_QOS_CIS_UNSET, \
 		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), {})
+#define QOS_IN_2(_interval, _latency, _sdu, _phy, _rtn) \
+	QOS_FULL(0x02, BT_ISO_QOS_CIS_UNSET, \
+		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), {})
 #define QOS_IN_1_1(_interval, _latency, _sdu, _phy, _rtn) \
 	QOS_FULL(0x01, 0x01, \
 		QOS_IO(_interval, _latency, _sdu, _phy, _rtn), {})
@@ -148,8 +151,12 @@
 
 /* One unidirectional CIS. Unicast Server is Audio Sink */
 #define AC_1_4 QOS_OUT(10000, 10, 40, 0x02, 2)
+/* One unidirectional CIS. Unicast Server is Audio Sink CIG 0x01 */
+#define AC_1_4_1 QOS_OUT_1(10000, 10, 40, 0x02, 2)
 /* One unidirectional CIS. Unicast Server is Audio Source. */
 #define AC_2_10 QOS_IN(10000, 10, 40, 0x02, 2)
+/* One unidirectional CIS. Unicast Server is Audio Source CIG 0x02 */
+#define AC_2_10_2 QOS_IN_2(10000, 10, 40, 0x02, 2)
 /* One bidirectional CIS. Unicast Server is Audio Sink and Audio Source. */
 #define AC_3_5 QOS(10000, 10, 40, 0x02, 2)
 /* Two unidirectional CISes. Unicast Server is Audio Sink.
@@ -281,6 +288,90 @@
 #define QOS_IN_16_2_1 BCAST_QOS_IN(10000, 10, 40, 0x02, 2)
 #define QOS_IN_ENC_16_2_1 BCAST_QOS_IN_ENC(10000, 10, 40, 0x02, 2)
 
+static const uint8_t base_lc3_16_2_1[] = {
+	0x28, 0x00, 0x00, /* Presentation Delay */
+	0x01, /* Number of Subgroups */
+	0x01, /* Number of BIS */
+	0x06, 0x00, 0x00, 0x00, 0x00, /* Code ID = LC3 (0x06) */
+	0x11, /* Codec Specific Configuration */
+	0x02, 0x01, 0x03, /* 16 KHZ */
+	0x02, 0x02, 0x01, /* 10 ms */
+	0x05, 0x03, 0x01, 0x00, 0x00, 0x00,  /* Front Left */
+	0x03, 0x04, 0x28, 0x00, /* Frame Length 40 bytes */
+	0x04, /* Metadata */
+	0x03, 0x02, 0x02, 0x00, /* Audio Context: Convertional */
+	0x01, /* BIS */
+	0x00, /* Codec Specific Configuration */
+};
+
+/* Single Audio Channel. One BIS. */
+#define BCAST_AC_12 BCAST_QOS_OUT_1_1(10000, 10, 40, 0x02, 2)
+
+static const uint8_t base_lc3_ac_12[] = {
+	0x28, 0x00, 0x00, /* Presentation Delay */
+	0x01, /* Number of Subgroups */
+	0x01, /* Number of BIS */
+	0x06, 0x00, 0x00, 0x00, 0x00, /* Code ID = LC3 (0x06) */
+	0x11, /* Codec Specific Configuration */
+	0x02, 0x01, 0x03, /* 16 KHZ */
+	0x02, 0x02, 0x01, /* 10 ms */
+	0x05, 0x03, 0x01, 0x00, 0x00, 0x00,  /* Front Left */
+	0x03, 0x04, 0x28, 0x00, /* Frame Length 40 bytes */
+	0x04, /* Metadata */
+	0x03, 0x02, 0x02, 0x00, /* Audio Context: Convertional */
+	0x01, /* BIS */
+	0x00, /* Codec Specific Configuration */
+};
+
+/* Multiple Audio Channels. Two BISes. */
+#define BCAST_AC_13 BCAST_QOS_OUT_1_1(10000, 10, 40, 0x02, 2)
+
+static const uint8_t base_lc3_ac_13[] = {
+	0x28, 0x00, 0x00, /* Presentation Delay */
+	0x01, /* Number of Subgroups */
+	0x02, /* Number of BIS */
+	0x06, 0x00, 0x00, 0x00, 0x00, /* Code ID = LC3 (0x06) */
+	0x11, /* Codec Specific Configuration */
+	0x02, 0x01, 0x03, /* 16 KHZ */
+	0x02, 0x02, 0x01, /* 10 ms */
+	0x05, 0x03, 0x01, 0x00, 0x00, 0x00,  /* Front Left */
+	0x03, 0x04, 0x28, 0x00, /* Frame Length 40 bytes */
+	0x04, /* Metadata */
+	0x03, 0x02, 0x02, 0x00, /* Audio Context: Convertional */
+	0x01, /* BIS 1 */
+	0x06, /* Codec Specific Configuration */
+	0x05, 0x03, 0x01, 0x00, 0x00, 0x00, /* Audio_Channel_Allocation:
+					     * Front left
+					     */
+	0x01, /* BIS 2 */
+	0x06, /* Codec Specific Configuration */
+	0x05, 0x03, 0x02, 0x00, 0x00, 0x00, /* Audio_Channel_Allocation:
+					     * Front right
+					     */
+};
+
+/* Multiple Audio Channels. One BIS. */
+#define BCAST_AC_14 BCAST_QOS_OUT_1_1(10000, 10, 40, 0x02, 2)
+
+static const uint8_t base_lc3_ac_14[] = {
+	0x28, 0x00, 0x00, /* Presentation Delay */
+	0x01, /* Number of Subgroups */
+	0x01, /* Number of BIS */
+	0x06, 0x00, 0x00, 0x00, 0x00, /* Code ID = LC3 (0x06) */
+	0x11, /* Codec Specific Configuration */
+	0x02, 0x01, 0x03, /* 16 KHZ */
+	0x02, 0x02, 0x01, /* 10 ms */
+	0x05, 0x03, 0x01, 0x00, 0x00, 0x00,  /* Front Left */
+	0x03, 0x04, 0x28, 0x00, /* Frame Length 40 bytes */
+	0x04, /* Metadata */
+	0x03, 0x02, 0x02, 0x00, /* Audio Context: Convertional */
+	0x01, /* BIS */
+	0x06, /* Codec Specific Configuration */
+	0x05, 0x03, 0x03, 0x00, 0x00, 0x00, /* Audio_Channel_Allocation:
+					     * Front left, Front right
+					     */
+};
+
 struct test_data {
 	const void *test_data;
 	struct mgmt *mgmt;
@@ -308,7 +399,9 @@ struct iso_client_data {
 	bool defer;
 	bool disconnect;
 	bool ts;
-	bool mcis;
+	bool mconn;
+	const uint8_t *base;
+	size_t base_len;
 };
 
 static void mgmt_debug(const char *str, void *user_data)
@@ -550,20 +643,6 @@ static const struct iso_client_data connect_16_2_1 = {
 static const struct iso_client_data connect_1_16_2_1 = {
 	.qos = QOS_1_16_2_1,
 	.expect_err = 0
-};
-
-static const struct iso_client_data connect_ac_1_2_cig_1_2 = {
-	.qos = QOS_1_16_2_1,
-	.qos_2 = QOS_2_16_2_1,
-	.expect_err = 0,
-	.mcis = true,
-};
-
-static const struct iso_client_data connect_ac_1_2 = {
-	.qos = QOS_16_2_1,
-	.qos_2 = QOS_16_2_1,
-	.expect_err = 0,
-	.mcis = true,
 };
 
 static const struct iso_client_data connect_1_1_16_2_1 = {
@@ -842,23 +921,41 @@ static const struct iso_client_data connect_ac_6i = {
 	.qos = AC_6i_1,
 	.qos_2 = AC_6i_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
+};
+
+static const struct iso_client_data reconnect_ac_6i = {
+	.qos = AC_6i_1,
+	.qos_2 = AC_6i_2,
+	.expect_err = 0,
+	.mconn = true,
+	.defer = true,
+	.disconnect = true,
 };
 
 static const struct iso_client_data connect_ac_6ii = {
 	.qos = AC_6ii_1,
 	.qos_2 = AC_6ii_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
+};
+
+static const struct iso_client_data reconnect_ac_6ii = {
+	.qos = AC_6ii_1,
+	.qos_2 = AC_6ii_2,
+	.expect_err = 0,
+	.mconn = true,
+	.defer = true,
+	.disconnect = true,
 };
 
 static const struct iso_client_data connect_ac_7i = {
 	.qos = AC_7i_1,
 	.qos_2 = AC_7i_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -866,7 +963,7 @@ static const struct iso_client_data connect_ac_7ii = {
 	.qos = AC_7ii_1,
 	.qos_2 = AC_7ii_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -874,7 +971,7 @@ static const struct iso_client_data connect_ac_8i = {
 	.qos = AC_8i_1,
 	.qos_2 = AC_8i_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -882,7 +979,7 @@ static const struct iso_client_data connect_ac_8ii = {
 	.qos = AC_8ii_1,
 	.qos_2 = AC_8ii_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -890,7 +987,7 @@ static const struct iso_client_data connect_ac_9i = {
 	.qos = AC_9i_1,
 	.qos_2 = AC_9i_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -898,7 +995,7 @@ static const struct iso_client_data connect_ac_9ii = {
 	.qos = AC_9ii_1,
 	.qos_2 = AC_9ii_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -906,7 +1003,7 @@ static const struct iso_client_data connect_ac_11i = {
 	.qos = AC_11i_1,
 	.qos_2 = AC_11i_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
 };
 
@@ -914,8 +1011,22 @@ static const struct iso_client_data connect_ac_11ii = {
 	.qos = AC_11ii_1,
 	.qos_2 = AC_11ii_2,
 	.expect_err = 0,
-	.mcis = true,
+	.mconn = true,
 	.defer = true,
+};
+
+static const struct iso_client_data connect_ac_1_2 = {
+	.qos = AC_1_4,
+	.qos_2 = AC_2_10,
+	.expect_err = 0,
+	.mconn = true,
+};
+
+static const struct iso_client_data connect_ac_1_2_cig_1_2 = {
+	.qos = AC_1_4_1,
+	.qos_2 = AC_2_10_2,
+	.expect_err = 0,
+	.mconn = true,
 };
 
 static const struct iso_client_data bcast_16_2_1_send = {
@@ -923,6 +1034,8 @@ static const struct iso_client_data bcast_16_2_1_send = {
 	.expect_err = 0,
 	.send = &send_16_2_1,
 	.bcast = true,
+	.base = base_lc3_16_2_1,
+	.base_len = sizeof(base_lc3_16_2_1),
 };
 
 static const struct iso_client_data bcast_enc_16_2_1_send = {
@@ -930,6 +1043,8 @@ static const struct iso_client_data bcast_enc_16_2_1_send = {
 	.expect_err = 0,
 	.send = &send_16_2_1,
 	.bcast = true,
+	.base = base_lc3_16_2_1,
+	.base_len = sizeof(base_lc3_16_2_1),
 };
 
 static const struct iso_client_data bcast_1_16_2_1_send = {
@@ -937,6 +1052,8 @@ static const struct iso_client_data bcast_1_16_2_1_send = {
 	.expect_err = 0,
 	.send = &send_16_2_1,
 	.bcast = true,
+	.base = base_lc3_16_2_1,
+	.base_len = sizeof(base_lc3_16_2_1),
 };
 
 static const struct iso_client_data bcast_1_1_16_2_1_send = {
@@ -944,6 +1061,8 @@ static const struct iso_client_data bcast_1_1_16_2_1_send = {
 	.expect_err = 0,
 	.send = &send_16_2_1,
 	.bcast = true,
+	.base = base_lc3_16_2_1,
+	.base_len = sizeof(base_lc3_16_2_1),
 };
 
 static const struct iso_client_data bcast_16_2_1_recv = {
@@ -960,6 +1079,31 @@ static const struct iso_client_data bcast_enc_16_2_1_recv = {
 	.recv = &send_16_2_1,
 	.bcast = true,
 	.server = true,
+};
+
+static const struct iso_client_data bcast_ac_12 = {
+	.qos = BCAST_AC_12,
+	.expect_err = 0,
+	.bcast = true,
+	.base = base_lc3_ac_12,
+	.base_len = sizeof(base_lc3_ac_12),
+};
+
+static const struct iso_client_data bcast_ac_13 = {
+	.qos = BCAST_AC_13,
+	.expect_err = 0,
+	.bcast = true,
+	.mconn = true,
+	.base = base_lc3_ac_13,
+	.base_len = sizeof(base_lc3_ac_13),
+};
+
+static const struct iso_client_data bcast_ac_14 = {
+	.qos = BCAST_AC_14,
+	.expect_err = 0,
+	.bcast = true,
+	.base = base_lc3_ac_14,
+	.base_len = sizeof(base_lc3_ac_14),
 };
 
 static void client_connectable_complete(uint16_t opcode, uint8_t status,
@@ -1248,22 +1392,6 @@ static int create_iso_sock(struct test_data *data)
 	return sk;
 }
 
-static const uint8_t base_lc3_16_2_1[] = {
-	0x28, 0x00, 0x00, /* Presentation Delay */
-	0x01, /* Number of Subgroups */
-	0x01, /* Number of BIS */
-	0x06, 0x00, 0x00, 0x00, 0x00, /* Code ID = LC3 (0x06) */
-	0x11, /* Codec Specific Configuration */
-	0x02, 0x01, 0x03, /* 16 KHZ */
-	0x02, 0x02, 0x01, /* 10 ms */
-	0x05, 0x03, 0x01, 0x00, 0x00, 0x00,  /* Front Left */
-	0x03, 0x04, 0x28, 0x00, /* Frame Length 40 bytes */
-	0x04, /* Metadata */
-	0x03, 0x02, 0x02, 0x00, /* Audio Context: Convertional */
-	0x01, /* BIS */
-	0x00, /* Codec Specific Configuration */
-};
-
 static int connect_iso_sock(struct test_data *data, uint8_t num, int sk)
 {
 	const struct iso_client_data *isodata = data->test_data;
@@ -1276,7 +1404,7 @@ static int connect_iso_sock(struct test_data *data, uint8_t num, int sk)
 
 	client = hciemu_get_client(data->hciemu, num);
 	if (!client) {
-		if (!isodata->mcis) {
+		if (!isodata->mconn) {
 			tester_warn("No client");
 			return -ENODEV;
 		}
@@ -1288,7 +1416,7 @@ static int connect_iso_sock(struct test_data *data, uint8_t num, int sk)
 		}
 	}
 
-	if (num && isodata->mcis)
+	if (!isodata->bcast && num && isodata->mconn)
 		qos = &isodata->qos_2;
 
 	if (!isodata->bcast) {
@@ -1297,9 +1425,9 @@ static int connect_iso_sock(struct test_data *data, uint8_t num, int sk)
 			tester_warn("No client bdaddr");
 			return -ENODEV;
 		}
-	} else {
+	} else if (!isodata->server) {
 		err = setsockopt(sk, SOL_BLUETOOTH, BT_ISO_BASE,
-				base_lc3_16_2_1, sizeof(base_lc3_16_2_1));
+				isodata->base, isodata->base_len);
 		if (err < 0) {
 			tester_warn("Can't set socket BT_ISO_BASE option: "
 					"%s (%d)", strerror(errno), errno);
@@ -1316,7 +1444,7 @@ static int connect_iso_sock(struct test_data *data, uint8_t num, int sk)
 		return -EINVAL;
 	}
 
-	if (isodata->defer) {
+	if (isodata->defer || (isodata->bcast && isodata->mconn && !num)) {
 		int opt = 1;
 
 		if (setsockopt(sk, SOL_BLUETOOTH, BT_DEFER_SETUP, &opt,
@@ -1619,7 +1747,7 @@ static void iso_send(struct test_data *data, GIOChannel *io)
 		iso_recv(data, io);
 }
 
-static void setup_connect(struct test_data *data, uint8_t num, GIOFunc func);
+static void test_connect(const void *test_data);
 static gboolean iso_connect_cb(GIOChannel *io, GIOCondition cond,
 							gpointer user_data);
 
@@ -1635,7 +1763,7 @@ static gboolean iso_disconnected(GIOChannel *io, GIOCondition cond,
 
 		if (data->reconnect) {
 			data->reconnect = false;
-			setup_connect(data, 0, iso_connect_cb);
+			test_connect(data->test_data);
 			return FALSE;
 		}
 
@@ -1687,7 +1815,7 @@ static gboolean iso_connect(GIOChannel *io, GIOCondition cond,
 
 	if (!isodata->bcast) {
 		ret = check_ucast_qos(&qos, &isodata->qos,
-				      isodata->mcis ? &isodata->qos_2 : NULL);
+				      isodata->mconn ? &isodata->qos_2 : NULL);
 	} else if (!isodata->server)
 		ret = check_bcast_qos(&qos, &isodata->qos);
 
@@ -1872,23 +2000,18 @@ static void test_connect(const void *test_data)
 	func[n++] = iso_connect_cb;
 
 	/* Check if configuration requires multiple CIS setup */
-	if (!isodata->bcast && isodata->mcis)
+	if (!isodata->bcast && isodata->mconn)
 		func[n++] = iso_connect2_cb;
 
 	setup_connect_many(data, n, num, func);
-}
-
-static void setup_reconnect(struct test_data *data, uint8_t num, GIOFunc func)
-{
-	data->reconnect = true;
-	setup_connect(data, num, func);
 }
 
 static void test_reconnect(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
 
-	setup_reconnect(data, 0, iso_connect_cb);
+	data->reconnect = true;
+	test_connect(test_data);
 }
 
 static void test_defer(const void *test_data)
@@ -2172,6 +2295,15 @@ static void test_bcast(const void *test_data)
 	setup_connect(data, 0, iso_connect_cb);
 }
 
+static void test_bcast2(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+	uint8_t num[2] = {0, 1};
+	GIOFunc funcs[2] = {iso_connect_cb, iso_connect2_cb};
+
+	setup_connect_many(data, 2, num, funcs);
+}
+
 static void test_bcast_recv(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
@@ -2403,6 +2535,14 @@ int main(int argc, char *argv[])
 							setup_powered,
 							test_connect2_seq);
 
+	test_iso2("ISO Reconnect AC 6(i) - Success", &reconnect_ac_6i,
+							setup_powered,
+							test_reconnect);
+
+	test_iso2("ISO Reconnect AC 6(ii) - Success", &reconnect_ac_6ii,
+							setup_powered,
+							test_reconnect);
+
 	test_iso("ISO Broadcaster - Success", &bcast_16_2_1_send, setup_powered,
 							test_bcast);
 	test_iso("ISO Broadcaster Encrypted - Success", &bcast_enc_16_2_1_send,
@@ -2423,6 +2563,15 @@ int main(int argc, char *argv[])
 							&bcast_enc_16_2_1_recv,
 							setup_powered,
 							test_bcast_recv);
+
+	test_iso("ISO Broadcaster AC 12 - Success", &bcast_ac_12, setup_powered,
+							test_bcast);
+
+	test_iso("ISO Broadcaster AC 13 - Success", &bcast_ac_13, setup_powered,
+							test_bcast2);
+
+	test_iso("ISO Broadcaster AC 14 - Success", &bcast_ac_14, setup_powered,
+							test_bcast);
 
 	return tester_run();
 }

@@ -4,6 +4,7 @@
  *  BlueZ - Bluetooth protocol stack for Linux
  *
  *  Copyright (C) 2022  Intel Corporation. All rights reserved.
+ *  Copyright 2023 NXP
  *
  */
 
@@ -16,6 +17,11 @@
 
 #define BT_BAP_SINK			0x01
 #define	BT_BAP_SOURCE			0x02
+#define	BT_BAP_BCAST_SOURCE		0x03
+#define	BT_BAP_BCAST_SINK		0x04
+
+#define BT_BAP_STREAM_TYPE_UCAST	0x01
+#define	BT_BAP_STREAM_TYPE_BCAST	0x02
 
 #define BT_BAP_STREAM_STATE_IDLE	0x00
 #define BT_BAP_STREAM_STATE_CONFIG	0x01
@@ -49,17 +55,46 @@ struct bt_ltv {
 	uint8_t  value[0];
 } __packed;
 
-struct bt_bap_qos {
+struct bt_bap_io_qos {
+	uint32_t interval;	/* Frame interval */
+	uint16_t latency;	/* Transport Latency */
+	uint16_t sdu;		/* Maximum SDU Size */
+	uint8_t  phy;		/* PHY */
+	uint8_t  rtn;		/* Retransmission Effort */
+};
+
+struct bt_bap_ucast_qos {
 	uint8_t  cig_id;
 	uint8_t  cis_id;
-	uint32_t interval;		/* Frame interval */
 	uint8_t  framing;		/* Frame framing */
-	uint8_t  phy;			/* PHY */
-	uint16_t sdu;			/* Maximum SDU Size */
-	uint8_t  rtn;			/* Retransmission Effort */
-	uint16_t latency;		/* Transport Latency */
 	uint32_t delay;			/* Presentation Delay */
 	uint8_t  target_latency;	/* Target Latency */
+	struct bt_bap_io_qos io_qos;
+};
+
+struct bt_bap_bcast_qos {
+	uint8_t  big;
+	uint8_t  bis;
+	uint8_t  sync_interval;
+	uint8_t  packing;
+	uint8_t  framing;
+	uint8_t  encryption;
+	struct iovec bcode;
+	uint8_t  options;
+	uint16_t skip;
+	uint16_t sync_timeout;
+	uint8_t  sync_cte_type;
+	uint8_t  mse;
+	uint16_t timeout;
+	uint8_t  pa_sync;
+	struct bt_bap_io_qos io_qos;
+};
+
+struct bt_bap_qos {
+	union {
+		struct bt_bap_ucast_qos ucast;
+		struct bt_bap_bcast_qos bcast;
+	};
 };
 
 typedef void (*bt_bap_ready_func_t)(struct bt_bap *bap, void *user_data);
@@ -130,6 +165,8 @@ uint8_t bt_bap_pac_get_type(struct bt_bap_pac *pac);
 
 uint32_t bt_bap_pac_get_locations(struct bt_bap_pac *pac);
 
+uint8_t bt_bap_stream_get_type(struct bt_bap_stream *stream);
+
 struct bt_bap_stream *bt_bap_pac_get_stream(struct bt_bap_pac *pac);
 
 /* Session related function */
@@ -149,6 +186,7 @@ struct bt_bap *bt_bap_ref(struct bt_bap *bap);
 void bt_bap_unref(struct bt_bap *bap);
 
 bool bt_bap_attach(struct bt_bap *bap, struct bt_gatt_client *client);
+bool bt_bap_attach_broadcast(struct bt_bap *bap);
 void bt_bap_detach(struct bt_bap *bap);
 
 bool bt_bap_set_debug(struct bt_bap *bap, bt_bap_debug_func_t cb,

@@ -6,7 +6,7 @@
  *  Copyright (C) 2006-2007  Nokia Corporation
  *  Copyright (C) 2004-2009  Marcel Holtmann <marcel@holtmann.org>
  *  Copyright (C) 2011  BMW Car IT GmbH. All rights reserved.
- *
+ *  Copyright 2023 NXP
  *
  */
 
@@ -747,7 +747,10 @@ static int parse_select_properties(DBusMessageIter *props, struct iovec *caps,
 					struct bt_bap_qos *qos)
 {
 	const char *key;
+	struct bt_bap_io_qos io_qos;
+	uint8_t framing = 0;
 
+	memset(&io_qos, 0, sizeof(io_qos));
 	while (dbus_message_iter_get_arg_type(props) == DBUS_TYPE_DICT_ENTRY) {
 		DBusMessageIter value, entry;
 		int var;
@@ -776,17 +779,17 @@ static int parse_select_properties(DBusMessageIter *props, struct iovec *caps,
 			if (var != DBUS_TYPE_BYTE)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->cig_id);
+			dbus_message_iter_get_basic(&value, &qos->ucast.cig_id);
 		} else if (!strcasecmp(key, "CIS")) {
 			if (var != DBUS_TYPE_BYTE)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->cis_id);
+			dbus_message_iter_get_basic(&value, &qos->ucast.cis_id);
 		} else if (!strcasecmp(key, "Interval")) {
 			if (var != DBUS_TYPE_UINT32)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->interval);
+			dbus_message_iter_get_basic(&value, &io_qos.interval);
 		} else if (!strcasecmp(key, "Framing")) {
 			dbus_bool_t val;
 
@@ -795,7 +798,7 @@ static int parse_select_properties(DBusMessageIter *props, struct iovec *caps,
 
 			dbus_message_iter_get_basic(&value, &val);
 
-			qos->framing = val;
+			framing = val;
 		} else if (!strcasecmp(key, "PHY")) {
 			const char *str;
 
@@ -805,42 +808,44 @@ static int parse_select_properties(DBusMessageIter *props, struct iovec *caps,
 			dbus_message_iter_get_basic(&value, &str);
 
 			if (!strcasecmp(str, "1M"))
-				qos->phy = 0x01;
+				io_qos.phy = 0x01;
 			else if (!strcasecmp(str, "2M"))
-				qos->phy = 0x02;
+				io_qos.phy = 0x02;
 			else
 				goto fail;
 		} else if (!strcasecmp(key, "SDU")) {
 			if (var != DBUS_TYPE_UINT16)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->sdu);
+			dbus_message_iter_get_basic(&value, &io_qos.sdu);
 		} else if (!strcasecmp(key, "Retransmissions")) {
 			if (var != DBUS_TYPE_BYTE)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->rtn);
+			dbus_message_iter_get_basic(&value, &io_qos.rtn);
 		} else if (!strcasecmp(key, "Latency")) {
 			if (var != DBUS_TYPE_UINT16)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->latency);
+			dbus_message_iter_get_basic(&value, &io_qos.latency);
 		} else if (!strcasecmp(key, "Delay")) {
 			if (var != DBUS_TYPE_UINT32)
 				goto fail;
 
-			dbus_message_iter_get_basic(&value, &qos->delay);
+			dbus_message_iter_get_basic(&value, &qos->ucast.delay);
 		} else if (!strcasecmp(key, "TargetLatency")) {
 			if (var != DBUS_TYPE_BYTE)
 				goto fail;
 
 			dbus_message_iter_get_basic(&value,
-							&qos->target_latency);
+						&qos->ucast.target_latency);
 		}
 
 		dbus_message_iter_next(props);
 	}
 
+	memcpy(&qos->ucast.io_qos, &io_qos, sizeof(io_qos));
+	qos->ucast.framing = framing;
 	return 0;
 
 fail:
@@ -874,8 +879,8 @@ static void pac_select_cb(struct media_endpoint *endpoint, void *ret, int size,
 	memset(&qos, 0, sizeof(qos));
 
 	/* Mark CIG and CIS to be auto assigned */
-	qos.cig_id = BT_ISO_QOS_CIG_UNSET;
-	qos.cis_id = BT_ISO_QOS_CIS_UNSET;
+	qos.ucast.cig_id = BT_ISO_QOS_CIG_UNSET;
+	qos.ucast.cis_id = BT_ISO_QOS_CIS_UNSET;
 
 	memset(&caps, 0, sizeof(caps));
 	memset(&meta, 0, sizeof(meta));
@@ -1018,6 +1023,54 @@ static void pac_config_cb(struct media_endpoint *endpoint, void *ret, int size,
 	data->cb(data->stream, ret_value ? 0 : -EINVAL);
 }
 
+static struct media_transport *pac_ucast_config(struct bt_bap_stream *stream,
+						struct iovec *cfg,
+						struct media_endpoint *endpoint)
+{
+	struct bt_bap *bap = bt_bap_stream_get_session(stream);
+	struct btd_service *service = bt_bap_get_user_data(bap);
+	struct btd_device *device;
+	const char *path;
+
+	if (service)
+		device = btd_service_get_device(service);
+	else {
+		struct bt_att *att = bt_bap_get_att(bap);
+		int fd = bt_att_get_fd(att);
+
+		device = btd_adapter_find_device_by_fd(fd);
+	}
+
+	if (!device) {
+		error("Unable to find device");
+		return NULL;
+	}
+
+	path = bt_bap_stream_get_user_data(stream);
+
+	return media_transport_create(device, path, cfg->iov_base, cfg->iov_len,
+					endpoint, stream);
+}
+
+static struct media_transport *pac_bcast_config(struct bt_bap_stream *stream,
+						struct iovec *cfg,
+						struct media_endpoint *endpoint)
+{
+	struct bt_bap *bap = bt_bap_stream_get_session(stream);
+	struct btd_adapter *adapter = bt_bap_get_user_data(bap);
+	const char *path;
+
+	if (!adapter) {
+		error("Unable to find adapter");
+		return NULL;
+	}
+
+	path = bt_bap_stream_get_user_data(stream);
+
+	return media_transport_create(NULL, path, cfg->iov_base, cfg->iov_len,
+					endpoint, stream);
+}
+
 static int pac_config(struct bt_bap_stream *stream, struct iovec *cfg,
 			struct bt_bap_qos *qos, bt_bap_pac_config_t cb,
 			void *user_data)
@@ -1034,29 +1087,15 @@ static int pac_config(struct bt_bap_stream *stream, struct iovec *cfg,
 
 	transport = find_transport(endpoint, stream);
 	if (!transport) {
-		struct bt_bap *bap = bt_bap_stream_get_session(stream);
-		struct btd_service *service = bt_bap_get_user_data(bap);
-		struct btd_device *device;
-
-		if (service)
-			device = btd_service_get_device(service);
-		else {
-			struct bt_att *att = bt_bap_get_att(bap);
-			int fd = bt_att_get_fd(att);
-
-			device = btd_adapter_find_device_by_fd(fd);
+		switch (bt_bap_stream_get_type(stream)) {
+		case BT_BAP_STREAM_TYPE_UCAST:
+			transport = pac_ucast_config(stream, cfg, endpoint);
+			break;
+		case BT_BAP_STREAM_TYPE_BCAST:
+			transport = pac_bcast_config(stream, cfg, endpoint);
+			break;
 		}
 
-		if (!device) {
-			error("Unable to find device");
-			return -EINVAL;
-		}
-
-		path = bt_bap_stream_get_user_data(stream);
-
-		transport = media_transport_create(device, path, cfg->iov_base,
-							cfg->iov_len, endpoint,
-							stream);
 		if (!transport)
 			return -EINVAL;
 
@@ -1192,6 +1231,12 @@ static bool endpoint_init_pac_source(struct media_endpoint *endpoint, int *err)
 	return endpoint_init_pac(endpoint, BT_BAP_SOURCE, err);
 }
 
+static bool endpoint_init_broadcast_source(struct media_endpoint *endpoint,
+						int *err)
+{
+	return endpoint_init_pac(endpoint, BT_BAP_BCAST_SOURCE, err);
+}
+
 static bool endpoint_properties_exists(const char *uuid,
 						struct btd_device *dev,
 						void *user_data)
@@ -1294,6 +1339,17 @@ static bool experimental_endpoint_supported(struct btd_adapter *adapter)
 	return g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL;
 }
 
+static bool experimental_broadcaster_ep_supported(struct btd_adapter *adapter)
+{
+	if (!btd_adapter_has_exp_feature(adapter, EXP_FEAT_ISO_SOCKET))
+		return false;
+
+	if (!btd_adapter_has_settings(adapter, MGMT_SETTING_ISO_BROADCASTER))
+		return false;
+
+	return g_dbus_get_flags() & G_DBUS_FLAG_ENABLE_EXPERIMENTAL;
+}
+
 static struct media_endpoint_init {
 	const char *uuid;
 	bool (*func)(struct media_endpoint *endpoint, int *err);
@@ -1307,6 +1363,8 @@ static struct media_endpoint_init {
 				experimental_endpoint_supported },
 	{ PAC_SOURCE_UUID, endpoint_init_pac_source,
 				experimental_endpoint_supported },
+	{ BAA_SERVICE_UUID, endpoint_init_broadcast_source,
+			experimental_broadcaster_ep_supported },
 };
 
 static struct media_endpoint *
@@ -2820,9 +2878,6 @@ static void client_ready_cb(GDBusClient *client, void *user_data)
 		goto reply;
 	}
 
-	queue_foreach(app->proxies, app_register_endpoint, app);
-	queue_foreach(app->proxies, app_register_player, app);
-
 	if (app->err) {
 		if (app->err == -EPROTONOSUPPORT)
 			reply = btd_error_not_supported(app->reg);
@@ -2866,6 +2921,10 @@ static void proxy_added_cb(GDBusProxy *proxy, void *user_data)
 	path = g_dbus_proxy_get_path(proxy);
 
 	DBG("Proxy added: %s, iface: %s", path, iface);
+
+	app_register_endpoint(proxy, app);
+	app_register_player(proxy, app);
+
 }
 
 static bool match_endpoint_by_path(const void *a, const void *b)
@@ -3178,4 +3237,10 @@ const char *media_endpoint_get_uuid(struct media_endpoint *endpoint)
 uint8_t media_endpoint_get_codec(struct media_endpoint *endpoint)
 {
 	return endpoint->codec;
+}
+
+struct btd_adapter *media_endpoint_get_btd_adapter(
+					struct media_endpoint *endpoint)
+{
+	return endpoint->adapter->btd_adapter;
 }
